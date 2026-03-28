@@ -1,0 +1,1556 @@
+import { useState, useEffect } from "react";
+import { toast } from "sonner";
+import { 
+  Button, 
+  Card, 
+  CardContent, 
+  CardHeader, 
+  CardTitle, 
+  Input, 
+  Select, 
+  Label,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+  Badge
+} from "../ui-components";
+import { Plus, Calendar, MapPin, CheckCircle, Search, Star, MessageSquare, X, Video, Building2, ChevronLeft, ChevronRight, Clock, User, Send, AlertTriangle, FileText, Trash2, Navigation } from "lucide-react";
+import { getCurrentUser } from "../../api/authApi";
+import { getMyAccounts, type ExecutiveAccountRecord } from "../../api/authApi";
+import { createVisit, getMyVisits, updateVisit, requestReschedule, submitControlCard, getControlCard, updateControlCard, type VisitRecord, type VisitPayload, type ControlCardRecord } from "../../api/visitApi";
+import { format, addDays, startOfWeek, endOfWeek, eachDayOfInterval, isSameDay, addMonths, startOfMonth, endOfMonth } from "date-fns";
+
+interface VisitHistoryItem {
+  date: string;
+  corp: string;
+  type: string;
+  exec: string;
+  rating: number;
+}
+
+interface AVRData {
+  accountName: string;
+  visitDate: string;
+  csrManager: string;
+  customerParticipants: string;
+  visitObjective: string;
+  slaCompliance: string;
+  openTickets: string;
+  criticalIncidents: string;
+  risksOperational: string;
+  risksCommercial: string;
+  risksCompetitive: string;
+  opportunitiesUpsell: string;
+  opportunitiesProcess: string;
+  actionItems: { action: string; owner: string; dueDate: string }[];
+}
+
+const defaultAVR = (): AVRData => ({
+  accountName: "",
+  visitDate: "",
+  csrManager: "",
+  customerParticipants: "",
+  visitObjective: "",
+  slaCompliance: "",
+  openTickets: "",
+  criticalIncidents: "",
+  risksOperational: "",
+  risksCommercial: "",
+  risksCompetitive: "",
+  opportunitiesUpsell: "",
+  opportunitiesProcess: "",
+  actionItems: [{ action: "", owner: "", dueDate: "" }],
+});
+
+function AVRSection({ number, title, children }: { number: number; title: string; children: React.ReactNode }) {
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-2">
+        <span className="flex items-center justify-center h-6 w-6 rounded-full bg-mtc-blue text-white text-xs font-bold">{number}</span>
+        <h4 className="font-semibold text-slate-800 text-sm">{title}</h4>
+      </div>
+      <div className="ml-8">{children}</div>
+    </div>
+  );
+}
+
+const statusConfig: Record<string, { label: string; color: string; bg: string }> = {
+  pending: { label: "Pending", color: "text-amber-600", bg: "bg-amber-100 border-l-2 border-amber-500" },
+  approved: { label: "Approved", color: "text-blue-600", bg: "bg-blue-100 border-l-2 border-blue-500" },
+  confirmed: { label: "Confirmed", color: "text-green-600", bg: "bg-green-100 border-l-2 border-green-500" },
+  declined: { label: "Declined", color: "text-red-600", bg: "bg-red-100 border-l-2 border-red-500" },
+  completed: { label: "Completed", color: "text-gray-600", bg: "bg-gray-100 border-l-2 border-gray-500" },
+  cancelled: { label: "Cancelled", color: "text-gray-400", bg: "bg-gray-50 border-l-2 border-gray-400" },
+  rescheduled: { label: "Rescheduled", color: "text-purple-600", bg: "bg-purple-100 border-l-2 border-purple-500" },
+};
+
+export default function ExecutiveVisits() {
+  const [activeTab, setActiveTab] = useState("upcoming");
+  const [showControlCard, setShowControlCard] = useState(false);
+  const [showRating, setShowRating] = useState(false);
+  const [rating, setRating] = useState(0);
+  const [showSchedule, setShowSchedule] = useState(false);
+  const [showViewCard, setShowViewCard] = useState<VisitHistoryItem | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [controlCardVisit, setControlCardVisit] = useState("");
+  const [controlCardVisitId, setControlCardVisitId] = useState<number | null>(null);
+
+  // Geolocation state
+  const [geoLocation, setGeoLocation] = useState<{ lat: number; lng: number } | null>(null);
+  const [geoAddress, setGeoAddress] = useState<string>("");
+  const [geoLoading, setGeoLoading] = useState(false);
+  const [geoError, setGeoError] = useState<string>("");
+
+  // AVR Control card form state
+  const [avrData, setAvrData] = useState<AVRData>(defaultAVR());
+
+  const updateAVR = <K extends keyof AVRData>(key: K, value: AVRData[K]) => {
+    setAvrData(prev => ({ ...prev, [key]: value }));
+  };
+
+  const updateActionItem = (idx: number, field: keyof AVRData["actionItems"][0], value: string) => {
+    setAvrData(prev => {
+      const items = [...prev.actionItems];
+      items[idx] = { ...items[idx], [field]: value };
+      return { ...prev, actionItems: items };
+    });
+  };
+
+  const addActionItem = () => {
+    setAvrData(prev => ({ ...prev, actionItems: [...prev.actionItems, { action: "", owner: "", dueDate: "" }] }));
+  };
+
+  const removeActionItem = (idx: number) => {
+    setAvrData(prev => ({ ...prev, actionItems: prev.actionItems.filter((_, i) => i !== idx) }));
+  };
+
+  // Real data
+  const [visits, setVisits] = useState<VisitRecord[]>([]);
+  const [accounts, setAccounts] = useState<ExecutiveAccountRecord[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  // Schedule form state
+  const [formCorporateId, setFormCorporateId] = useState("");
+  const [formMeetingType, setFormMeetingType] = useState<"online" | "in_person">("in_person");
+  const [formPurpose, setFormPurpose] = useState("");
+  const [formAgenda, setFormAgenda] = useState("");
+  const [formDate, setFormDate] = useState("");
+  const [formStartTime, setFormStartTime] = useState("");
+  const [formEndTime, setFormEndTime] = useState("");
+  const [formLocation, setFormLocation] = useState("");
+  const [formOnlineLink, setFormOnlineLink] = useState("");
+  const [formAttendees, setFormAttendees] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  // Calendar state
+  const [calendarDate, setCalendarDate] = useState(new Date());
+  const [calendarView, setCalendarView] = useState<"week" | "month">("week");
+  const [selectedVisit, setSelectedVisit] = useState<VisitRecord | null>(null);
+
+  // Reschedule modal state
+  const [rescheduleVisit, setRescheduleVisit] = useState<VisitRecord | null>(null);
+  const [rescheduleReason, setRescheduleReason] = useState("");
+  const [rescheduleMotivation, setRescheduleMotivation] = useState("");
+  const [rescheduleNewDate, setRescheduleNewDate] = useState("");
+  const [rescheduleNewTime, setRescheduleNewTime] = useState("");
+  const [rescheduleSubmitting, setRescheduleSubmitting] = useState(false);
+
+  const currentUser = getCurrentUser();
+
+  const fetchData = async () => {
+    try {
+      setLoading(true);
+      const [visitData, accountData] = await Promise.all([getMyVisits(), getMyAccounts()]);
+      setVisits(visitData);
+      setAccounts(accountData);
+    } catch (err: unknown) {
+      toast.error("Failed to load data", { description: err instanceof Error ? err.message : "Unknown error" });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { fetchData(); }, []);
+
+  // Calendar helpers
+  const weekStart = startOfWeek(calendarDate, { weekStartsOn: 1 });
+  const weekEnd = endOfWeek(calendarDate, { weekStartsOn: 1 });
+  const weekDays = eachDayOfInterval({ start: weekStart, end: weekEnd });
+  const monthStart2 = startOfMonth(calendarDate);
+  const monthEnd2 = endOfMonth(calendarDate);
+  const calStart = startOfWeek(monthStart2, { weekStartsOn: 1 });
+  const calEnd = endOfWeek(monthEnd2, { weekStartsOn: 1 });
+  const monthDays = eachDayOfInterval({ start: calStart, end: calEnd });
+
+  const getVisitsForDate = (date: Date) => visits.filter(v => isSameDay(new Date(v.visitDate), date));
+
+  const navigatePrev = () => setCalendarDate(calendarView === "week" ? addDays(calendarDate, -7) : addMonths(calendarDate, -1));
+  const navigateNext = () => setCalendarDate(calendarView === "week" ? addDays(calendarDate, 7) : addMonths(calendarDate, 1));
+
+  // Filter visits
+  const upcomingVisits = visits.filter(v => ["pending", "approved", "confirmed", "rescheduled"].includes(v.status));
+  const filteredVisits = upcomingVisits.filter(v =>
+    searchQuery === "" ||
+    v.accountName.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    v.purpose.toLowerCase().includes(searchQuery.toLowerCase()) ||
+    (v.location || "").toLowerCase().includes(searchQuery.toLowerCase())
+  );
+
+  const completedVisits = visits.filter(v => v.status === "completed");
+
+  // Fetch control cards for completed visits
+  const fetchControlCards = async (completed: VisitRecord[]) => {
+    const cards: Record<number, ControlCardRecord> = {};
+    await Promise.all(
+      completed.map(async (v) => {
+        try {
+          const card = await getControlCard(v.visitId);
+          cards[v.visitId] = card;
+        } catch {
+          // No control card for this visit
+        }
+      })
+    );
+    setControlCards(cards);
+  };
+
+  useEffect(() => {
+    if (activeTab === "completed" && completedVisits.length > 0) {
+      fetchControlCards(completedVisits);
+    }
+  }, [activeTab, visits]);
+
+  const historyData: VisitHistoryItem[] = [
+    { date: "Oct 23, 2024", corp: "Namibia Breweries", type: "Scheduled Review", exec: "Jane Smith", rating: 5 },
+    { date: "Oct 21, 2024", corp: "Ohlthaver & List", type: "Issue Resolution", exec: "Jane Smith", rating: 2 },
+    { date: "Oct 15, 2024", corp: "Ministry of Finance", type: "Sales Pitch", exec: "John Doe", rating: 4 },
+  ];
+
+  const resetForm = () => {
+    setFormCorporateId(""); setFormMeetingType("in_person"); setFormPurpose(""); setFormAgenda("");
+    setFormDate(""); setFormStartTime(""); setFormEndTime(""); setFormLocation("");
+    setFormOnlineLink(""); setFormAttendees("");
+  };
+
+  const corporateOptions = Array.from(
+    new Map(
+      accounts
+        .filter((acc) => acc.corporateId != null)
+        .map((acc) => [acc.corporateId as number, { corporateId: acc.corporateId as number, corporateName: acc.corporateName || acc.accountName }])
+    ).values()
+  );
+
+  // Control card draft helpers
+  const CC_DRAFT_PREFIX = "cc_draft_";
+  const getDraftKey = (visitId: number) => `${CC_DRAFT_PREFIX}${visitId}`;
+
+  const resetControlCard = () => {
+    setAvrData(defaultAVR());
+  };
+
+  const saveDraft = (visitId: number) => {
+    const draft = { ...avrData, savedAt: new Date().toISOString() };
+    localStorage.setItem(getDraftKey(visitId), JSON.stringify(draft));
+  };
+
+  const loadDraft = (visitId: number): boolean => {
+    const raw = localStorage.getItem(getDraftKey(visitId));
+    if (!raw) return false;
+    try {
+      const draft = JSON.parse(raw);
+      const { savedAt: _, ...rest } = draft;
+      setAvrData({ ...defaultAVR(), ...rest });
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
+  const clearDraft = (visitId: number) => {
+    localStorage.removeItem(getDraftKey(visitId));
+  };
+
+  const hasDraft = (visitId: number) => localStorage.getItem(getDraftKey(visitId)) !== null;
+
+  const openControlCard = (visit: VisitRecord) => {
+    setControlCardVisit(visit.accountName);
+    setControlCardVisitId(visit.visitId);
+    resetControlCard();
+    const resumed = loadDraft(visit.visitId);
+    // Always override header fields from the visit schedule data
+    setAvrData(prev => ({
+      ...prev,
+      accountName: visit.accountName,
+      visitDate: visit.visitDate,
+      csrManager: currentUser?.firstName || "",
+      customerParticipants: resumed ? prev.customerParticipants : (visit.attendees?.join(", ") || ""),
+    }));
+    setShowControlCard(true);
+    if (resumed) {
+      toast.info("Draft restored", { description: "Your previously saved draft has been loaded." });
+    }
+    // Fetch geolocation
+    setGeoLocation(null);
+    setGeoAddress("");
+    setGeoError("");
+    setGeoLoading(true);
+    if (navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(
+        (position) => {
+          const { latitude, longitude } = position.coords;
+          setGeoLocation({ lat: latitude, lng: longitude });
+          setGeoAddress(`${latitude.toFixed(6)}, ${longitude.toFixed(6)}`);
+          setGeoLoading(false);
+        },
+        (err) => {
+          setGeoError(err.code === 1 ? "Location permission denied" : "Unable to retrieve location");
+          setGeoLoading(false);
+        },
+        { enableHighAccuracy: true, timeout: 10000 }
+      );
+    } else {
+      setGeoError("Geolocation not supported by this browser");
+      setGeoLoading(false);
+    }
+  };
+
+  const handleScheduleVisit = async () => {
+    if (!formCorporateId || !formPurpose || !formDate || !formStartTime || !formEndTime) {
+      toast.error("Please fill in all required fields");
+      return;
+    }
+    try {
+      setSubmitting(true);
+      const payload: VisitPayload = {
+        corporateId: Number(formCorporateId),
+        meetingType: formMeetingType,
+        purpose: formPurpose,
+        agenda: formAgenda || undefined,
+        visitDate: formDate,
+        startTime: formStartTime,
+        endTime: formEndTime,
+        location: formMeetingType === "in_person" ? formLocation || undefined : undefined,
+        onlineLink: formMeetingType === "online" ? formOnlineLink || undefined : undefined,
+        attendees: formAttendees ? formAttendees.split(",").map(a => a.trim()) : [],
+      };
+      await createVisit(payload);
+      toast.success("Visit scheduled", { description: "The customer will be notified and can approve or reschedule." });
+      setShowSchedule(false);
+      resetForm();
+      await fetchData();
+    } catch (err: unknown) {
+      toast.error("Failed to schedule visit", { description: err instanceof Error ? err.message : "Unknown error" });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const handleAcceptReschedule = async (visit: VisitRecord) => {
+    try {
+      await updateVisit(visit.visitId, { action: "accept_reschedule" });
+      toast.success("Reschedule accepted", { description: `Visit with ${visit.accountName} rescheduled to ${visit.rescheduleDate}` });
+      await fetchData();
+    } catch (err: unknown) {
+      toast.error("Failed", { description: err instanceof Error ? err.message : "Unknown error" });
+    }
+  };
+
+  const handleCancelVisit = async (visit: VisitRecord) => {
+    try {
+      await updateVisit(visit.visitId, { status: "cancelled" });
+      toast.info("Visit cancelled", { description: `Visit with ${visit.accountName} has been cancelled.` });
+      await fetchData();
+    } catch (err: unknown) {
+      toast.error("Failed", { description: err instanceof Error ? err.message : "Unknown error" });
+    }
+  };
+
+  const openRescheduleModal = (visit: VisitRecord) => {
+    setRescheduleVisit(visit);
+    setRescheduleReason("");
+    setRescheduleMotivation("");
+    setRescheduleNewDate("");
+    setRescheduleNewTime("");
+  };
+
+  const handleSubmitReschedule = async () => {
+    if (!rescheduleVisit) return;
+    if (!rescheduleReason || !rescheduleMotivation || !rescheduleNewDate || !rescheduleNewTime) {
+      toast.error("Please fill in all required fields");
+      return;
+    }
+    try {
+      setRescheduleSubmitting(true);
+      await requestReschedule(rescheduleVisit.visitId, {
+        reason: rescheduleReason,
+        motivation: rescheduleMotivation,
+        newDate: rescheduleNewDate,
+        newTime: rescheduleNewTime,
+      });
+      toast.success("Reschedule request submitted", {
+        description: "Your manager will review and approve the request.",
+      });
+      setRescheduleVisit(null);
+      await fetchData();
+    } catch (err: unknown) {
+      toast.error("Failed to submit reschedule", { description: err instanceof Error ? err.message : "Unknown error" });
+    } finally {
+      setRescheduleSubmitting(false);
+    }
+  };
+
+  const handleCompleteVisit = async (visit: VisitRecord) => {
+    try {
+      await updateVisit(visit.visitId, { status: "completed" });
+      toast.success("Visit completed", { description: `Visit with ${visit.accountName} marked as completed.` });
+      await fetchData();
+    } catch (err: unknown) {
+      toast.error("Failed", { description: err instanceof Error ? err.message : "Unknown error" });
+    }
+  };
+
+  const [submittingControlCard, setSubmittingControlCard] = useState(false);
+
+  // Completed visits state
+  const [controlCards, setControlCards] = useState<Record<number, ControlCardRecord>>({});
+  const [expandedCard, setExpandedCard] = useState<number | null>(null);
+  const [editFeedback, setEditFeedback] = useState<Record<number, string>>({});
+  const [editHealth, setEditHealth] = useState<Record<number, "green" | "amber" | "red" | "">>({}); 
+  const [savingCard, setSavingCard] = useState<number | null>(null);
+
+  const handleSubmitControlCard = async () => {
+    if (!controlCardVisitId) return;
+    try {
+      setSubmittingControlCard(true);
+      const payload = {
+        ...avrData,
+        geoLatitude: geoLocation?.lat ?? null,
+        geoLongitude: geoLocation?.lng ?? null,
+      };
+      await submitControlCard(controlCardVisitId, payload as unknown as Record<string, unknown>);
+      clearDraft(controlCardVisitId);
+      setShowControlCard(false);
+      toast.success("Control Card submitted", {
+        description: "The customer will be notified and can now rate the visit.",
+      });
+      await fetchData();
+    } catch (err: unknown) {
+      toast.error("Failed to submit", { description: err instanceof Error ? err.message : "Unknown error" });
+    } finally {
+      setSubmittingControlCard(false);
+    }
+  };
+
+  const handleSavePostCompletion = async (visitId: number) => {
+    const feedback = editFeedback[visitId];
+    const health = editHealth[visitId];
+    if (!feedback && !health) {
+      toast.error("Please fill in at least one field");
+      return;
+    }
+    try {
+      setSavingCard(visitId);
+      const payload: { customerFeedback?: string; accountHealth?: "green" | "amber" | "red" } = {};
+      if (feedback) payload.customerFeedback = feedback;
+      if (health) payload.accountHealth = health;
+      const updated = await updateControlCard(visitId, payload);
+      setControlCards(prev => ({ ...prev, [visitId]: updated }));
+      toast.success("Control card updated", { description: "Post-completion fields saved successfully." });
+    } catch (err: unknown) {
+      toast.error("Failed to update", { description: err instanceof Error ? err.message : "Unknown error" });
+    } finally {
+      setSavingCard(null);
+    }
+  };
+
+  const getStatusBadgeVariant = (status: string) => {
+    switch (status) {
+      case "pending": return "warning" as const;
+      case "approved": return "default" as const;
+      case "confirmed": return "success" as const;
+      case "declined": return "danger" as const;
+      case "rescheduled": return "neutral" as const;
+      case "completed": return "neutral" as const;
+      case "cancelled": return "neutral" as const;
+      default: return "default" as const;
+    }
+  };
+
+  return (
+    <div className="space-y-6 animate-in fade-in duration-500 slide-in-from-bottom-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-2xl font-bold tracking-tight text-slate-900">Visits & Engagements</h2>
+          <p className="text-sm text-slate-500">Manage client visits, control cards, and feedback ratings.</p>
+        </div>
+        <Button className="flex items-center gap-2" onClick={() => setShowSchedule(!showSchedule)}>
+          <Plus className="h-4 w-4" /> Schedule Visit
+        </Button>
+      </div>
+
+      {showSchedule && (
+        <Card className="border-mtc-blue-100 bg-mtc-blue-50/30 animate-in slide-in-from-top-4">
+          <CardHeader className="pb-4">
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-lg">Schedule New Visit / Meeting</CardTitle>
+              <Button variant="ghost" size="sm" onClick={() => { setShowSchedule(false); resetForm(); }}>Cancel</Button>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+              <div className="space-y-2">
+                <Label>Corporate Customer <span className="text-red-500">*</span></Label>
+                <Select value={formCorporateId} onChange={(e) => setFormCorporateId(e.target.value)}>
+                  <option value="">Select Corporate...</option>
+                  {corporateOptions.map((corp) => (
+                    <option key={corp.corporateId} value={corp.corporateId}>{corp.corporateName}</option>
+                  ))}
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>Meeting Type <span className="text-red-500">*</span></Label>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setFormMeetingType("in_person")}
+                    className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-md border text-sm font-medium transition-colors ${formMeetingType === "in_person" ? "border-mtc-blue bg-mtc-blue-50 text-mtc-blue" : "border-slate-300 text-slate-600 hover:bg-slate-50"}`}
+                  >
+                    <Building2 className="h-4 w-4" /> In Person
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setFormMeetingType("online")}
+                    className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-md border text-sm font-medium transition-colors ${formMeetingType === "online" ? "border-mtc-blue bg-mtc-blue-50 text-mtc-blue" : "border-slate-300 text-slate-600 hover:bg-slate-50"}`}
+                  >
+                    <Video className="h-4 w-4" /> Online
+                  </button>
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Label>Purpose <span className="text-red-500">*</span></Label>
+                <Select value={formPurpose} onChange={(e) => setFormPurpose(e.target.value)}>
+                  <option value="">Select Purpose...</option>
+                  <option value="Quarterly Service Review">Quarterly Service Review</option>
+                  <option value="Issue Resolution Follow-up">Issue Resolution Follow-up</option>
+                  <option value="New Product Demo">New Product Demo</option>
+                  <option value="Renewal Discussion">Renewal Discussion</option>
+                  <option value="Courtesy Visit">Courtesy Visit</option>
+                  <option value="Onboarding">Onboarding</option>
+                  <option value="Technical Support">Technical Support</option>
+                </Select>
+              </div>
+              <div className="space-y-2">
+                <Label>Visit Date <span className="text-red-500">*</span></Label>
+                <Input type="date" value={formDate} onChange={(e) => setFormDate(e.target.value)} />
+              </div>
+              <div className="space-y-2">
+                <Label>Start Time <span className="text-red-500">*</span></Label>
+                <Input type="time" value={formStartTime} onChange={(e) => setFormStartTime(e.target.value)} />
+              </div>
+              <div className="space-y-2">
+                <Label>End Time <span className="text-red-500">*</span></Label>
+                <Input type="time" value={formEndTime} onChange={(e) => setFormEndTime(e.target.value)} />
+              </div>
+              {formMeetingType === "in_person" ? (
+                <div className="space-y-2">
+                  <Label>Location</Label>
+                  <Input placeholder="e.g. Head Office, Windhoek" value={formLocation} onChange={(e) => setFormLocation(e.target.value)} />
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <Label>Meeting Link</Label>
+                  <Input placeholder="e.g. https://teams.microsoft.com/..." value={formOnlineLink} onChange={(e) => setFormOnlineLink(e.target.value)} />
+                </div>
+              )}
+              <div className="space-y-2">
+                <Label>Attendees</Label>
+                <Input placeholder="Comma-separated, e.g. John Smith, Jane Doe" value={formAttendees} onChange={(e) => setFormAttendees(e.target.value)} />
+              </div>
+              <div className="space-y-2 lg:col-span-1">
+                <Label>Agenda</Label>
+                <textarea
+                  className="flex min-h-[60px] w-full rounded-md border border-slate-300 bg-transparent px-3 py-2 text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-mtc-blue"
+                  placeholder="Brief agenda for the meeting..."
+                  value={formAgenda}
+                  onChange={(e) => setFormAgenda(e.target.value)}
+                />
+              </div>
+            </div>
+            <div className="flex justify-end gap-2 mt-6">
+              <Button variant="outline" onClick={() => { setShowSchedule(false); resetForm(); }}>Cancel</Button>
+              <Button onClick={handleScheduleVisit} disabled={submitting}>
+                {submitting ? "Scheduling..." : "Schedule Visit"}
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Rescheduled visits (customer proposed new time) */}
+      {visits.filter(v => v.status === "rescheduled").length > 0 && (
+        <Card className="border-purple-200 bg-purple-50/30">
+          <CardHeader>
+            <CardTitle className="text-base flex items-center gap-2">
+              <Calendar className="h-5 w-5 text-purple-600" />
+              Customer Reschedule Requests
+              <Badge variant="warning" className="ml-2">
+                {visits.filter(v => v.status === "rescheduled").length} Pending
+              </Badge>
+            </CardTitle>
+          </CardHeader>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Corporate</TableHead>
+                <TableHead>Original Date</TableHead>
+                <TableHead>Proposed Date</TableHead>
+                <TableHead>Reason</TableHead>
+                <TableHead className="text-right">Action</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {visits.filter(v => v.status === "rescheduled").map(v => (
+                <TableRow key={v.visitId}>
+                  <TableCell className="font-medium text-slate-900">{v.accountName}</TableCell>
+                  <TableCell className="text-slate-500">{v.visitDate} {v.startTime}-{v.endTime}</TableCell>
+                  <TableCell className="font-medium">{v.rescheduleDate} {v.rescheduleStartTime}-{v.rescheduleEndTime}</TableCell>
+                  <TableCell className="text-sm text-slate-500 max-w-xs truncate">{v.rescheduleReason || "—"}</TableCell>
+                  <TableCell className="text-right">
+                    <div className="flex justify-end gap-2">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="text-green-700 border-green-300 hover:bg-green-50 text-xs"
+                        onClick={() => handleAcceptReschedule(v)}
+                      >
+                        <CheckCircle className="h-3.5 w-3.5 mr-1" /> Accept
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="text-red-700 border-red-300 hover:bg-red-50 text-xs"
+                        onClick={() => handleCancelVisit(v)}
+                      >
+                        <X className="h-3.5 w-3.5 mr-1" /> Cancel
+                      </Button>
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </Card>
+      )}
+
+      {/* Calendar View */}
+      <Card>
+        <CardHeader>
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <CardTitle className="text-xl">
+              {format(calendarDate, "MMMM yyyy")}
+            </CardTitle>
+            <div className="flex items-center gap-4">
+              <div className="flex rounded-md border border-slate-200 overflow-hidden">
+                <button
+                  onClick={() => setCalendarView("week")}
+                  className={`px-3 py-1.5 text-xs font-medium ${calendarView === "week" ? "bg-mtc-blue text-white" : "text-slate-600 hover:bg-slate-50"}`}
+                >Week</button>
+                <button
+                  onClick={() => setCalendarView("month")}
+                  className={`px-3 py-1.5 text-xs font-medium ${calendarView === "month" ? "bg-mtc-blue text-white" : "text-slate-600 hover:bg-slate-50"}`}
+                >Month</button>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button variant="outline" size="sm" onClick={navigatePrev}><ChevronLeft className="h-4 w-4" /></Button>
+                <Button variant="outline" size="sm" onClick={() => setCalendarDate(new Date())}>Today</Button>
+                <Button variant="outline" size="sm" onClick={navigateNext}><ChevronRight className="h-4 w-4" /></Button>
+              </div>
+            </div>
+          </div>
+        </CardHeader>
+        <CardContent>
+          {calendarView === "week" ? (
+            <div className="grid grid-cols-7 gap-2">
+              {weekDays.map((day, index) => {
+                const dayVisits = getVisitsForDate(day);
+                const isToday = isSameDay(day, new Date());
+                return (
+                  <div key={index} className={`min-h-32 p-3 rounded-lg border ${isToday ? "border-blue-400 bg-blue-50/50" : "border-slate-200"}`}>
+                    <div className="font-semibold mb-2">
+                      <div className="text-xs text-slate-500">{format(day, "EEE")}</div>
+                      <div className={`text-sm ${isToday ? "text-blue-600" : "text-slate-900"}`}>{format(day, "d")}</div>
+                    </div>
+                    <div className="space-y-1.5">
+                      {dayVisits.map(visit => (
+                        <button
+                          key={visit.visitId}
+                          onClick={() => setSelectedVisit(visit)}
+                          className={`w-full text-left p-1.5 rounded text-xs cursor-pointer hover:opacity-80 transition-opacity ${statusConfig[visit.status]?.bg ?? "bg-gray-100"}`}
+                        >
+                          <div className="font-medium truncate">{visit.accountName}</div>
+                          <div className="text-[10px] text-slate-500 flex items-center gap-1">
+                            {visit.meetingType === "online" ? <Video className="h-2.5 w-2.5" /> : <MapPin className="h-2.5 w-2.5" />}
+                            {visit.startTime}
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div>
+              <div className="grid grid-cols-7 gap-2 mb-2">
+                {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map(day => (
+                  <div key={day} className="text-center text-xs font-medium text-slate-500 py-2">{day}</div>
+                ))}
+              </div>
+              <div className="grid grid-cols-7 gap-2">
+                {monthDays.map((day, index) => {
+                  const dayVisits = getVisitsForDate(day);
+                  const isToday = isSameDay(day, new Date());
+                  const isCurrentMonth = day.getMonth() === calendarDate.getMonth();
+                  return (
+                    <div key={index} className={`min-h-24 p-2 rounded-lg border ${isToday ? "border-blue-400 bg-blue-50/50" : "border-slate-200"} ${!isCurrentMonth ? "opacity-40" : ""}`}>
+                      <div className={`text-xs font-medium mb-1 ${isToday ? "text-blue-600" : "text-slate-700"}`}>{format(day, "d")}</div>
+                      <div className="space-y-1">
+                        {dayVisits.slice(0, 2).map(visit => (
+                          <button
+                            key={visit.visitId}
+                            onClick={() => setSelectedVisit(visit)}
+                            className={`w-full text-left px-1 py-0.5 rounded text-[10px] truncate cursor-pointer hover:opacity-80 ${statusConfig[visit.status]?.bg ?? "bg-gray-100"}`}
+                          >
+                            {visit.accountName}
+                          </button>
+                        ))}
+                        {dayVisits.length > 2 && (
+                          <div className="text-[10px] text-slate-400 px-1">+{dayVisits.length - 2} more</div>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      {/* Selected Visit Detail */}
+      {selectedVisit && (
+        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in">
+          <Card className="w-full max-w-lg">
+            <CardHeader className="flex flex-row items-center justify-between border-b border-slate-200 py-4">
+              <div>
+                <CardTitle className="text-lg">{selectedVisit.accountName}</CardTitle>
+                <p className="text-sm text-slate-500 mt-1">{selectedVisit.purpose}</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <Badge variant={getStatusBadgeVariant(selectedVisit.status)}>
+                  {statusConfig[selectedVisit.status]?.label ?? selectedVisit.status}
+                </Badge>
+                <Button variant="ghost" size="sm" onClick={() => setSelectedVisit(null)}><X className="h-4 w-4" /></Button>
+              </div>
+            </CardHeader>
+            <CardContent className="pt-6 space-y-4">
+              <div className="grid grid-cols-2 gap-4 text-sm">
+                <div className="flex items-start gap-2">
+                  <Calendar className="h-4 w-4 text-slate-400 mt-0.5" />
+                  <div>
+                    <p className="text-slate-500">Date</p>
+                    <p className="font-medium">{selectedVisit.visitDate}</p>
+                  </div>
+                </div>
+                <div className="flex items-start gap-2">
+                  <Clock className="h-4 w-4 text-slate-400 mt-0.5" />
+                  <div>
+                    <p className="text-slate-500">Time</p>
+                    <p className="font-medium">{selectedVisit.startTime} - {selectedVisit.endTime}</p>
+                  </div>
+                </div>
+                <div className="flex items-start gap-2">
+                  {selectedVisit.meetingType === "online" ? <Video className="h-4 w-4 text-slate-400 mt-0.5" /> : <MapPin className="h-4 w-4 text-slate-400 mt-0.5" />}
+                  <div>
+                    <p className="text-slate-500">{selectedVisit.meetingType === "online" ? "Online Meeting" : "Location"}</p>
+                    <p className="font-medium">{selectedVisit.meetingType === "online" ? (selectedVisit.onlineLink || "Link TBD") : (selectedVisit.location || "TBD")}</p>
+                  </div>
+                </div>
+                <div className="flex items-start gap-2">
+                  <User className="h-4 w-4 text-slate-400 mt-0.5" />
+                  <div>
+                    <p className="text-slate-500">Attendees</p>
+                    <p className="font-medium">{selectedVisit.attendees?.length > 0 ? selectedVisit.attendees.join(", ") : "—"}</p>
+                  </div>
+                </div>
+              </div>
+              {selectedVisit.agenda && (
+                <div className="rounded-lg bg-slate-50 p-3">
+                  <p className="text-sm font-medium text-slate-700 mb-1">Agenda</p>
+                  <p className="text-sm text-slate-600">{selectedVisit.agenda}</p>
+                </div>
+              )}
+              {selectedVisit.customerResponse && (
+                <div className="rounded-lg bg-blue-50 p-3">
+                  <p className="text-sm font-medium text-blue-700 mb-1">Customer Response</p>
+                  <p className="text-sm text-blue-600">{selectedVisit.customerResponse}</p>
+                </div>
+              )}
+              <div className="flex gap-2 pt-2 border-t border-slate-200">
+                {selectedVisit.status === "pending" && (
+                  <div className="flex-1">
+                    <Badge variant="warning" className="w-full justify-center py-2">
+                      Waiting for customer acceptance
+                    </Badge>
+                  </div>
+                )}
+                {selectedVisit.status === "approved" && (
+                  <Button className="flex-1 text-xs" onClick={() => { handleCompleteVisit(selectedVisit); setSelectedVisit(null); }}>
+                    Mark Completed
+                  </Button>
+                )}
+                {selectedVisit.status === "rescheduled" && (
+                  <Button className="flex-1 text-xs bg-green-600 hover:bg-green-700" onClick={() => { handleAcceptReschedule(selectedVisit); setSelectedVisit(null); }}>
+                    Accept Reschedule
+                  </Button>
+                )}
+                {["pending", "approved", "confirmed"].includes(selectedVisit.status) && (
+                  <Button variant="outline" className="flex-1 text-xs text-red-600 border-red-200" onClick={() => { handleCancelVisit(selectedVisit); setSelectedVisit(null); }}>
+                    Cancel Visit
+                  </Button>
+                )}
+                <Button variant="outline" className="flex-1 text-xs" onClick={() => setSelectedVisit(null)}>Close</Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {/* Legend */}
+      <div className="flex flex-wrap gap-4 text-xs text-slate-500">
+        <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-amber-500" /> Pending</span>
+        <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-blue-500" /> Approved</span>
+        <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-green-500" /> Confirmed</span>
+        <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-purple-500" /> Rescheduled</span>
+        <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-gray-500" /> Completed</span>
+        <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-red-500" /> Declined</span>
+      </div>
+
+      <div className="flex border-b border-slate-200">
+        <button
+          onClick={() => setActiveTab("upcoming")}
+          className={`py-3 px-6 text-sm font-medium border-b-2 transition-colors ${activeTab === "upcoming" ? "border-mtc-blue text-mtc-blue" : "border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300"}`}
+        >
+          Upcoming Visits
+        </button>
+         <button
+          onClick={() => setActiveTab("completed")}
+          className={`py-3 px-6 text-sm font-medium border-b-2 transition-colors ${activeTab === "completed" ? "border-mtc-blue text-mtc-blue" : "border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300"}`}
+        >
+          Completed Visits
+        </button>
+        <button
+          onClick={() => setActiveTab("history")}
+          className={`py-3 px-6 text-sm font-medium border-b-2 transition-colors ${activeTab === "history" ? "border-mtc-blue text-mtc-blue" : "border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300"}`}
+        >
+          Control Cards History
+        </button>
+      </div>
+
+      {activeTab === "upcoming" && (
+        <div className="space-y-4">
+          <div className="flex justify-between items-center mb-4">
+            <h3 className="text-lg font-medium">Upcoming Visits ({upcomingVisits.length})</h3>
+            <div className="relative">
+              <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-slate-500" />
+              <Input
+                className="pl-9 w-64"
+                placeholder="Search visits..."
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+              />
+            </div>
+          </div>
+          {loading ? (
+            <div className="py-12 text-center text-slate-500">Loading visits...</div>
+          ) : (
+            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+              {filteredVisits.map((visit) => (
+                <Card key={visit.visitId} className="flex flex-col">
+                  <CardHeader className="pb-2">
+                    <div className="flex justify-between items-start">
+                      <div className="flex items-center gap-2">
+                        <CardTitle className="text-base">{visit.accountName}</CardTitle>
+                        {hasDraft(visit.visitId) && (
+                          <Badge variant="neutral" className="text-[10px] px-1.5 py-0.5">Draft</Badge>
+                        )}
+                      </div>
+                      <Badge variant="warning">{visit.visitDate === new Date().toISOString().split("T")[0] ? `Today, ${visit.startTime}` : `${visit.visitDate}, ${visit.startTime}`}</Badge>
+                    </div>
+                    <p className="text-sm text-slate-500 flex items-center gap-1 mt-1">
+                      {visit.meetingType === "online" ? (
+                        <><Video className="h-3 w-3" /> {visit.onlineLink || "Online Meeting"}</>
+                      ) : (
+                        <><MapPin className="h-3 w-3" /> {visit.location || "In Person"}</>
+                      )}
+                    </p>
+                  </CardHeader>
+                  <CardContent className="flex-1 flex flex-col justify-between">
+                    <div className="space-y-2 text-sm text-slate-700 my-4">
+                      <p><strong>Agenda:</strong> {visit.agenda || visit.purpose}</p>
+                      {visit.attendees?.length > 0 && <p><strong>Attendees:</strong> {visit.attendees.join(", ")}</p>}
+                    </div>
+                    <div className="flex gap-2 mt-4 pt-4 border-t border-slate-100">
+                      {visit.status === "pending" ? (
+                        <div className="flex-1 text-center">
+                          <Badge variant="warning" className="text-xs">Waiting for customer acceptance</Badge>
+                        </div>
+                      ) : visit.status === "rescheduled" ? (
+                        <Button
+                          className="flex-1 text-xs bg-green-600 hover:bg-green-700"
+                          onClick={() => handleAcceptReschedule(visit)}
+                        >
+                          Accept Reschedule
+                        </Button>
+                      ) : visit.execRescheduleStatus === "pending_approval" ? (
+                        <div className="flex-1 text-center">
+                          <Badge variant="warning" className="text-xs">Reschedule Pending Manager Approval</Badge>
+                        </div>
+                      ) : (
+                        <>
+                          <Button variant="outline" className="flex-1 text-xs" onClick={() => openRescheduleModal(visit)}>
+                            Reschedule
+                          </Button>
+                          <Button 
+                            className="flex-1 text-xs bg-slate-800" 
+                            onClick={() => openControlCard(visit)}
+                            disabled={!["approved", "confirmed"].includes(visit.status)}
+                          >
+                            {hasDraft(visit.visitId) ? "Continue Draft" : "Start Visit"}
+                          </Button>
+                        </>
+                      )}
+                    </div>
+                  </CardContent>
+                </Card>
+              ))}
+              {filteredVisits.length === 0 && (
+                <div className="col-span-full py-12 text-center text-slate-500">
+                  {visits.length === 0 ? "No visits scheduled yet. Click 'Schedule Visit' to create one." : "No visits match your search."}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ============ COMPLETED VISITS TAB ============ */}
+      {activeTab === "completed" && (
+        <div className="space-y-4">
+          <h3 className="text-lg font-medium">Completed Visits ({completedVisits.length})</h3>
+          {completedVisits.length === 0 ? (
+            <div className="py-12 text-center text-slate-500">No completed visits yet.</div>
+          ) : (
+            <div className="space-y-4">
+              {completedVisits.map((visit) => {
+                const card = controlCards[visit.visitId];
+                const isExpanded = expandedCard === visit.visitId;
+                return (
+                  <Card key={visit.visitId} className="overflow-hidden">
+                    {/* Summary row */}
+                    <div
+                      className="flex items-center justify-between p-4 cursor-pointer hover:bg-slate-50 transition-colors"
+                      onClick={() => setExpandedCard(isExpanded ? null : visit.visitId)}
+                    >
+                      <div className="flex items-center gap-4">
+                        <div className="flex items-center justify-center h-10 w-10 rounded-full bg-green-100">
+                          <CheckCircle className="h-5 w-5 text-green-600" />
+                        </div>
+                        <div>
+                          <p className="font-semibold text-slate-900">{visit.accountName}</p>
+                          <p className="text-sm text-slate-500 flex items-center gap-2">
+                            <Calendar className="h-3 w-3" /> {visit.visitDate}
+                            <span className="mx-1">·</span>
+                            <Clock className="h-3 w-3" /> {visit.startTime} - {visit.endTime}
+                            {visit.meetingType === "online" ? (
+                              <><span className="mx-1">·</span><Video className="h-3 w-3" /> Online</>
+                            ) : (
+                              <><span className="mx-1">·</span><MapPin className="h-3 w-3" /> {visit.location || "In Person"}</>
+                            )}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-3">
+                        {visit.customerRating && (
+                          <div className="flex items-center gap-1 text-sm">
+                            <Star className="h-4 w-4 fill-amber-400 text-amber-400" />
+                            <span className="font-medium">{visit.customerRating}/5</span>
+                          </div>
+                        )}
+                        {card?.accountHealth && (
+                          <Badge variant={card.accountHealth === "green" ? "success" : card.accountHealth === "amber" ? "warning" : "danger"}>
+                            {card.accountHealth.charAt(0).toUpperCase() + card.accountHealth.slice(1)}
+                          </Badge>
+                        )}
+                        <Badge variant="neutral">Completed</Badge>
+                        <ChevronRight className={`h-4 w-4 text-slate-400 transition-transform ${isExpanded ? "rotate-90" : ""}`} />
+                      </div>
+                    </div>
+
+                    {/* Expanded control card view */}
+                    {isExpanded && card && (
+                      <div className="border-t border-slate-200 p-6 space-y-6 bg-slate-50/50">
+                        {/* Customer Rating Banner */}
+                        {visit.customerRating && (
+                          <div className={`rounded-lg p-4 flex items-start gap-3 ${visit.customerRating >= 4 ? "bg-green-50 border border-green-200" : visit.customerRating >= 3 ? "bg-amber-50 border border-amber-200" : "bg-red-50 border border-red-200"}`}>
+                            <Star className={`h-5 w-5 mt-0.5 ${visit.customerRating >= 4 ? "fill-green-500 text-green-500" : visit.customerRating >= 3 ? "fill-amber-500 text-amber-500" : "fill-red-500 text-red-500"}`} />
+                            <div>
+                              <p className="font-semibold text-sm">Customer Rating: {visit.customerRating}/5</p>
+                              {visit.customerRatingComment && <p className="text-sm mt-1 text-slate-600">{visit.customerRatingComment}</p>}
+                            </div>
+                          </div>
+                        )}
+
+                        {/* Header Fields */}
+                        <div className="bg-white rounded-lg border border-slate-200 p-4">
+                          <h4 className="font-semibold text-slate-800 text-sm uppercase tracking-wide mb-3">Visit Details</h4>
+                          <div className="grid gap-3 md:grid-cols-4 text-sm">
+                            <div><span className="text-slate-500 block text-xs">Account</span><span className="font-medium">{card.accountName}</span></div>
+                            <div><span className="text-slate-500 block text-xs">Visit Date</span><span className="font-medium">{card.visitDate}</span></div>
+                            <div><span className="text-slate-500 block text-xs">CSR / Account Manager</span><span className="font-medium">{card.csrManager || "—"}</span></div>
+                            <div><span className="text-slate-500 block text-xs">Participants</span><span className="font-medium">{card.customerParticipants || "—"}</span></div>
+                          </div>
+                        </div>
+
+                        {/* Section 1: Visit Objective */}
+                        <AVRSection number={1} title="Visit Objective">
+                          <p className="text-sm text-slate-700 bg-white rounded-md border border-slate-200 p-3">{card.visitObjective || "—"}</p>
+                        </AVRSection>
+
+                        {/* Section 2: SLA & Service Performance */}
+                        <AVRSection number={2} title="SLA & Service Performance">
+                          <div className="grid gap-3 md:grid-cols-3 text-sm">
+                            <div className="bg-white rounded-md border border-slate-200 p-3">
+                              <span className="text-slate-500 text-xs block mb-1">SLA Compliance</span>
+                              <span className="font-medium">{card.slaCompliance || "—"}</span>
+                            </div>
+                            <div className="bg-white rounded-md border border-slate-200 p-3">
+                              <span className="text-slate-500 text-xs block mb-1">Open Tickets</span>
+                              <span className="font-medium">{card.openTickets || "—"}</span>
+                            </div>
+                            <div className="bg-white rounded-md border border-slate-200 p-3">
+                              <span className="text-slate-500 text-xs block mb-1">Critical Incidents</span>
+                              <span className="font-medium">{card.criticalIncidents || "—"}</span>
+                            </div>
+                          </div>
+                        </AVRSection>
+
+                        {/* Section 3: Customer Feedback — EDITABLE */}
+                        <AVRSection number={3} title="Customer Feedback (Positives / Concerns)">
+                          {card.customerFeedback ? (
+                            <div className="bg-white rounded-md border border-slate-200 p-3">
+                              <p className="text-sm text-slate-700">{card.customerFeedback}</p>
+                            </div>
+                          ) : (
+                            <textarea
+                              className="flex min-h-[80px] w-full rounded-md border border-blue-300 bg-white px-3 py-2 text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-mtc-blue"
+                              placeholder="Summarize customer feedback — positives and concerns raised during the visit..."
+                              value={editFeedback[visit.visitId] || ""}
+                              onChange={(e) => setEditFeedback(prev => ({ ...prev, [visit.visitId]: e.target.value }))}
+                            />
+                          )}
+                        </AVRSection>
+
+                        {/* Section 4: Risks Identified */}
+                        <AVRSection number={4} title="Risks Identified">
+                          <div className="grid gap-3 md:grid-cols-3 text-sm">
+                            <div className="bg-white rounded-md border border-slate-200 p-3">
+                              <span className="text-slate-500 text-xs block mb-1">Operational</span>
+                              <span className="font-medium">{card.risksOperational || "—"}</span>
+                            </div>
+                            <div className="bg-white rounded-md border border-slate-200 p-3">
+                              <span className="text-slate-500 text-xs block mb-1">Commercial</span>
+                              <span className="font-medium">{card.risksCommercial || "—"}</span>
+                            </div>
+                            <div className="bg-white rounded-md border border-slate-200 p-3">
+                              <span className="text-slate-500 text-xs block mb-1">Competitive</span>
+                              <span className="font-medium">{card.risksCompetitive || "—"}</span>
+                            </div>
+                          </div>
+                        </AVRSection>
+
+                        {/* Section 5: Opportunities */}
+                        <AVRSection number={5} title="Opportunities">
+                          <div className="grid gap-3 md:grid-cols-2 text-sm">
+                            <div className="bg-white rounded-md border border-slate-200 p-3">
+                              <span className="text-slate-500 text-xs block mb-1">Upsell / Cross-sell</span>
+                              <span className="font-medium">{card.opportunitiesUpsell || "—"}</span>
+                            </div>
+                            <div className="bg-white rounded-md border border-slate-200 p-3">
+                              <span className="text-slate-500 text-xs block mb-1">Process Improvements</span>
+                              <span className="font-medium">{card.opportunitiesProcess || "—"}</span>
+                            </div>
+                          </div>
+                        </AVRSection>
+
+                        {/* Section 6: Action Items */}
+                        <AVRSection number={6} title="Action Items">
+                          {card.actionItems && card.actionItems.length > 0 ? (
+                            <div className="bg-white rounded-md border border-slate-200 overflow-hidden">
+                              <table className="w-full text-sm">
+                                <thead className="bg-slate-100">
+                                  <tr>
+                                    <th className="text-left px-3 py-2 text-xs font-medium text-slate-500 uppercase">Action</th>
+                                    <th className="text-left px-3 py-2 text-xs font-medium text-slate-500 uppercase">Owner</th>
+                                    <th className="text-left px-3 py-2 text-xs font-medium text-slate-500 uppercase">Deadline</th>
+                                  </tr>
+                                </thead>
+                                <tbody>
+                                  {card.actionItems.map((item, idx) => (
+                                    <tr key={idx} className="border-t border-slate-100">
+                                      <td className="px-3 py-2">{item.action || "—"}</td>
+                                      <td className="px-3 py-2">{item.owner || "—"}</td>
+                                      <td className="px-3 py-2">{item.deadline || "—"}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </div>
+                          ) : (
+                            <p className="text-sm text-slate-500 italic">No action items recorded.</p>
+                          )}
+                        </AVRSection>
+
+                        {/* Section 7: Overall Account Health — EDITABLE */}
+                        <AVRSection number={7} title="Overall Account Health">
+                          {card.accountHealth ? (
+                            <div className="flex items-center gap-2">
+                              <span className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium ${
+                                card.accountHealth === "green" ? "bg-green-100 text-green-700" :
+                                card.accountHealth === "amber" ? "bg-amber-100 text-amber-700" :
+                                "bg-red-100 text-red-700"
+                              }`}>
+                                <span className={`h-2.5 w-2.5 rounded-full ${
+                                  card.accountHealth === "green" ? "bg-green-500" :
+                                  card.accountHealth === "amber" ? "bg-amber-500" :
+                                  "bg-red-500"
+                                }`} />
+                                {card.accountHealth.charAt(0).toUpperCase() + card.accountHealth.slice(1)}
+                              </span>
+                            </div>
+                          ) : (
+                            <div className="flex gap-3">
+                              {(["green", "amber", "red"] as const).map((color) => (
+                                <button
+                                  key={color}
+                                  onClick={() => setEditHealth(prev => ({ ...prev, [visit.visitId]: color }))}
+                                  className={`flex items-center gap-2 px-4 py-2 rounded-lg border-2 text-sm font-medium transition-all ${
+                                    editHealth[visit.visitId] === color
+                                      ? color === "green" ? "border-green-500 bg-green-50 text-green-700"
+                                        : color === "amber" ? "border-amber-500 bg-amber-50 text-amber-700"
+                                        : "border-red-500 bg-red-50 text-red-700"
+                                      : "border-slate-200 bg-white text-slate-600 hover:border-slate-300"
+                                  }`}
+                                >
+                                  <span className={`h-3 w-3 rounded-full ${
+                                    color === "green" ? "bg-green-500" : color === "amber" ? "bg-amber-500" : "bg-red-500"
+                                  }`} />
+                                  {color.charAt(0).toUpperCase() + color.slice(1)}
+                                </button>
+                              ))}
+                            </div>
+                          )}
+                        </AVRSection>
+
+                        {/* Save button — only show if either field is still editable */}
+                        {(!card.customerFeedback || !card.accountHealth) && (
+                          <div className="flex justify-end pt-4 border-t border-slate-200">
+                            <Button
+                              onClick={() => handleSavePostCompletion(visit.visitId)}
+                              disabled={savingCard === visit.visitId}
+                              className="flex items-center gap-2"
+                            >
+                              <Send className="h-4 w-4" />
+                              {savingCard === visit.visitId ? "Saving..." : "Save Assessment"}
+                            </Button>
+                          </div>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Expanded but no control card */}
+                    {isExpanded && !card && (
+                      <div className="border-t border-slate-200 p-6 text-center text-slate-500">
+                        No control card was submitted for this visit.
+                      </div>
+                    )}
+                  </Card>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* ============ AVR CONTROL CARD MODAL ============ */}
+      {showControlCard && (
+        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in">
+          <Card className="w-full max-w-4xl max-h-[90vh] overflow-y-auto">
+            <CardHeader className="sticky top-0 bg-white border-b border-slate-200 z-10 flex flex-row items-center justify-between py-4">
+              <div>
+                <CardTitle className="flex items-center gap-2">
+                  <FileText className="h-5 w-5 text-mtc-blue" />
+                  Account Visit Report (AVR) — {controlCardVisit}
+                </CardTitle>
+                <p className="text-xs text-slate-500 mt-1">Complete the control card during or after the customer visit</p>
+              </div>
+              <Button variant="ghost" size="sm" onClick={() => setShowControlCard(false)}>Close</Button>
+            </CardHeader>
+            <CardContent className="space-y-6 pt-6">
+              {/* GPS Verification Banner */}
+              <div className={`rounded-md p-4 flex items-start gap-3 ${geoLocation ? "bg-mtc-blue-50 border border-mtc-blue-100" : geoError ? "bg-red-50 border border-red-200" : "bg-slate-50 border border-slate-200"}`}>
+                 {geoLoading ? (
+                   <div className="h-5 w-5 mt-0.5 rounded-full border-2 border-mtc-blue border-t-transparent animate-spin" />
+                 ) : geoLocation ? (
+                   <CheckCircle className="h-5 w-5 text-mtc-blue mt-0.5" />
+                 ) : (
+                   <Navigation className="h-5 w-5 text-red-500 mt-0.5" />
+                 )}
+                 <div className="flex-1">
+                   <h4 className={`font-semibold ${geoLocation ? "text-mtc-blue-dark" : geoError ? "text-red-700" : "text-slate-700"}`}>
+                     {geoLoading ? "Fetching Location..." : geoLocation ? "Presence Verified" : "Location Unavailable"}
+                   </h4>
+                   <p className={`text-sm ${geoLocation ? "text-mtc-blue" : geoError ? "text-red-600" : "text-slate-500"}`}>
+                     {geoLoading ? "Requesting GPS coordinates..." : geoLocation ? "GPS location confirmed at customer premises. Time tracking started." : geoError}
+                   </p>
+                   <div className="mt-2">
+                     <Input
+                       readOnly
+                       value={geoLoading ? "Fetching coordinates..." : geoError ? geoError : geoAddress}
+                       className={`text-xs font-mono ${geoLocation ? "bg-white/80 text-mtc-blue-dark border-mtc-blue-100" : geoError ? "bg-white/80 text-red-600 border-red-200" : "bg-white text-slate-500 border-slate-200"} cursor-default`}
+                     />
+                   </div>
+                 </div>
+              </div>
+
+              {/* Header Fields */}
+              <div className="bg-slate-50 rounded-lg border border-slate-200 p-4 space-y-3">
+                <h4 className="font-semibold text-slate-800 text-sm uppercase tracking-wide">Visit Details</h4>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="space-y-1">
+                    <Label className="text-xs">Account Name</Label>
+                    <Input value={avrData.accountName} readOnly className="bg-slate-100 text-slate-600 cursor-default" />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs">Visit Date</Label>
+                    <Input value={avrData.visitDate} readOnly className="bg-slate-100 text-slate-600 cursor-default" />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs">CSR / Account Manager</Label>
+                    <Input value={avrData.csrManager} readOnly className="bg-slate-100 text-slate-600 cursor-default" />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs">Customer Participants</Label>
+                    <Input value={avrData.customerParticipants} onChange={(e) => updateAVR("customerParticipants", e.target.value)} placeholder="Names and roles" />
+                  </div>
+                </div>
+              </div>
+
+              {/* Section 1: Visit Objective */}
+              <AVRSection number={1} title="Visit Objective">
+                <textarea
+                  className="flex min-h-[60px] w-full rounded-md border border-slate-300 bg-transparent px-3 py-2 text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-mtc-blue"
+                  placeholder="Describe the purpose and objective of this visit..."
+                  value={avrData.visitObjective}
+                  onChange={(e) => updateAVR("visitObjective", e.target.value)}
+                />
+              </AVRSection>
+
+              {/* Section 2: SLA & Service Performance */}
+              <AVRSection number={2} title="SLA & Service Performance">
+                <div className="grid gap-4 md:grid-cols-3">
+                  <div className="space-y-1">
+                    <Label className="text-xs">SLA Compliance %</Label>
+                    <Input placeholder="e.g. 95%" value={avrData.slaCompliance} onChange={(e) => updateAVR("slaCompliance", e.target.value)} />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs">Open Tickets</Label>
+                    <Input placeholder="e.g. 3" value={avrData.openTickets} onChange={(e) => updateAVR("openTickets", e.target.value)} />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs">Critical Incidents</Label>
+                    <Input placeholder="e.g. 0" value={avrData.criticalIncidents} onChange={(e) => updateAVR("criticalIncidents", e.target.value)} />
+                  </div>
+                </div>
+              </AVRSection>
+
+              {/* Section 3: Customer Feedback — HIDDEN, shown only after completion */}
+              <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50/50 p-4">
+                <div className="flex items-center gap-2 text-slate-400">
+                  <span className="flex items-center justify-center h-6 w-6 rounded-full bg-slate-200 text-xs font-bold text-slate-500">3</span>
+                  <span className="text-sm font-medium">Customer Feedback (Positives / Concerns)</span>
+                  <Badge variant="neutral" className="ml-auto text-xs">Visible after completion</Badge>
+                </div>
+                <p className="text-xs text-slate-400 mt-2 ml-8">This section will be available for review and input after the control card is submitted and the customer rating is captured.</p>
+              </div>
+
+              {/* Section 4: Risks Identified */}
+              <AVRSection number={4} title="Risks Identified">
+                <div className="grid gap-4 md:grid-cols-3">
+                  <div className="space-y-1">
+                    <Label className="text-xs">Operational</Label>
+                    <textarea className="flex min-h-[50px] w-full rounded-md border border-slate-300 bg-transparent px-3 py-2 text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-mtc-blue" placeholder="Equipment, network, SLA risks..." value={avrData.risksOperational} onChange={(e) => updateAVR("risksOperational", e.target.value)} />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs">Commercial</Label>
+                    <textarea className="flex min-h-[50px] w-full rounded-md border border-slate-300 bg-transparent px-3 py-2 text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-mtc-blue" placeholder="Contract, pricing, retention risks..." value={avrData.risksCommercial} onChange={(e) => updateAVR("risksCommercial", e.target.value)} />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs">Competitive</Label>
+                    <textarea className="flex min-h-[50px] w-full rounded-md border border-slate-300 bg-transparent px-3 py-2 text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-mtc-blue" placeholder="Competitor activity, market threats..." value={avrData.risksCompetitive} onChange={(e) => updateAVR("risksCompetitive", e.target.value)} />
+                  </div>
+                </div>
+              </AVRSection>
+
+              {/* Section 5: Opportunities */}
+              <AVRSection number={5} title="Opportunities">
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="space-y-1">
+                    <Label className="text-xs">Upsell / Cross-sell</Label>
+                    <textarea className="flex min-h-[50px] w-full rounded-md border border-slate-300 bg-transparent px-3 py-2 text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-mtc-blue" placeholder="Product upgrade, additional services..." value={avrData.opportunitiesUpsell} onChange={(e) => updateAVR("opportunitiesUpsell", e.target.value)} />
+                  </div>
+                  <div className="space-y-1">
+                    <Label className="text-xs">Process Improvements</Label>
+                    <textarea className="flex min-h-[50px] w-full rounded-md border border-slate-300 bg-transparent px-3 py-2 text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-mtc-blue" placeholder="SOP improvements, monitoring, communication..." value={avrData.opportunitiesProcess} onChange={(e) => updateAVR("opportunitiesProcess", e.target.value)} />
+                  </div>
+                </div>
+              </AVRSection>
+
+              {/* Section 6: Action Items */}
+              <AVRSection number={6} title="Action Items">
+                <div className="space-y-3">
+                  <div className="grid grid-cols-[1fr_1fr_auto_auto] gap-2 text-xs font-medium text-slate-500 uppercase tracking-wide px-1">
+                    <span>Action</span>
+                    <span>Owner</span>
+                    <span>Due Date</span>
+                    <span></span>
+                  </div>
+                  {avrData.actionItems.map((item, idx) => (
+                    <div key={idx} className="grid grid-cols-[1fr_1fr_auto_auto] gap-2 items-center">
+                      <Input placeholder="Action description..." value={item.action} onChange={(e) => updateActionItem(idx, "action", e.target.value)} />
+                      <Input placeholder="Owner name..." value={item.owner} onChange={(e) => updateActionItem(idx, "owner", e.target.value)} />
+                      <Input type="date" className="w-36" value={item.dueDate} onChange={(e) => updateActionItem(idx, "dueDate", e.target.value)} />
+                      <Button variant="ghost" size="sm" onClick={() => removeActionItem(idx)} disabled={avrData.actionItems.length <= 1}>
+                        <Trash2 className="h-4 w-4 text-slate-400" />
+                      </Button>
+                    </div>
+                  ))}
+                  <Button variant="outline" size="sm" onClick={addActionItem} className="flex items-center gap-1">
+                    <Plus className="h-3 w-3" /> Add Action Item
+                  </Button>
+                </div>
+              </AVRSection>
+
+              {/* Section 7: Overall Account Health — HIDDEN, shown only after completion */}
+              <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50/50 p-4">
+                <div className="flex items-center gap-2 text-slate-400">
+                  <span className="flex items-center justify-center h-6 w-6 rounded-full bg-slate-200 text-xs font-bold text-slate-500">7</span>
+                  <span className="text-sm font-medium">Overall Account Health (Green / Amber / Red)</span>
+                  <Badge variant="neutral" className="ml-auto text-xs">Visible after completion</Badge>
+                </div>
+                <p className="text-xs text-slate-400 mt-2 ml-8">The account health assessment will be determined after the full visit report is reviewed and customer feedback is captured.</p>
+              </div>
+
+              {/* Submit */}
+              <div className="flex justify-end gap-2 pt-4 border-t border-slate-200">
+                <Button variant="outline" onClick={() => {
+                  if (controlCardVisitId) saveDraft(controlCardVisitId);
+                  setShowControlCard(false);
+                  toast.info("Draft saved", { description: "You can resume this control card later." });
+                }}>
+                  Save Draft
+                </Button>
+                <Button onClick={handleSubmitControlCard} disabled={submittingControlCard}>
+                  {submittingControlCard ? "Submitting..." : "Submit & Request Rating"}
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+
+      {/* Reschedule Request Modal */}
+      {rescheduleVisit && (
+        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in">
+          <Card className="w-full max-w-md">
+            <CardHeader className="flex flex-row items-center justify-between border-b border-slate-200 py-4">
+              <CardTitle className="text-lg">Request Reschedule — {rescheduleVisit.accountName}</CardTitle>
+              <Button variant="ghost" size="sm" onClick={() => setRescheduleVisit(null)}><X className="h-4 w-4" /></Button>
+            </CardHeader>
+            <CardContent className="pt-6 space-y-5">
+              <div className="bg-amber-50 border border-amber-200 rounded-md p-3 flex items-start gap-3">
+                <AlertTriangle className="h-5 w-5 text-amber-600 mt-0.5 flex-shrink-0" />
+                <p className="text-sm text-slate-700">
+                  This request will be sent to your <strong>Manager/Supervisor</strong> for approval before the reschedule is confirmed.
+                </p>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Original Visit Time</Label>
+                <Input
+                  readOnly
+                  value={rescheduleVisit.visitDate === new Date().toISOString().split("T")[0]
+                    ? `Today, ${rescheduleVisit.startTime}`
+                    : `${rescheduleVisit.visitDate}, ${rescheduleVisit.startTime}`}
+                  className="bg-slate-50 text-slate-600"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label>Reason for Reschedule <span className="text-red-500">*</span></Label>
+                <Select value={rescheduleReason} onChange={(e) => setRescheduleReason(e.target.value)}>
+                  <option value="">Select reason...</option>
+                  <option value="Customer requested reschedule">Customer requested reschedule</option>
+                  <option value="Scheduling conflict">Scheduling conflict</option>
+                  <option value="Executive unavailable">Executive unavailable</option>
+                  <option value="Emergency">Emergency</option>
+                  <option value="Customer unavailable">Customer unavailable</option>
+                  <option value="Other">Other</option>
+                </Select>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Motivation <span className="text-red-500">*</span></Label>
+                <textarea
+                  className="flex min-h-[100px] w-full rounded-md border border-slate-300 bg-transparent px-3 py-2 text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-mtc-blue resize-y"
+                  placeholder="Explain why the customer is requesting the reschedule..."
+                  value={rescheduleMotivation}
+                  onChange={(e) => setRescheduleMotivation(e.target.value)}
+                />
+                <p className="text-xs text-slate-500">A detailed motivation is required for manager approval.</p>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <Label>New Date <span className="text-red-500">*</span></Label>
+                  <Input type="date" value={rescheduleNewDate} onChange={(e) => setRescheduleNewDate(e.target.value)} />
+                </div>
+                <div className="space-y-2">
+                  <Label>New Time <span className="text-red-500">*</span></Label>
+                  <Input type="time" value={rescheduleNewTime} onChange={(e) => setRescheduleNewTime(e.target.value)} />
+                </div>
+              </div>
+
+              <div className="flex gap-3 pt-2 border-t border-slate-200">
+                <Button variant="outline" className="flex-1" onClick={() => setRescheduleVisit(null)}>Cancel</Button>
+                <Button
+                  className="flex-1 bg-blue-600 hover:bg-blue-700 flex items-center justify-center gap-2"
+                  onClick={handleSubmitReschedule}
+                  disabled={rescheduleSubmitting}
+                >
+                  <Send className="h-4 w-4" />
+                  {rescheduleSubmitting ? "Submitting..." : "Submit for Approval"}
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {showViewCard && (
+        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in">
+          <Card className="w-full max-w-lg">
+            <CardHeader className="flex flex-row items-center justify-between border-b border-slate-200 py-4">
+              <CardTitle>Control Card — {showViewCard.corp}</CardTitle>
+              <Button variant="ghost" size="sm" onClick={() => setShowViewCard(null)}>
+                <X className="h-4 w-4" />
+              </Button>
+            </CardHeader>
+            <CardContent className="pt-6 space-y-4">
+              <div className="grid grid-cols-2 gap-4 text-sm">
+                <div>
+                  <span className="text-slate-500 block mb-1">Visit Date</span>
+                  <span className="font-medium text-slate-900">{showViewCard.date}</span>
+                </div>
+                <div>
+                  <span className="text-slate-500 block mb-1">Executive</span>
+                  <span className="font-medium text-slate-900">{showViewCard.exec}</span>
+                </div>
+                <div>
+                  <span className="text-slate-500 block mb-1">Engagement Type</span>
+                  <span className="font-medium text-slate-900">{showViewCard.type}</span>
+                </div>
+                <div>
+                  <span className="text-slate-500 block mb-1">Customer Rating</span>
+                  <div className="flex items-center gap-1">
+                    <span className="font-medium text-slate-900">{showViewCard.rating}/5</span>
+                    <Star className={`h-4 w-4 ${showViewCard.rating >= 4 ? 'fill-blue-400 text-blue-400' : showViewCard.rating <= 2 ? 'fill-red-400 text-red-400' : 'fill-blue-300 text-blue-300'}`} />
+                  </div>
+                </div>
+                <div className="col-span-2">
+                  <span className="text-slate-500 block mb-1">Product Areas</span>
+                  <div className="flex gap-2 flex-wrap">
+                    <Badge variant="default">Fiber Internet</Badge>
+                    <Badge variant="default">Cloud Services</Badge>
+                  </div>
+                </div>
+                <div className="col-span-2">
+                  <span className="text-slate-500 block mb-1">Next Action</span>
+                  <span className="font-medium text-slate-900">Send Proposal — Due Nov 1, 2024</span>
+                </div>
+                {showViewCard.rating <= 2 && (
+                  <div className="col-span-2 p-3 bg-red-50 border border-red-200 rounded-md text-sm text-red-800">
+                    <strong>Low Rating:</strong> Escalation was triggered to Supervisor and Management.
+                  </div>
+                )}
+              </div>
+              <div className="flex justify-end pt-4 border-t border-slate-200">
+                <Button variant="outline" onClick={() => setShowViewCard(null)}>Close</Button>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {activeTab === "history" && (
+        <Card>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Date</TableHead>
+                <TableHead>Corporate</TableHead>
+                <TableHead>Type</TableHead>
+                <TableHead>Executive</TableHead>
+                <TableHead>Rating</TableHead>
+                <TableHead className="text-right">Action</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {historyData.map((row, i) => (
+                <TableRow key={i}>
+                  <TableCell>{row.date}</TableCell>
+                  <TableCell className="font-medium text-slate-900">{row.corp}</TableCell>
+                  <TableCell>{row.type}</TableCell>
+                  <TableCell>{row.exec}</TableCell>
+                  <TableCell>
+                    <div className="flex items-center gap-1 text-blue-500">
+                      <span className="font-semibold text-slate-800 mr-1">{row.rating}</span>
+                      <Star className="h-4 w-4 fill-current" />
+                    </div>
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <Button variant="ghost" size="sm" onClick={() => setShowViewCard(row)}>View Card</Button>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </Card>
+      )}
+    </div>
+  );
+}

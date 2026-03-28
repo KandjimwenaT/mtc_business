@@ -1,0 +1,191 @@
+Design a complete responsive web application called **MTC Business Portal** for corporate customer engagement and SLA‑governed operations. It must include all key user roles: Account Manager, Executive, Admin, Executives Supervisor, Management, GM CRM, and Super Admin.
+
+General Styling Requirements:
+- Professional corporate look (MTC brand: blue, white, dark navy, subtle gradients).
+- Clean dashboards, cards, tabs, tables.
+- Minimal free text fields; use dropdowns, pickers, radio groups, checkboxes.
+- SLA indicators: Green (Healthy), Amber (Warning 50%), Red (At Risk 75%), Black (Breached).
+- Use consistent components: buttons, form fields, dialog modals.
+
+Create the following screens and user flows:
+
+###############
+# AUTH & HOME #
+###############
+1. **Login Screen**
+   - MFA prompt
+   - Forgot password
+   - Role-based landing logic (no need to build backend)
+
+2. **Role-Based Home Dashboards**
+   a) Account Manager dashboard:
+      - Tickets table
+      - Visit confirmations
+      - Ratings received
+      - Engagement history timeline
+
+   b) Executive dashboard:
+      - SLA Performance widget
+      - Upcoming Visits
+      - My Corporates health scoring
+      - Low-rating alerts
+      - Tasks from Control Cards
+
+   c) Supervisor dashboard:
+      - Escalated SLAs list (L1)
+      - Executive performance metrics
+      - Visit/Engagement KPIs
+
+   d) Management dashboard:
+      - Chronic issues dashboard
+      - Team performance
+      - Corporate risk heatmap
+
+   e) GM CRM dashboard:
+      - Final escalations list
+      - Relationship risk index
+      - Repeat complaints
+      - Rating trends
+      - Visit & engagement summary
+
+########################
+# CORPORATES & ACCOUNTS #
+########################
+3. **Corporate Profile Page**
+   - Corporate details (auto-populated)
+   - Accounts under corporate (table)
+   - Assigned Executive
+   - Rating history
+   - Visit/Engagement summary
+   - Issue history
+
+4. **Account Details Page**
+   - Account managers list
+   - Services/Products
+   - Tickets
+   - Complaints
+   - Activity timeline
+
+#############################
+# TICKETING & COMPLAINTS UI #
+#############################
+5. **Create Request Form**
+   - Request types (dropdown): Renewal, Termination, Upgrade, Downgrade, Change Ownership, New Connection, etc.
+   - Prepopulated fields: Corporate, Account, Executive
+   - SLA timer widget
+
+6. **Complaint Form**
+   - Complaint categories (dropdown): Billing, Network, Support, Provisioning, QoS
+   - Severity indicator
+   - SLA timer
+
+7. **Ticket Details Screen**
+   - Triage panel (Executive assigns Admin)
+   - SLA Progress bar + color indicator
+   - Escalation Level (0, L1, L2, L3)
+   - Ticket history timeline
+
+#############################
+# VISIT MANAGEMENT MODULE   #
+#############################
+8. **Create Visit Flow**
+   - Corporate selector
+   - Agenda dropdown
+   - Purpose dropdown
+   - Attendees lookup (auto-fill)
+   - Visit Confirmation Status
+
+9. **Visit Execution Screen**
+   - Presence indicator (auto-switch to “Customer Visit”)
+   - Mandatory Control Card before closing visit
+
+##############################
+# CONTROL CARD (FULL MODULE) #
+##############################
+10. **Control Card Form**
+    - Engagement Type (dropdown)
+    - Product Area (multi-select)
+    - Issues Identified (Yes/No + dropdown)
+    - Root Cause (dropdown)
+    - Opportunities (dropdown)
+    - Next Actions (dropdown + date picker)
+    - Attendees (auto-populated)
+    - Duration (auto-calculated)
+    - Notes (optional text)
+
+11. **Unplanned Engagement Form**
+    - Short version of Control Card (same structured dropdowns)
+
+##############################
+# RATING ENGINE (POST-VISIT) #
+##############################
+12. **Rating Screen**
+    - Star rating selection (1–5)
+    - Reason codes dropdown
+    - Mandatory comment if rating ≤ 2
+    - Auto-escalation indicators:
+      * Rating 2 → Notify Admin + Executive
+      * Rating 1 → Supervisor + Management + GM CRM
+
+#######################################
+# SLA ENGINE VISUAL & ESCALATION FLOWS #
+#######################################
+13. **SLA Monitoring Page**
+    - SLA status cards: Healthy / Warning / At Risk / Breached
+    - Tickets by SLA state
+    - Escalation timeline (Level 0 → L1 → L2 → L3)
+
+14. **Escalation Event Log Page**
+    - Each step displayed with timestamp
+    - Actor responsible at each level
+
+#################################
+# VEHICLE BOOKING MODULE (MVP)  #
+#################################
+15. **Vehicle Booking Screen**
+    - Vehicle list
+    - Availability calendar
+    - Booking form (structured dropdowns)
+    - Booking status list
+
+##########################
+# NOTIFICATIONS MODULE   #
+##########################
+16. **Notification Center**
+    - List of triggered notifications:
+      * Ticket created/updated
+      * SLA warnings
+      * Escalations
+      * Visit reminders
+      * Rating requests
+      * Vehicle bookings
+    - Filtering & search UI
+
+##################################
+# ADMIN + SUPER ADMIN SCREENS    #
+##################################
+17. **Lookup Tables Management**
+    - Dropdown values maintenance screens:
+      * Product Areas
+      * Issue Categories
+      * Opportunities
+      * Root Causes
+      * Visit Agenda templates
+      * Reason codes for ratings
+
+18. **User & Role Management**
+    - Users table
+    - Assign roles
+    - Reset MFA
+    - Activate/Deactivate users
+
+###########################
+# FINAL REQUIREMENTS       #
+###########################
+- Use auto-layout for all components.
+- Provide a reusable component library:
+  Buttons, inputs, dropdowns, cards, tables, states, modals, SLA chips.
+- Make all flows interactive.
+- All screens must visually emphasize: “Structured Data Only — No Free Text.”
+
+Generate the full prototype.
