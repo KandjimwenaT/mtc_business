@@ -11,7 +11,7 @@ import {
   Building2, ChevronRight, Settings, Eye, Trash2, UserCircle,
 } from "lucide-react";
 import {
-  createPerson, getPersonsByType, createPortalAccess, getPortalUsers, revokePortalAccess,
+  createPerson, getPersonsByType, createPortalAccess, getPortalUsers, revokePortalAccess, deletePersonWithoutPortalAccess,
   getExecutives, getCorporatesWithoutContactPersons,
   createAccount, getAccounts, createContract, createService, getAccountServices, getAccountContracts,
   type PersonPayload, type PersonRecord, type PortalUser,
@@ -22,8 +22,9 @@ import {
 import { getMyProfile } from "../api/authApi";
 import type { UserProfile } from "../api/authApi";
 import ProfileEditSection from "../components/profile-edit-section";
+import PortalUserHierarchyModal from "../components/admin/PortalUserHierarchyModal";
 
-type Tab = "profile" | "users" | "roles" | "sla" | "notifications" | "audit" | "settings";
+type Tab = "profile" | "users" | "noPortalUsers" | "roles" | "sla" | "notifications" | "audit" | "settings";
 
 const USER_TYPES = [
   { value: "gm", label: "GM" },
@@ -80,6 +81,15 @@ export default function SuperAdminProfile() {
   const [portalUsers, setPortalUsers] = useState<PortalUser[]>([]);
   const [loadingPortalUsers, setLoadingPortalUsers] = useState(false);
   const [revokingUserId, setRevokingUserId] = useState<number | null>(null);
+  const [noPortalUsers, setNoPortalUsers] = useState<PersonRecord[]>([]);
+  const [loadingNoPortalUsers, setLoadingNoPortalUsers] = useState(false);
+  const [deletingNoPortalId, setDeletingNoPortalId] = useState<number | null>(null);
+
+  // ── User hierarchy modal (from Edit action) ────────────────────
+  const [hierarchyModalUser, setHierarchyModalUser] = useState<PortalUser | null>(null);
+  const [loadingHierarchyModal, setLoadingHierarchyModal] = useState(false);
+  const [adminPersonList, setAdminPersonList] = useState<PersonRecord[]>([]);
+  const [supervisorPersonList, setSupervisorPersonList] = useState<PersonRecord[]>([]);
 
   // ── Customer Accounts state ─────────────────────────────────────
   const [accounts, setAccounts] = useState<AccountRecord[]>([]);
@@ -120,6 +130,7 @@ export default function SuperAdminProfile() {
   const tabs: { key: Tab; label: string; icon: React.ReactNode }[] = [
     { key: "profile", label: "Super Admin Profile", icon: <User className="h-4 w-4" /> },
     { key: "users", label: "User Management", icon: <Users className="h-4 w-4" /> },
+    { key: "noPortalUsers", label: "Users Without Portal Access", icon: <Lock className="h-4 w-4" /> },
     { key: "settings", label: "Profile", icon: <UserCircle className="h-4 w-4" /> },
     // { key: "roles", label: "Role Management", icon: <Lock className="h-4 w-4" /> },
     // { key: "sla", label: "Global SLA Settings", icon: <Clock className="h-4 w-4" /> },
@@ -158,8 +169,25 @@ export default function SuperAdminProfile() {
     }
   }, []);
 
+  const fetchNoPortalUsers = useCallback(async () => {
+    setLoadingNoPortalUsers(true);
+    try {
+      const [persons, customers] = await Promise.all([
+        getPersonsByType(),
+        getPersonsByType("customer"),
+      ]);
+      const merged = [...persons, ...customers].filter((p) => !p.hasPortalAccess);
+      setNoPortalUsers(merged);
+    } catch (err: unknown) {
+      toast.error("Failed to load users", { description: err instanceof Error ? err.message : undefined });
+    } finally {
+      setLoadingNoPortalUsers(false);
+    }
+  }, []);
+
   useEffect(() => {
     if (activeTab === "users") fetchPortalUsers();
+    if (activeTab === "noPortalUsers") fetchNoPortalUsers();
     if (activeTab === "profile") {
       setLoadingHierarchy(true);
       Promise.all([getPersonsByType("gm"), getPersonsByType("manager"), getPersonsByType("executive_staff")])
@@ -167,7 +195,7 @@ export default function SuperAdminProfile() {
         .catch(() => {})
         .finally(() => setLoadingHierarchy(false));
     }
-  }, [activeTab, fetchPortalUsers, fetchAccounts]);
+  }, [activeTab, fetchPortalUsers, fetchAccounts, fetchNoPortalUsers]);
 
   // ── Fetch persons by type for portal access ─────────────────────
   useEffect(() => {
@@ -265,6 +293,30 @@ export default function SuperAdminProfile() {
     }
   };
 
+  const openUserHierarchyModal = async (user: PortalUser) => {
+    setLoadingHierarchyModal(true);
+    try {
+      const [gms, managers, supervisors, executives, admins] = await Promise.all([
+        getPersonsByType("gm"),
+        getPersonsByType("manager"),
+        getPersonsByType("supervisor"),
+        getPersonsByType("executive_staff"),
+        getPersonsByType("admin"),
+      ]);
+
+      setGmList(gms);
+      setManagerList(managers);
+      setSupervisorPersonList(supervisors);
+      setExecutivePersonList(executives);
+      setAdminPersonList(admins);
+    } catch {
+      // Keep existing lists if the fetch fails.
+    } finally {
+      setHierarchyModalUser(user);
+      setLoadingHierarchyModal(false);
+    }
+  };
+
   const handleGrantPortalAccess = async () => {
     if (!selectedPerson) return;
     setGrantingAccess(true);
@@ -279,6 +331,20 @@ export default function SuperAdminProfile() {
       toast.error("Failed to grant portal access", { description: err instanceof Error ? err.message : undefined });
     } finally {
       setGrantingAccess(false);
+    }
+  };
+
+  const handleDeleteNoPortalUser = async (person: PersonRecord) => {
+    if (!window.confirm(`Delete ${person.firstName} ${person.lastName}? This cannot be undone.`)) return;
+    setDeletingNoPortalId(person.id);
+    try {
+      await deletePersonWithoutPortalAccess(person.id, person.type);
+      toast.success("User deleted successfully");
+      await fetchNoPortalUsers();
+    } catch (err: unknown) {
+      toast.error("Failed to delete user", { description: err instanceof Error ? err.message : undefined });
+    } finally {
+      setDeletingNoPortalId(null);
     }
   };
 
@@ -772,7 +838,15 @@ export default function SuperAdminProfile() {
                     <TableCell className="text-sm text-slate-500">{u.created_at ? new Date(u.created_at).toLocaleDateString() : "—"}</TableCell>
                     <TableCell className="text-right">
                       <div className="flex gap-1 justify-end">
-                        <Button variant="ghost" size="sm"><Edit className="h-4 w-4" /></Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => openUserHierarchyModal(u)}
+                          disabled={loadingHierarchyModal}
+                          title="View user hierarchy"
+                        >
+                          <Edit className="h-4 w-4" />
+                        </Button>
                         <Button
                           variant="ghost" size="sm"
                           className="text-red-500 hover:text-red-700 hover:bg-red-50"
@@ -788,7 +862,80 @@ export default function SuperAdminProfile() {
               </TableBody>
             </Table>
           </Card>
+
+          {hierarchyModalUser && (
+            <PortalUserHierarchyModal
+              user={hierarchyModalUser}
+              onClose={() => setHierarchyModalUser(null)}
+              loading={loadingHierarchyModal}
+              gmPersons={gmList}
+              managerPersons={managerList}
+              supervisorPersons={supervisorPersonList}
+              executivePersons={executivePersonList}
+              adminPersons={adminPersonList}
+            />
+          )}
         </div>
+      )}
+
+      {activeTab === "noPortalUsers" && (
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between">
+            <CardTitle className="text-base flex items-center gap-2">
+              <Lock className="h-5 w-5 text-mtc-blue" />
+              Users Created Without Portal Access
+            </CardTitle>
+            <Button size="sm" variant="outline" onClick={fetchNoPortalUsers} disabled={loadingNoPortalUsers}>
+              <RefreshCw className={`h-4 w-4 mr-1 ${loadingNoPortalUsers ? "animate-spin" : ""}`} /> Refresh
+            </Button>
+          </CardHeader>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>ID</TableHead>
+                <TableHead>Name</TableHead>
+                <TableHead>Email</TableHead>
+                <TableHead>Type</TableHead>
+                <TableHead>Created</TableHead>
+                <TableHead className="text-right">Action</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {loadingNoPortalUsers ? (
+                <TableRow>
+                  <td colSpan={6} className="text-center py-8 text-slate-500 px-4">
+                    <Loader2 className="h-5 w-5 animate-spin inline mr-2" />Loading...
+                  </td>
+                </TableRow>
+              ) : noPortalUsers.length === 0 ? (
+                <TableRow>
+                  <td colSpan={6} className="text-center py-8 text-slate-400 px-4">No users without portal access found</td>
+                </TableRow>
+              ) : (
+                noPortalUsers.map((person) => (
+                  <TableRow key={`${person.type}-${person.id}`}>
+                    <TableCell className="font-mono text-xs text-mtc-blue">{person.id}</TableCell>
+                    <TableCell className="font-medium text-slate-900">{person.firstName} {person.lastName}</TableCell>
+                    <TableCell className="text-sm">{person.email}</TableCell>
+                    <TableCell><Badge variant="neutral">{ROLE_LABELS[person.type] || person.type}</Badge></TableCell>
+                    <TableCell className="text-sm text-slate-500">{person.created_at ? new Date(person.created_at).toLocaleDateString() : "—"}</TableCell>
+                    <TableCell className="text-right">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        className="text-red-500 hover:text-red-700 hover:bg-red-50"
+                        onClick={() => handleDeleteNoPortalUser(person)}
+                        disabled={deletingNoPortalId === person.id}
+                      >
+                        {deletingNoPortalId === person.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
+        </Card>
       )}
 
 

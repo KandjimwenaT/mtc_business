@@ -19,6 +19,7 @@ import {
 } from "./ui-components";
 import { Plus, Calendar, MapPin, CheckCircle, Search, Star, MessageSquare, X } from "lucide-react";
 import { getCurrentUser } from "../api/authApi";
+import { isManagerRole } from "../utils/roleCapabilities";
 
 interface VisitHistoryItem {
   date: string;
@@ -39,6 +40,7 @@ export default function Visits() {
   const [controlCardVisit, setControlCardVisit] = useState("");
 
   const currentUser = getCurrentUser();
+  const hasManagerScope = isManagerRole(currentUser?.role);
   const [rescheduleRequests, setRescheduleRequests] = useState<{
     id: number;
     executive: string;
@@ -173,7 +175,7 @@ export default function Visits() {
       )}
 
       {/* Manager: Pending Reschedule Requests */}
-      {currentUser?.role === "manager" && (
+      {hasManagerScope && (
         <Card className="border-amber-200 bg-amber-50/30">
           <CardHeader>
             <CardTitle className="text-base flex items-center gap-2">

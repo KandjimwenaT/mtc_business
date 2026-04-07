@@ -200,6 +200,15 @@ export default function ExecutiveVisits() {
   );
 
   const completedVisits = visits.filter(v => v.status === "completed");
+  const isOverdueVisit = (visit: VisitRecord) => {
+    const visitStart = new Date(`${visit.visitDate}T${visit.startTime}`);
+    const now = new Date();
+    return visitStart < now && ["pending", "approved", "confirmed", "rescheduled"].includes(visit.status);
+  };
+  const previousVisits = visits
+    .filter(v => new Date(`${v.visitDate}T${v.startTime}`) < new Date())
+    .sort((a, b) => new Date(`${b.visitDate}T${b.startTime}`).getTime() - new Date(`${a.visitDate}T${a.startTime}`).getTime());
+  const overdueVisits = previousVisits.filter(isOverdueVisit);
 
   // Fetch control cards for completed visits
   const fetchControlCards = async (completed: VisitRecord[]) => {
@@ -222,6 +231,30 @@ export default function ExecutiveVisits() {
       fetchControlCards(completedVisits);
     }
   }, [activeTab, visits]);
+
+  useEffect(() => {
+    const now = new Date();
+    visits.forEach((visit) => {
+      const start = new Date(`${visit.visitDate}T${visit.startTime}`);
+      const hoursToStart = (start.getTime() - now.getTime()) / (1000 * 60 * 60);
+      const reminderKey = `visit_reminder_seen_${visit.visitId}_${visit.visitDate}`;
+      const overdueKey = `visit_overdue_seen_${visit.visitId}_${visit.visitDate}`;
+
+      if (hoursToStart > 0 && hoursToStart <= 24 && !localStorage.getItem(reminderKey)) {
+        toast.info("Upcoming visit reminder", {
+          description: `${visit.accountName} visit is scheduled on ${visit.visitDate} at ${visit.startTime}.`,
+        });
+        localStorage.setItem(reminderKey, "1");
+      }
+
+      if (isOverdueVisit(visit) && !localStorage.getItem(overdueKey)) {
+        toast.warning("Overdue visit", {
+          description: `${visit.accountName} visit was not started and is now overdue.`,
+        });
+        localStorage.setItem(overdueKey, "1");
+      }
+    });
+  }, [visits]);
 
   const historyData: VisitHistoryItem[] = [
     { date: "Oct 23, 2024", corp: "Namibia Breweries", type: "Scheduled Review", exec: "Jane Smith", rating: 5 },
@@ -853,6 +886,12 @@ export default function ExecutiveVisits() {
           Completed Visits
         </button>
         <button
+          onClick={() => setActiveTab("previous")}
+          className={`py-3 px-6 text-sm font-medium border-b-2 transition-colors ${activeTab === "previous" ? "border-mtc-blue text-mtc-blue" : "border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300"}`}
+        >
+          Previous Visits
+        </button>
+        <button
           onClick={() => setActiveTab("history")}
           className={`py-3 px-6 text-sm font-medium border-b-2 transition-colors ${activeTab === "history" ? "border-mtc-blue text-mtc-blue" : "border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300"}`}
         >
@@ -943,6 +982,59 @@ export default function ExecutiveVisits() {
                 </div>
               )}
             </div>
+          )}
+        </div>
+      )}
+
+      {activeTab === "previous" && (
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <h3 className="text-lg font-medium">Previous Visits ({previousVisits.length})</h3>
+            {overdueVisits.length > 0 && (
+              <Badge variant="danger">{overdueVisits.length} Overdue</Badge>
+            )}
+          </div>
+          {previousVisits.length === 0 ? (
+            <div className="py-12 text-center text-slate-500">No previous visits yet.</div>
+          ) : (
+            <Card>
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Corporate</TableHead>
+                    <TableHead>Date</TableHead>
+                    <TableHead>Time</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead>Meeting Type</TableHead>
+                    <TableHead>Reminder</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {previousVisits.map((visit) => (
+                    <TableRow key={visit.visitId}>
+                      <TableCell className="font-medium text-slate-900">{visit.accountName}</TableCell>
+                      <TableCell>{visit.visitDate}</TableCell>
+                      <TableCell>{visit.startTime} - {visit.endTime}</TableCell>
+                      <TableCell>
+                        {isOverdueVisit(visit) ? (
+                          <Badge variant="danger">Overdue</Badge>
+                        ) : (
+                          <Badge variant={getStatusBadgeVariant(visit.status)}>
+                            {statusConfig[visit.status]?.label ?? visit.status}
+                          </Badge>
+                        )}
+                      </TableCell>
+                      <TableCell className="capitalize">{visit.meetingType.replace("_", " ")}</TableCell>
+                      <TableCell className="text-xs text-slate-500">
+                        {isOverdueVisit(visit)
+                          ? "Escalate / notify customer"
+                          : "Completed or closed"}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </Card>
           )}
         </div>
       )}

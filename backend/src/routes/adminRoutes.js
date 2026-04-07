@@ -7,12 +7,14 @@ const adminController = require("../controller/adminController");
 // Person management (database records)
 router.post("/persons", adminController.createPerson);
 router.get("/persons", adminController.getPersonsByType);
+router.delete("/persons/:personId", adminController.deletePersonWithoutPortalAccess);
 
 // Hierarchy dropdowns
 router.get("/gms", adminController.getGMs);
 router.get("/managers", adminController.getManagers);
 router.get("/executives", adminController.getExecutives);
 router.put("/executives/:executivePersonId/promote-supervisor", adminController.promoteExecutiveToSupervisor);
+router.put("/executives/:supervisorPersonId/demote-executive", adminController.demoteSupervisorToExecutive);
 
 // Portal access management
 router.post("/portal-access", adminController.createPortalAccess);

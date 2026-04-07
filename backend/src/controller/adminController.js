@@ -11,6 +11,18 @@ const AccountManager = require("../models/AccountManager");
 const Account = require("../models/Account");
 const Contract = require("../models/Contract");
 const Service = require("../models/Service");
+const { createForUserIds } = require("../services/notificationService");
+
+async function resolveExecutiveUserIdByExecutiveProfileId(executiveProfileId) {
+  if (!executiveProfileId) return null;
+  const executive = await ExecutiveStaff.findByPk(executiveProfileId);
+  if (!executive) return null;
+  if (executive.userId) return executive.userId;
+  const user = await User.findOne({
+    where: { role: "executive_staff", email: executive.email },
+  });
+  return user ? user.id : null;
+}
 
 // ── Create Person (database record, no portal access) ───────────
 exports.createPerson = async (req, res) => {
@@ -223,6 +235,50 @@ exports.getPersonsByType = async (req, res) => {
     return res
       .status(500)
       .json({ status: "Failed", message: "Internal server error" });
+  }
+};
+
+// ── Delete person/contact without portal access ───────────────────
+exports.deletePersonWithoutPortalAccess = async (req, res) => {
+  const { personId } = req.params;
+  const personType = req.query.type;
+
+  if (!personId) {
+    return res.status(400).json({ status: "Failed", message: "Person ID is required" });
+  }
+
+  try {
+    if (personType === "customer") {
+      const accountManager = await AccountManager.findByPk(personId);
+      if (!accountManager) {
+        return res.status(404).json({ status: "Failed", message: "Account Manager not found" });
+      }
+      if (accountManager.hasPortalAccess) {
+        return res.status(400).json({ status: "Failed", message: "Cannot delete a user who has portal access" });
+      }
+
+      await accountManager.destroy();
+      return res.status(200).json({ status: "Success", message: "User deleted successfully" });
+    }
+
+    const person = await Person.findByPk(personId);
+    if (!person) {
+      return res.status(404).json({ status: "Failed", message: "Person not found" });
+    }
+    if (person.hasPortalAccess) {
+      return res.status(400).json({ status: "Failed", message: "Cannot delete a user who has portal access" });
+    }
+
+    // Clean up any unlinked profile records created earlier without access.
+    await GM.destroy({ where: { email: person.email, userId: null } });
+    await Manager.destroy({ where: { email: person.email, userId: null } });
+    await ExecutiveStaff.destroy({ where: { email: person.email, userId: null } });
+    await person.destroy();
+
+    return res.status(200).json({ status: "Success", message: "User deleted successfully" });
+  } catch (error) {
+    console.error("Delete person error:", error);
+    return res.status(500).json({ status: "Failed", message: "Internal server error" });
   }
 };
 
@@ -622,6 +678,18 @@ exports.promoteExecutiveToSupervisor = async (req, res) => {
       await supervisorManagerProfile.update({ userId: user.id });
     }
 
+    await createForUserIds([user.id, req.user.id], {
+      type: "role",
+      title: "Role Upgrade Applied",
+      message: `${executivePerson.firstName} ${executivePerson.lastName} has been promoted to Supervisor.`,
+      priority: "normal",
+      metadata: {
+        personId: executivePerson.id,
+        email: executivePerson.email,
+        role: "supervisor",
+      },
+    });
+
     return res.status(200).json({
       status: "Success",
       message: "Executive promoted to supervisor successfully",
@@ -634,6 +702,87 @@ exports.promoteExecutiveToSupervisor = async (req, res) => {
     });
   } catch (error) {
     console.error("Promote executive error:", error);
+    return res.status(500).json({ status: "Failed", message: "Internal server error" });
+  }
+};
+
+// ── Demote Supervisor back to Executive (manager scope) ───────────
+exports.demoteSupervisorToExecutive = async (req, res) => {
+  const { supervisorPersonId } = req.params;
+
+  if (!supervisorPersonId) {
+    return res.status(400).json({ status: "Failed", message: "Supervisor person ID is required" });
+  }
+  if (!["manager", "supervisor"].includes(req.user?.role)) {
+    return res.status(403).json({ status: "Failed", message: "Only managers can demote supervisors" });
+  }
+
+  try {
+    const managerProfile = await Manager.findOne({ where: { userId: req.user.id } });
+    if (!managerProfile) {
+      return res.status(404).json({ status: "Failed", message: "Manager profile not found" });
+    }
+    const managerPerson = await Person.findOne({ where: { email: managerProfile.email } });
+    const managerPersonId = managerPerson ? managerPerson.id : null;
+
+    const supervisorPerson = await Person.findByPk(supervisorPersonId);
+    if (!supervisorPerson || supervisorPerson.type !== "supervisor") {
+      return res.status(404).json({ status: "Failed", message: "Supervisor person not found" });
+    }
+
+    const belongsToManager =
+      supervisorPerson.managerId === managerProfile.managerId ||
+      (managerPersonId !== null && supervisorPerson.managerId === managerPersonId);
+    if (!belongsToManager) {
+      return res.status(403).json({ status: "Failed", message: "You can only demote supervisors under your team" });
+    }
+
+    const user = await User.findOne({ where: { email: supervisorPerson.email } });
+    if (!user) {
+      return res.status(400).json({ status: "Failed", message: "Supervisor has no portal user to demote" });
+    }
+
+    await user.update({ role: "executive_staff" });
+    await supervisorPerson.update({ type: "executive_staff" });
+
+    // Keep manager profile data for historical/audit continuity, but detach portal login.
+    await Manager.update({ userId: null }, { where: { email: supervisorPerson.email, userId: user.id } });
+
+    let executiveProfile = await ExecutiveStaff.findOne({ where: { email: supervisorPerson.email } });
+    if (!executiveProfile) {
+      executiveProfile = await ExecutiveStaff.create({
+        userId: user.id,
+        managerId: managerProfile.managerId,
+        firstName: supervisorPerson.firstName,
+        lastName: supervisorPerson.lastName,
+        email: supervisorPerson.email,
+        phone: supervisorPerson.phone || null,
+        region: supervisorPerson.region || null,
+      });
+    } else if (!executiveProfile.userId) {
+      await executiveProfile.update({ userId: user.id, managerId: managerProfile.managerId });
+    }
+
+    await createForUserIds([user.id, req.user.id], {
+      type: "role",
+      title: "Role Downgrade Applied",
+      message: `${supervisorPerson.firstName} ${supervisorPerson.lastName} has been moved back to Executive Staff.`,
+      priority: "normal",
+      metadata: {
+        personId: supervisorPerson.id,
+        email: supervisorPerson.email,
+        role: "executive_staff",
+      },
+    });
+
+    return res.status(200).json({
+      status: "Success",
+      message: "Supervisor demoted to executive successfully",
+      person: supervisorPerson,
+      user: { id: user.id, email: user.email, role: user.role },
+    });
+  } catch (error) {
+    console.error("Demote supervisor error:", error);
     return res.status(500).json({ status: "Failed", message: "Internal server error" });
   }
 };
@@ -818,7 +967,7 @@ exports.approveCorporate = async (req, res) => {
 
     // Verify executive exists in the Person table
     const executive = await Person.findByPk(executiveId);
-    if (!executive || executive.type !== "executive_staff") {
+    if (!executive || !["executive_staff", "supervisor"].includes(executive.type)) {
       return res.status(404).json({ status: "Failed", message: "Executive not found" });
     }
 
@@ -899,7 +1048,7 @@ exports.reassignCorporateExecutive = async (req, res) => {
     }
 
     const executivePerson = await Person.findByPk(executiveId);
-    if (!executivePerson || executivePerson.type !== "executive_staff") {
+    if (!executivePerson || !["executive_staff", "supervisor"].includes(executivePerson.type)) {
       return res.status(404).json({ status: "Failed", message: "Executive not found" });
     }
 
@@ -919,6 +1068,8 @@ exports.reassignCorporateExecutive = async (req, res) => {
       });
     }
 
+    const previousExecutiveProfileId = corporate.executiveId || null;
+
     // Corporate-level assignment
     await corporate.update({ executiveId: execStaff.executiveId });
 
@@ -927,6 +1078,37 @@ exports.reassignCorporateExecutive = async (req, res) => {
       { executiveId: execStaff.executiveId },
       { where: { corporateId: corporate.corporateId } }
     );
+
+    const previousExecutiveUserId = await resolveExecutiveUserIdByExecutiveProfileId(previousExecutiveProfileId);
+    const newExecutiveUserId = await resolveExecutiveUserIdByExecutiveProfileId(execStaff.executiveId);
+
+    if (previousExecutiveUserId && previousExecutiveProfileId !== execStaff.executiveId) {
+      await createForUserIds([previousExecutiveUserId], {
+        type: "assignment",
+        title: `Account Reassigned - ${corporate.corporateName}`,
+        message: `${corporate.corporateName} has been reassigned to another executive and is no longer under your portfolio.`,
+        priority: "normal",
+        metadata: {
+          corporateId: corporate.corporateId,
+          corporateName: corporate.corporateName,
+          kind: "executive_reassigned_from",
+        },
+      });
+    }
+
+    if (newExecutiveUserId) {
+      await createForUserIds([newExecutiveUserId], {
+        type: "assignment",
+        title: `New Account Assignment - ${corporate.corporateName}`,
+        message: `You are now assigned to manage ${corporate.corporateName}.`,
+        priority: "normal",
+        metadata: {
+          corporateId: corporate.corporateId,
+          corporateName: corporate.corporateName,
+          kind: "executive_reassigned_to",
+        },
+      });
+    }
 
     return res.status(200).json({
       status: "Success",
@@ -1219,7 +1401,7 @@ exports.approveAccount = async (req, res) => {
 
     // Verify executive exists in the Person table
     const executive = await Person.findByPk(executiveId);
-    if (!executive || executive.type !== "executive_staff") {
+    if (!executive || !["executive_staff", "supervisor"].includes(executive.type)) {
       return res.status(404).json({ status: "Failed", message: "Executive not found" });
     }
 

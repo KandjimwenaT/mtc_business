@@ -1,9 +1,13 @@
-import { useEffect, useState } from "react";
-import { Link } from "react-router";
+import { useCallback, useEffect, useState } from "react";
+import { Link, useOutletContext } from "react-router";
 import { Badge, Button, Card, CardContent, Input, Label, Select, Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./ui-components";
 import { Clock, Filter, Loader2, Search, X } from "lucide-react";
-import { getAllTickets, type TicketRecord } from "../api/ticketApi";
+import { getAllTickets, getAssignedTickets, type TicketRecord } from "../api/ticketApi";
+import { getCurrentUser } from "../api/authApi";
 import { format } from "date-fns";
+import { isSupervisorRole } from "../utils/roleCapabilities";
+import type { StaffLayoutOutletContext } from "../layoutOutletContext";
+import { defaultSupervisorBadges } from "../hooks/useSupervisorHybridBadges";
 
 const STATUS_CONFIG: Record<string, { label: string; className: string }> = {
   new: { label: "New", className: "bg-blue-100 text-blue-800" },
@@ -43,6 +47,11 @@ function getSlaInfo(ticket: TicketRecord): { status: "success" | "warning" | "da
 }
 
 export default function Tickets() {
+  const outletCtx = useOutletContext<StaffLayoutOutletContext | undefined>();
+  const supervisorBadges = outletCtx?.supervisorBadges ?? defaultSupervisorBadges();
+  const currentUser = getCurrentUser();
+  const isSupervisor = isSupervisorRole(currentUser?.role);
+  const [supervisorView, setSupervisorView] = useState<"executive" | "manager">("executive");
   const [tickets, setTickets] = useState<TicketRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -51,21 +60,25 @@ export default function Tickets() {
   const [statusFilter, setStatusFilter] = useState("all");
   const [categoryFilter, setCategoryFilter] = useState("all");
 
-  const fetchTickets = async () => {
+  const refreshBadges = supervisorBadges.refresh;
+  const fetchTickets = useCallback(async () => {
     try {
       setLoading(true);
-      const data = await getAllTickets();
+      const data = isSupervisor && supervisorView === "executive"
+        ? await getAssignedTickets()
+        : await getAllTickets();
       setTickets(data);
     } catch (err: any) {
       setError(err.message || "Failed to load tickets");
     } finally {
       setLoading(false);
+      if (isSupervisor) void refreshBadges();
     }
-  };
+  }, [isSupervisor, supervisorView, refreshBadges]);
 
   useEffect(() => {
-    fetchTickets();
-  }, []);
+    void fetchTickets();
+  }, [fetchTickets]);
 
   const filteredTickets = tickets.filter((ticket) => {
     const q = searchQuery.toLowerCase();
@@ -99,7 +112,11 @@ export default function Tickets() {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-2xl font-bold tracking-tight text-slate-900">Tickets & Complaints</h2>
-          <p className="text-sm text-slate-500">Customer tickets linked to your assigned executives</p>
+          <p className="text-sm text-slate-500">
+            {isSupervisor && supervisorView === "executive"
+              ? "My assigned executive tickets"
+              : "Customer tickets linked to your assigned executives"}
+          </p>
         </div>
         <Button
           variant={showFilterPanel ? "default" : "outline"}
@@ -109,6 +126,30 @@ export default function Tickets() {
           <Filter className="h-4 w-4" /> Filter
         </Button>
       </div>
+      {isSupervisor && (
+        <div className="flex items-center gap-2">
+          <Button
+            variant={supervisorView === "executive" ? "default" : "outline"}
+            onClick={() => setSupervisorView("executive")}
+            className="inline-flex items-center gap-2"
+          >
+            My Executive Work
+            {supervisorBadges.executiveSideDot && supervisorView === "executive" && (
+              <span className="h-2 w-2 shrink-0 rounded-full bg-red-500" title="Your executive queue needs attention" />
+            )}
+          </Button>
+          <Button
+            variant={supervisorView === "manager" ? "default" : "outline"}
+            onClick={() => setSupervisorView("manager")}
+            className="inline-flex items-center gap-2"
+          >
+            Manager Oversight
+            {supervisorBadges.managerSideDot && supervisorView === "manager" && (
+              <span className="h-2 w-2 shrink-0 rounded-full bg-red-500" title="Team oversight queue needs attention" />
+            )}
+          </Button>
+        </div>
+      )}
 
       <div className="grid gap-4 md:grid-cols-3">
         <Card>

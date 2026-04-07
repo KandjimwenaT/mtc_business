@@ -6,7 +6,7 @@ import { Label } from "../ui/label";
 import { Badge } from "../ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table";
-import { Search, Plus, Filter, Clock, X, Loader2, Send, CheckCircle2, AlertCircle, FileText } from "lucide-react";
+import { Search, Plus, Filter, Clock, X, Loader2, Send, AlertCircle, Zap, AlertTriangle } from "lucide-react";
 import { createTicket, getMyTickets, type TicketRecord } from "../../api/ticketApi";
 import { format } from "date-fns";
 
@@ -53,15 +53,29 @@ const REQUEST_PRIORITY_MAP: Record<string, "low" | "medium" | "high"> = {
   other: "medium",
 };
 
-const COMPLAINT_PRIORITY_MAP: Record<string, "low" | "medium" | "high"> = {
+const COMPLAINT_PRIORITY_MAP: Record<string, "low" | "medium" | "high" | "critical"> = {
   billing: "medium",
-  service: "medium",
-  network: "high",
-  support: "medium",
+  service: "critical",
+  network: "critical",
+  support: "low",
   technical: "high",
-  provisioning: "medium",
+  provisioning: "high",
   qos: "high",
   other: "medium",
+};
+
+const PRIORITY_LABELS: Record<string, string> = {
+  critical: "Critical - Immediate / Same-day",
+  high: "High - 24 Hours",
+  medium: "Medium - 7 Business Days",
+  low: "Low - 10+ Business Days",
+};
+
+const PRIORITY_SLA_TEXT: Record<string, string> = {
+  critical: "Same Day",
+  high: "24 Hours",
+  medium: "7 Business Days",
+  low: "10+ Business Days",
 };
 
 const STATUS_CONFIG: Record<string, { label: string; className: string }> = {
@@ -84,7 +98,6 @@ export default function CustomerTickets() {
   // Form state
   const [category, setCategory] = useState<"request" | "complaint">("request");
   const [type, setType] = useState("");
-  const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
@@ -117,7 +130,7 @@ export default function CustomerTickets() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!type || !title) {
+    if (!type || !description.trim()) {
       alert("Please fill in all required fields");
       return;
     }
@@ -127,12 +140,12 @@ export default function CustomerTickets() {
       await createTicket({
         category,
         type,
-        title,
+        priority: autoPriority,
+        title: description.trim().slice(0, 80),
         description,
       });
       setShowCreate(false);
       setType("");
-      setTitle("");
       setDescription("");
       await fetchTickets();
     } catch (err: any) {
@@ -327,37 +340,125 @@ export default function CustomerTickets() {
                 </div>
 
                 <div className="space-y-2">
-                  <Label>Priority (Auto-assigned)</Label>
-                  <Input value={type ? autoPriority.toUpperCase() : "Select a type first"} readOnly />
+                  <Label>{category === "complaint" ? "Auto-Assigned Criticality" : "Priority (Auto-assigned)"}</Label>
+                  <Input
+                    value={type ? (PRIORITY_LABELS[autoPriority] || autoPriority.toUpperCase()) : "Select a type first"}
+                    readOnly
+                  />
+                  {category === "complaint" && type && (
+                    <p className="text-xs text-slate-500">
+                      Criticality is assigned automatically from complaint category and can be updated by the support team after submission.
+                    </p>
+                  )}
                 </div>
 
-                <div className="space-y-2 md:col-span-2 lg:col-span-1">
-                  <Label>Title <span className="text-red-500">*</span></Label>
-                  <Input
-                    value={title}
-                    onChange={(e) => setTitle(e.target.value)}
-                    placeholder="Brief description of the issue..."
-                  />
-                </div>
+                {category === "request" && type && (
+                  <div className="md:col-span-2 lg:col-span-3">
+                    <div className="bg-blue-50 border border-blue-200 rounded-md p-3 flex items-start gap-2">
+                      <AlertCircle className="h-5 w-5 text-blue-600 mt-0.5 shrink-0" />
+                      <div className="text-sm text-blue-800">
+                        <strong>Account Request SLA:</strong> Follow standard SLA timelines set by Management.
+                        {" "}Normal processing time applies based on request complexity.
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {category === "complaint" && type && (
+                  <div className="md:col-span-2 lg:col-span-3 rounded-md p-4 bg-amber-50 border border-amber-300 flex items-start gap-3">
+                    <Clock className="h-5 w-5 text-amber-600 mt-0.5 shrink-0" />
+                    <div>
+                      <h4 className="font-semibold text-amber-800">Complaint SLA Requirements</h4>
+                      <ul className="text-sm text-amber-700 mt-2 space-y-1 list-disc list-inside">
+                        <li><strong>24-Hour Feedback:</strong> Executive must provide an update within the first 24 hours.</li>
+                        <li><strong>7-Day Closure:</strong> Complaint should be closed in 7 days or escalated.</li>
+                        <li><strong>Customer Notification:</strong> Customer receives updates at each milestone.</li>
+                      </ul>
+                    </div>
+                  </div>
+                )}
+
+                {category === "complaint" && type && (
+                  <div
+                    className={`md:col-span-2 lg:col-span-3 rounded-md p-4 flex items-start gap-3 animate-in slide-in-from-top-2 ${
+                      autoPriority === "critical"
+                        ? "bg-red-50 border border-red-300"
+                        : autoPriority === "high"
+                        ? "bg-orange-50 border border-orange-300"
+                        : autoPriority === "medium"
+                        ? "bg-yellow-50 border border-yellow-300"
+                        : "bg-green-50 border border-green-300"
+                    }`}
+                  >
+                    {autoPriority === "critical" ? (
+                      <Zap className="h-5 w-5 text-red-600 mt-0.5 shrink-0" />
+                    ) : autoPriority === "high" ? (
+                      <AlertTriangle className="h-5 w-5 text-orange-600 mt-0.5 shrink-0" />
+                    ) : (
+                      <AlertCircle className="h-5 w-5 text-slate-600 mt-0.5 shrink-0" />
+                    )}
+                    <div>
+                      {autoPriority === "critical" && (
+                        <>
+                          <h4 className="font-semibold text-red-800">Critical Issue — Immediate Escalation to GM CRM</h4>
+                          <p className="text-sm text-red-700 mt-1">
+                            This complaint is escalated directly to the General Manager for same-day resolution and stakeholder notification.
+                          </p>
+                        </>
+                      )}
+                      {autoPriority === "high" && (
+                        <>
+                          <h4 className="font-semibold text-orange-800">High Priority — Supervisor Attention Required</h4>
+                          <p className="text-sm text-orange-700 mt-1">
+                            This complaint needs immediate supervisor action with a 24-hour target SLA.
+                          </p>
+                        </>
+                      )}
+                      {autoPriority === "medium" && (
+                        <>
+                          <h4 className="font-semibold text-yellow-800">Medium Priority — Standard Resolution</h4>
+                          <p className="text-sm text-yellow-700 mt-1">
+                            This complaint follows standard handling with a 7 business day SLA.
+                          </p>
+                        </>
+                      )}
+                      {autoPriority === "low" && (
+                        <>
+                          <h4 className="font-semibold text-green-800">Low Priority — Extended Timeline</h4>
+                          <p className="text-sm text-green-700 mt-1">
+                            This complaint can be resolved on the extended timeline with periodic customer updates.
+                          </p>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                )}
 
                 <div className="space-y-2 md:col-span-2 lg:col-span-3">
-                  <Label>Description</Label>
+                  <Label>Description <span className="text-red-500">*</span></Label>
                   <textarea
                     className="flex min-h-[80px] w-full rounded-md border border-slate-300 bg-transparent px-3 py-2 text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    placeholder="Provide additional details..."
+                    placeholder="Provide full details for this request or complaint..."
                     value={description}
                     onChange={(e) => setDescription(e.target.value)}
                   />
                 </div>
               </div>
 
-              <div className="flex justify-end mt-4">
+              <div className="flex items-center justify-between mt-6 bg-slate-50 p-4 rounded border border-slate-200">
+                <div className="flex items-center gap-2 text-slate-600">
+                  <Clock className="h-5 w-5" />
+                  <span className="text-sm font-medium">
+                    Estimated SLA based on selections:{" "}
+                    <strong className="text-slate-900">
+                      {category === "complaint" && type
+                        ? PRIORITY_SLA_TEXT[autoPriority]
+                        : "24 Hours"}
+                    </strong>
+                  </span>
+                </div>
                 <Button type="submit" disabled={submitting} className="flex items-center gap-2">
-                  {submitting ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <Send className="h-4 w-4" />
-                  )}
+                  {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
                   {submitting ? "Submitting..." : "Submit Ticket"}
                 </Button>
               </div>

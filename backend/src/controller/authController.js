@@ -13,6 +13,9 @@ const Account = require("../models/Account");
 const Service = require("../models/Service");
 const Contract = require("../models/Contract");
 
+const hasExecutiveScope = (role) =>
+  role === "executive_staff" || role === "supervisor";
+
 exports.userRegistration = async (req, res) => {
   let { firstName, lastName, phone, email, password, role } = req.body;
   const allowedRoles = [
@@ -704,7 +707,7 @@ exports.getProfile = async (req, res) => {
         profile.roleProfileId = manager.managerId;
         profile.department = manager.department || profile.department;
       }
-    } else if (user.role === "executive_staff") {
+    } else if (hasExecutiveScope(user.role)) {
       const exec = await ExecutiveStaff.findOne({ where: { userId: user.id } });
       if (exec) {
         profile.roleProfileId = exec.executiveId;
@@ -794,7 +797,7 @@ exports.updateProfile = async (req, res) => {
     } else if (user.role === "manager" || user.role === "supervisor") {
       const manager = await Manager.findOne({ where: { userId: user.id } });
       if (manager) await manager.update(nameUpdates);
-    } else if (user.role === "executive_staff") {
+    } else if (hasExecutiveScope(user.role)) {
       const exec = await ExecutiveStaff.findOne({ where: { userId: user.id } });
       if (exec) await exec.update(nameUpdates);
     }
@@ -908,8 +911,8 @@ exports.getMyAccounts = async (req, res) => {
   try {
     const user = req.user;
 
-    if (user.role !== "executive_staff") {
-      return res.status(403).json({ status: "Failed", message: "This endpoint is for executive staff only" });
+    if (!hasExecutiveScope(user.role)) {
+      return res.status(403).json({ status: "Failed", message: "This endpoint is for executive and supervisor users" });
     }
 
     const exec = await ExecutiveStaff.findOne({ where: { userId: user.id } });

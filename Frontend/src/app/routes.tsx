@@ -1,4 +1,4 @@
-import { createBrowserRouter, Navigate, Outlet } from "react-router";
+import { createBrowserRouter, Navigate, Outlet, useOutletContext } from "react-router";
 import Layout from "./components/layout";
 import Dashboard from "./components/dashboard";
 import Login from "./view/login";
@@ -26,6 +26,8 @@ import ExecutiveDashboard from "./components/executive/ExecutiveDashboard";
 import ManagerVisits from "./components/manager/ManagerVisits";
 import ManagerDashboard from "./components/manager/ManagerDashboard";
 import ForgotPassword from "./view/forgot-password";
+import AdminCorporate from "./components/admin/adminCorporate";
+import { isExecutiveRole, isManagerRole, isSupervisorRole } from "./utils/roleCapabilities";
 
 const isAuthenticated = () => Boolean(localStorage.getItem("accessToken"));
 
@@ -39,20 +41,22 @@ const getCurrentRole = (): string | null => {
 };
 
 const RequireAuth = () => {
+  const outletContext = useOutletContext();
   if (!isAuthenticated()) {
     return <Navigate to="/" replace />;
   }
-  return <Outlet />;
+  return <Outlet context={outletContext} />;
 };
 
 const RequireRole = ({ allowed }: { allowed: string[] }) => {
+  const outletContext = useOutletContext();
   const role = getCurrentRole();
   if (!role || !allowed.includes(role)) {
     return role === "customer"
       ? <Navigate to="/customerAccount" replace />
       : <Navigate to="/dashboard" replace />;
   }
-  return <Outlet />;
+  return <Outlet context={outletContext} />;
 };
 
 const LoginEntry = () => {
@@ -66,8 +70,8 @@ const LoginEntry = () => {
 
 const StaffDashboardEntry = () => {
   const role = getCurrentRole();
-  if (role === "executive_staff") return <ExecutiveDashboard />;
-  if (role === "manager" || role === "supervisor") return <ManagerDashboard />;
+  if (isSupervisorRole(role) || isManagerRole(role)) return <ManagerDashboard />;
+  if (isExecutiveRole(role)) return <ExecutiveDashboard />;
   return <Dashboard />;
 };
 
@@ -109,6 +113,11 @@ export const router = createBrowserRouter([
               { path: "visitCalendar", Component: VisitCalendar },
               { path: "account-manager-profile", Component: AccountManagerProfile },
             ],
+          },
+          // Admin-only corporates route (separate page)
+          {
+            element: <RequireRole allowed={["admin"]} />,
+            children: [{ path: "admin-corporates", Component: AdminCorporate }],
           },
           // Staff / admin routes
           {
@@ -154,7 +163,7 @@ export const router = createBrowserRouter([
 
           // exucutive staff only
           {
-            element: <RequireRole allowed={["admin", "executive_staff"]} />,
+            element: <RequireRole allowed={["admin", "executive_staff", "supervisor"]} />,
             children: [
 
               { path: "executive-profile", Component: ExecutiveProfile },

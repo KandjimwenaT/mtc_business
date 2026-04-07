@@ -16,6 +16,7 @@ import {
   getPersonsByType,
   reassignCorporateExecutive,
   promoteExecutiveToSupervisor,
+  demoteSupervisorToExecutive,
   type CorporateRecord,
   type PersonRecord,
 } from "../api/adminApi";
@@ -31,6 +32,7 @@ export default function ManagementProfile() {
   const [managerExecutives, setManagerExecutives] = useState<PersonRecord[]>([]);
   const [reassigningCorporateId, setReassigningCorporateId] = useState<number | null>(null);
   const [promotingExecutiveId, setPromotingExecutiveId] = useState<number | null>(null);
+  const [demotingSupervisorId, setDemotingSupervisorId] = useState<number | null>(null);
 
   useEffect(() => {
     getMyProfile().then(setProfile).catch(() => toast.error("Failed to load profile"));
@@ -41,16 +43,17 @@ export default function ManagementProfile() {
 
     const loadAssignData = async () => {
       try {
-        const [allCorporates, allExecutives] = await Promise.all([
+        const [allCorporates, allExecutives, allSupervisors] = await Promise.all([
           getCorporates(),
           getPersonsByType("executive_staff"),
+          getPersonsByType("supervisor"),
         ]);
 
         // Support both manager profile id and person id mappings
         const corporatesForManager = allCorporates.filter(
           (c) => c.managerId === profile.roleProfileId || c.managerId === profile.personId
         );
-        const executivesForManager = allExecutives.filter(
+        const executivesForManager = [...allExecutives, ...allSupervisors].filter(
           (e) => e.managerId === profile.roleProfileId || e.managerId === profile.personId
         );
 
@@ -363,6 +366,7 @@ export default function ManagementProfile() {
               <TableHeader>
                 <TableRow>
                   <TableHead>Executive</TableHead>
+                  <TableHead>Role</TableHead>
                   <TableHead>Tenure</TableHead>
                   <TableHead>Avg Rating</TableHead>
                   <TableHead>SLA Compliance</TableHead>
@@ -381,37 +385,69 @@ export default function ManagementProfile() {
                   return (
                     <TableRow key={e.id}>
                       <TableCell className="font-medium text-slate-900">{e.firstName} {e.lastName}</TableCell>
+                      <TableCell>
+                        <Badge variant={e.type === "supervisor" ? "default" : "neutral"}>
+                          {e.type === "supervisor" ? "Supervisor" : "Executive"}
+                        </Badge>
+                      </TableCell>
                       <TableCell>—</TableCell>
                       <TableCell><span className="font-bold text-slate-700">—</span></TableCell>
                       <TableCell>—</TableCell>
                       <TableCell>{accountsCount}</TableCell>
                       <TableCell className="text-right">
-                        <Button
-                          size="sm"
-                          onClick={async () => {
-                            setPromotingExecutiveId(e.id);
-                            try {
-                              await promoteExecutiveToSupervisor(e.id);
-                              setManagerExecutives((prev) => prev.filter((x) => x.id !== e.id));
-                              toast.success(`${e.firstName} ${e.lastName} promoted to supervisor`);
-                            } catch (err) {
-                              toast.error("Promotion failed", { description: err instanceof Error ? err.message : undefined });
-                            } finally {
-                              setPromotingExecutiveId(null);
-                            }
-                          }}
-                          disabled={promotingExecutiveId === e.id}
-                        >
-                          <ArrowUp className="h-4 w-4 mr-1" />
-                          {promotingExecutiveId === e.id ? "Promoting..." : "Promote"}
-                        </Button>
+                        {e.type === "supervisor" ? (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={async () => {
+                              setDemotingSupervisorId(e.id);
+                              try {
+                                await demoteSupervisorToExecutive(e.id);
+                                setManagerExecutives((prev) =>
+                                  prev.map((x) => (x.id === e.id ? { ...x, type: "executive_staff" } : x))
+                                );
+                                toast.success(`${e.firstName} ${e.lastName} demoted to executive`);
+                              } catch (err) {
+                                toast.error("Demotion failed", { description: err instanceof Error ? err.message : undefined });
+                              } finally {
+                                setDemotingSupervisorId(null);
+                              }
+                            }}
+                            disabled={demotingSupervisorId === e.id}
+                          >
+                            <ArrowUp className="h-4 w-4 mr-1 rotate-180" />
+                            {demotingSupervisorId === e.id ? "Demoting..." : "Demote"}
+                          </Button>
+                        ) : (
+                          <Button
+                            size="sm"
+                            onClick={async () => {
+                              setPromotingExecutiveId(e.id);
+                              try {
+                                await promoteExecutiveToSupervisor(e.id);
+                                setManagerExecutives((prev) =>
+                                  prev.map((x) => (x.id === e.id ? { ...x, type: "supervisor" } : x))
+                                );
+                                toast.success(`${e.firstName} ${e.lastName} promoted to supervisor`);
+                              } catch (err) {
+                                toast.error("Promotion failed", { description: err instanceof Error ? err.message : undefined });
+                              } finally {
+                                setPromotingExecutiveId(null);
+                              }
+                            }}
+                            disabled={promotingExecutiveId === e.id}
+                          >
+                            <ArrowUp className="h-4 w-4 mr-1" />
+                            {promotingExecutiveId === e.id ? "Promoting..." : "Promote"}
+                          </Button>
+                        )}
                       </TableCell>
                     </TableRow>
                   );
                 })}
                 {managerExecutives.length === 0 && (
                   <TableRow>
-                    <td colSpan={6} className="text-center text-slate-500 py-6">
+                    <td colSpan={7} className="text-center text-slate-500 py-6">
                       No executives available for promotion.
                     </td>
                   </TableRow>

@@ -65,7 +65,7 @@ export function Badge({ className, variant = "default", ...props }: BadgeProps) 
           "border-transparent bg-green-100 text-green-800": variant === "success",
           "border-transparent bg-blue-100 text-blue-800": variant === "warning",
           "border-transparent bg-red-100 text-red-800": variant === "danger",
-          "border-transparent bg-slate-900 text-slate-50": variant === "breached",
+          "border-transparent bg-red-100 text-red-800": variant === "breached",
           "border-transparent bg-slate-100 text-slate-800": variant === "neutral",
         },
         className

@@ -1,3 +1,5 @@
+import { API_BASE_URL } from "./apiBase";
+
 export interface LoginPayload {
   email: string;
   password: string;
@@ -66,9 +68,6 @@ interface ApiErrorResponse {
   message?: string;
   status?: string;
 }
-
-const API_BASE_URL =
-import.meta.env.VITE_API_BASE_URL || "http://localhost:3000/api";
 
 export const loginUser = async (
   payload: LoginPayload,

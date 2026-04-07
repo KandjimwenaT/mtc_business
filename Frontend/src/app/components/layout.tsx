@@ -19,16 +19,22 @@ import { cn } from "./ui-components";
 import mtcLogo from "../../assets/logo.png";
 import { logoutUser, getCurrentUser } from "../api/authApi";
 import { getUnreadNotificationCount } from "../api/notificationsApi";
+import { isExecutiveRole, isManagerRole, isSupervisorRole } from "../utils/roleCapabilities";
+import { useSupervisorHybridBadges } from "../hooks/useSupervisorHybridBadges";
 
 export default function Layout() {
   const navigate = useNavigate();
   const location = useLocation();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
+  const supervisorBadges = useSupervisorHybridBadges();
   const currentUser = getCurrentUser();
   const isCustomer = currentUser?.role === "customer";
+  const isSupervisor = isSupervisorRole(currentUser?.role);
+  const hasExecutiveScope = isExecutiveRole(currentUser?.role);
+  const hasManagerScope = isManagerRole(currentUser?.role);
   const notificationsHref =
-    currentUser?.role === "executive_staff" ? "/executive-notifications" : "/notifications";
+    hasExecutiveScope ? "/executive-notifications" : "/notifications";
 
   useEffect(() => {
     const run = async () => {
@@ -51,9 +57,10 @@ export default function Layout() {
 
     currentUser?.role === "admin" ? "/super-admin-profile" :
     currentUser?.role === "customer" ? "/account-manager-profile" :
-    currentUser?.role === "manager" || currentUser?.role === "supervisor" ? "/management-profile" :
+    isSupervisor ? "/supervisor-profile" :
+    hasManagerScope ? "/management-profile" :
     currentUser?.role === "gm" ? "/gm-crm-profile" :
-    currentUser?.role === "executive_staff" ? "/executive-profile" :
+    hasExecutiveScope ? "/executive-profile" :
     "/dashboard";
 
   const navigation = isCustomer
@@ -66,12 +73,16 @@ export default function Layout() {
       ]
     : [
         { name: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
-        { name: "Corporates", href: "/corporates", icon: Building2 },
-        { name: "Tickets", href: currentUser?.role === "executive_staff" ? "/executive-tickets" : "/tickets", icon: Ticket },
+        {
+          name: currentUser?.role === "admin" ? "Admin Corporates" : "Corporates",
+          href: currentUser?.role === "admin" ? "/admin-corporates" : "/corporates",
+          icon: Building2,
+        },
+        { name: "Tickets", href: isSupervisor ? "/tickets" : hasExecutiveScope ? "/executive-tickets" : "/tickets", icon: Ticket },
         ...(currentUser?.role !== "admin"
-          ? [{ name: "Visits", href: currentUser?.role === "executive_staff" ? "/executive-visits" : (currentUser?.role === "manager" || currentUser?.role === "supervisor") ? "/manager-visits" : "/visits", icon: CalendarCheck }]
+          ? [{ name: "Visits", href: isSupervisor ? "/manager-visits" : hasExecutiveScope ? "/executive-visits" : hasManagerScope ? "/manager-visits" : "/visits", icon: CalendarCheck }]
           : []),
-        ...(currentUser?.role !== "executive_staff" && currentUser?.role !== "admin"
+        ...(!hasExecutiveScope && currentUser?.role !== "admin"
           ? [{ name: "SLA Monitoring", href: "/sla-monitoring", icon: Timer }]
           : []),
         ...(currentUser?.role !== "admin" ? [{ name: "Vehicles", href: "/vehicles", icon: Car }] : []),
@@ -126,7 +137,23 @@ export default function Layout() {
                     )}
                     aria-hidden="true"
                   />
-                  {item.name}
+                  <span className="flex flex-1 items-center justify-between gap-2 min-w-0">
+                    <span className="truncate">{item.name}</span>
+                    {isSupervisor && item.name === "Tickets" && supervisorBadges.ticketsNavDot && (
+                      <span
+                        className="h-2 w-2 shrink-0 rounded-full bg-red-500"
+                        title="Open or at-risk items on your tickets views"
+                        aria-hidden
+                      />
+                    )}
+                    {isSupervisor && item.name === "Visits" && supervisorBadges.visitsNavDot && (
+                      <span
+                        className="h-2 w-2 shrink-0 rounded-full bg-red-500"
+                        title="Open or at-risk items on your visits views"
+                        aria-hidden
+                      />
+                    )}
+                  </span>
                 </NavLink>
               );
             })}
@@ -189,7 +216,7 @@ export default function Layout() {
         {/* Main Content Scrollable Area */}
         <main className="flex-1 overflow-y-auto p-6">
           <div className="mx-auto max-w-7xl">
-             <Outlet context={{ role: currentUser?.role ?? "" }} />
+             <Outlet context={{ role: currentUser?.role ?? "", supervisorBadges }} />
           </div>
         </main>
       </div>

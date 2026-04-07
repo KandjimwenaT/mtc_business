@@ -1,3 +1,5 @@
+import { API_BASE_URL } from "./apiBase";
+
 export interface PersonPayload {
   firstName: string;
   lastName: string;
@@ -190,9 +192,6 @@ interface ApiResponse<T = unknown> {
   users?: T[];
 }
 
-const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL || "http://localhost:3000/api";
-
 function authHeaders(): HeadersInit {
   const token = localStorage.getItem("accessToken");
   return {
@@ -235,6 +234,19 @@ export const getPersonsByType = async (
   const data = await res.json();
   if (!res.ok) { handleUnauthorized(res.status); throw new Error(data.message || "Failed to fetch persons"); }
   return data.persons ?? [];
+};
+
+export const deletePersonWithoutPortalAccess = async (
+  personId: number,
+  personType?: string
+): Promise<void> => {
+  const query = personType ? `?type=${encodeURIComponent(personType)}` : "";
+  const res = await fetch(`${API_BASE_URL}/admin/persons/${personId}${query}`, {
+    method: "DELETE",
+    headers: authHeaders(),
+  });
+  const data = await res.json();
+  if (!res.ok) { handleUnauthorized(res.status); throw new Error(data.message || "Failed to delete user"); }
 };
 
 // ── Portal access ─────────────────────────────────────────────────
@@ -303,6 +315,17 @@ export const promoteExecutiveToSupervisor = async (
   });
   const data = await res.json();
   if (!res.ok) { handleUnauthorized(res.status); throw new Error(data.message || "Failed to promote executive"); }
+};
+
+export const demoteSupervisorToExecutive = async (
+  supervisorPersonId: number
+): Promise<void> => {
+  const res = await fetch(`${API_BASE_URL}/admin/executives/${supervisorPersonId}/demote-executive`, {
+    method: "PUT",
+    headers: authHeaders(),
+  });
+  const data = await res.json();
+  if (!res.ok) { handleUnauthorized(res.status); throw new Error(data.message || "Failed to demote supervisor"); }
 };
 
 // ── Customer accounts ─────────────────────────────────────────────

@@ -1,5 +1,4 @@
-const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL || "http://localhost:3000/api";
+import { API_BASE_URL } from "./apiBase";
 
 const authHeaders = () => {
   const token = localStorage.getItem("accessToken");
@@ -20,7 +19,7 @@ export interface TicketPayload {
   category: "request" | "complaint";
   type: string;
   priority?: string;
-  title: string;
+  title?: string;
   description?: string;
 }
 

@@ -86,8 +86,39 @@ export function VisitCalendar() {
 
   const pendingVisits = visits.filter(v => v.status === 'pending');
   const upcomingVisits = visits.filter(v => ['approved', 'confirmed'].includes(v.status));
+  const isOverdueVisit = (visit: VisitRecord) => {
+    const start = new Date(`${visit.visitDate}T${visit.startTime}`);
+    return start < new Date() && ['pending', 'approved', 'confirmed', 'rescheduled'].includes(visit.status);
+  };
+  const previousVisits = visits
+    .filter(v => new Date(`${v.visitDate}T${v.startTime}`) < new Date())
+    .sort((a, b) => new Date(`${b.visitDate}T${b.startTime}`).getTime() - new Date(`${a.visitDate}T${a.startTime}`).getTime());
   const completedAwaitingRating = visits.filter(v => v.status === 'completed' && controlCards[v.visitId] && !v.customerRating);
   const ratedVisits = visits.filter(v => v.status === 'completed' && v.customerRating);
+
+  useEffect(() => {
+    const now = new Date();
+    visits.forEach((visit) => {
+      const start = new Date(`${visit.visitDate}T${visit.startTime}`);
+      const hoursToStart = (start.getTime() - now.getTime()) / (1000 * 60 * 60);
+      const reminderKey = `customer_visit_reminder_seen_${visit.visitId}_${visit.visitDate}`;
+      const overdueKey = `customer_visit_overdue_seen_${visit.visitId}_${visit.visitDate}`;
+
+      if (hoursToStart > 0 && hoursToStart <= 24 && !localStorage.getItem(reminderKey)) {
+        toast.info('Upcoming visit reminder', {
+          description: `${visit.purpose} is scheduled for ${visit.visitDate} at ${visit.startTime}.`,
+        });
+        localStorage.setItem(reminderKey, '1');
+      }
+
+      if (isOverdueVisit(visit) && !localStorage.getItem(overdueKey)) {
+        toast.warning('Visit overdue', {
+          description: `${visit.purpose} was not started and is now overdue.`,
+        });
+        localStorage.setItem(overdueKey, '1');
+      }
+    });
+  }, [visits]);
 
   const handleApprove = async (visitId: number) => {
     try {
@@ -680,6 +711,41 @@ export function VisitCalendar() {
           </CardContent>
         </Card>
       )}
+
+      {/* Previous Visits */}
+      <Card>
+        <CardHeader>
+          <CardTitle className="text-lg flex items-center justify-between">
+            <span>Previous Visits</span>
+            <Badge variant={previousVisits.some(isOverdueVisit) ? 'destructive' : 'secondary'}>
+              {previousVisits.filter(isOverdueVisit).length} Overdue
+            </Badge>
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {previousVisits.length === 0 ? (
+            <div className="py-6 text-sm text-slate-500 text-center">No previous visits found.</div>
+          ) : (
+            <div className="space-y-3">
+              {previousVisits.slice(0, 10).map((visit) => (
+                <div key={visit.visitId} className="flex items-center justify-between gap-3 p-3 rounded-lg border border-slate-200">
+                  <div>
+                    <p className="text-sm font-medium text-slate-900">{visit.purpose}</p>
+                    <p className="text-xs text-slate-500">{visit.visitDate} {visit.startTime} - {visit.endTime}</p>
+                  </div>
+                  {isOverdueVisit(visit) ? (
+                    <Badge variant="destructive">Overdue</Badge>
+                  ) : (
+                    <Badge variant={getBadgeVariant(visit.status)}>
+                      {statusConfig[visit.status]?.label ?? visit.status}
+                    </Badge>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Completed Visits Awaiting Rating */}
       {completedAwaitingRating.length > 0 && (

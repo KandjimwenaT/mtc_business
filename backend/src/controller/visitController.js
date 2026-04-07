@@ -7,7 +7,10 @@ const Manager = require("../models/Manager");
 const ControlCard = require("../models/ControlCard");
 const Corporate = require("../models/Corporate");
 const User = require("../models/User");
-const { createForUserIds } = require("../services/notificationService");
+const Notification = require("../models/Notification");
+const { createForUserIds, resolveManagerTeamNotificationUserIds } = require("../services/notificationService");
+
+const hasExecutiveScope = (role) => ["executive_staff", "supervisor"].includes(role);
 
 // Generate next visit number: VIS-00001
 async function generateVisitNumber() {
@@ -40,13 +43,103 @@ async function resolveCustomerUserIdByCorporateId(corporateId) {
   return customerUser ? customerUser.id : null;
 }
 
+function combineVisitDateTime(visitDate, startTime) {
+  if (!visitDate || !startTime) return null;
+  const dt = new Date(`${visitDate}T${startTime}`);
+  return Number.isNaN(dt.getTime()) ? null : dt;
+}
+
+async function createNotificationIfMissing(userId, payload) {
+  if (!userId) return;
+  const exists = await Notification.findOne({
+    where: {
+      userId,
+      type: payload.type,
+      title: payload.title,
+    },
+  });
+  if (!exists) {
+    await createForUserIds([userId], payload);
+  }
+}
+
+async function sendVisitReminderAndOverdueAlerts(visits) {
+  if (!visits || !visits.length) return;
+
+  const now = new Date();
+  const accountIds = [...new Set(visits.map((v) => v.accountId).filter(Boolean))];
+  const executiveIds = [...new Set(visits.map((v) => v.executiveId).filter(Boolean))];
+
+  const accounts = await Account.findAll({
+    where: { accountId: { [Op.in]: accountIds } },
+    attributes: ["accountId", "corporateId"],
+  });
+  const accountToCorporateId = new Map(accounts.map((a) => [a.accountId, a.corporateId]));
+
+  const execRows = await ExecutiveStaff.findAll({
+    where: { executiveId: { [Op.in]: executiveIds } },
+    attributes: ["executiveId", "userId"],
+  });
+  const executiveToUserId = new Map(execRows.map((e) => [e.executiveId, e.userId]));
+
+  const corporateIds = [...new Set(accounts.map((a) => a.corporateId).filter(Boolean))];
+  const customerByCorporateId = new Map();
+  await Promise.all(
+    corporateIds.map(async (corpId) => {
+      const customerUserId = await resolveCustomerUserIdByCorporateId(corpId);
+      customerByCorporateId.set(corpId, customerUserId);
+    })
+  );
+
+  for (const visit of visits) {
+    const visitStart = combineVisitDateTime(visit.visitDate, visit.startTime);
+    if (!visitStart) continue;
+
+    const msToStart = visitStart.getTime() - now.getTime();
+    const hoursToStart = msToStart / (1000 * 60 * 60);
+    const isActiveVisit = ["pending", "approved", "confirmed", "rescheduled"].includes(visit.status);
+    const isReminderWindow = isActiveVisit && hoursToStart > 0 && hoursToStart <= 24;
+    const isOverdue = isActiveVisit && msToStart < 0;
+    if (!isReminderWindow && !isOverdue) continue;
+
+    const corporateId = accountToCorporateId.get(visit.accountId);
+    const customerUserId = customerByCorporateId.get(corporateId) || null;
+    const executiveUserId = executiveToUserId.get(visit.executiveId) || null;
+    const managerTeamIds = await resolveManagerTeamNotificationUserIds(visit.executiveId);
+    const targets = [customerUserId, executiveUserId, ...managerTeamIds].filter(Boolean);
+    if (!targets.length) continue;
+
+    if (isReminderWindow) {
+      const payload = {
+        type: "visit",
+        title: `Visit Reminder - ${visit.visitNumber}`,
+        message: `${visit.accountName}: upcoming visit on ${visit.visitDate} at ${visit.startTime}.`,
+        priority: "normal",
+        metadata: { visitId: visit.visitId, visitNumber: visit.visitNumber, kind: "reminder_24h" },
+      };
+      await Promise.all(targets.map((userId) => createNotificationIfMissing(userId, payload)));
+    }
+
+    if (isOverdue) {
+      const payload = {
+        type: "visit",
+        title: `Visit Overdue - ${visit.visitNumber}`,
+        message: `${visit.accountName}: scheduled visit at ${visit.startTime} on ${visit.visitDate} was not started and is overdue.`,
+        priority: "high",
+        metadata: { visitId: visit.visitId, visitNumber: visit.visitNumber, kind: "overdue" },
+      };
+      await Promise.all(targets.map((userId) => createNotificationIfMissing(userId, payload)));
+    }
+  }
+}
+
 // Executive creates a visit / meeting
 exports.createVisit = async (req, res) => {
   try {
     const user = req.user;
 
-    if (user.role !== "executive_staff") {
-      return res.status(403).json({ status: "Failed", message: "Only executive staff can schedule visits" });
+    if (!hasExecutiveScope(user.role)) {
+      return res.status(403).json({ status: "Failed", message: "Only executive or supervisor users can schedule visits" });
     }
 
     const exec = await ExecutiveStaff.findOne({ where: { userId: user.id } });
@@ -117,7 +210,8 @@ exports.createVisit = async (req, res) => {
     });
 
     const customerUserId = await resolveCustomerUserIdByCorporateId(account.corporateId);
-    await createForUserIds([customerUserId], {
+    const managerTeamIds = await resolveManagerTeamNotificationUserIds(visit.executiveId);
+    await createForUserIds([customerUserId, ...managerTeamIds], {
       type: "visit",
       title: `Visit Scheduled - ${visit.visitNumber}`,
       message: `${visit.accountName}: ${visit.purpose} on ${visit.visitDate} at ${visit.startTime}.`,
@@ -141,8 +235,8 @@ exports.getMyVisits = async (req, res) => {
   try {
     const user = req.user;
 
-    if (user.role !== "executive_staff") {
-      return res.status(403).json({ status: "Failed", message: "This endpoint is for executive staff only" });
+    if (!hasExecutiveScope(user.role)) {
+      return res.status(403).json({ status: "Failed", message: "This endpoint is for executive and supervisor users" });
     }
 
     const exec = await ExecutiveStaff.findOne({ where: { userId: user.id } });
@@ -154,6 +248,8 @@ exports.getMyVisits = async (req, res) => {
       where: { executiveId: exec.executiveId },
       order: [["visit_date", "ASC"], ["start_time", "ASC"]],
     });
+
+    await sendVisitReminderAndOverdueAlerts(visits);
 
     return res.status(200).json({ status: "Success", visits });
   } catch (error) {
@@ -181,6 +277,8 @@ exports.getCustomerVisits = async (req, res) => {
       where: { accountId: { [Op.in]: accountIds } },
       order: [["visit_date", "ASC"], ["start_time", "ASC"]],
     });
+
+    await sendVisitReminderAndOverdueAlerts(visits);
 
     return res.status(200).json({ status: "Success", visits });
   } catch (error) {
@@ -278,8 +376,8 @@ exports.requestReschedule = async (req, res) => {
   try {
     const user = req.user;
 
-    if (user.role !== "executive_staff") {
-      return res.status(403).json({ status: "Failed", message: "Only executive staff can request reschedules" });
+    if (!hasExecutiveScope(user.role)) {
+      return res.status(403).json({ status: "Failed", message: "Only executive or supervisor users can request reschedules" });
     }
 
     const exec = await ExecutiveStaff.findOne({ where: { userId: user.id } });
@@ -311,6 +409,19 @@ exports.requestReschedule = async (req, res) => {
       execRescheduleStatus: "pending_approval",
     });
     await visit.reload();
+
+    const managerTeamIds = await resolveManagerTeamNotificationUserIds(visit.executiveId);
+    await createForUserIds(managerTeamIds, {
+      type: "visit",
+      title: `Reschedule Request - ${visit.visitNumber}`,
+      message: `${visit.executiveName} requested to reschedule ${visit.accountName} visit to ${visit.execRescheduleNewDate} ${visit.execRescheduleNewTime || ""}.`,
+      priority: "high",
+      metadata: {
+        visitId: visit.visitId,
+        visitNumber: visit.visitNumber,
+        kind: "reschedule_request",
+      },
+    });
 
     return res.status(200).json({ status: "Success", visit });
   } catch (error) {
@@ -384,19 +495,19 @@ exports.getPendingReschedules = async (req, res) => {
 
     let whereClause = { execRescheduleStatus: "pending_approval" };
 
-    // Scope to manager's own executives (admin sees all)
+    // Scope to manager team or supervisor team+own (admin sees all)
     if (user.role === "manager" || user.role === "supervisor") {
-      const manager = await Manager.findOne({ where: { userId: user.id } });
-      if (!manager) {
-        return res.status(404).json({ status: "Failed", message: "Manager profile not found" });
-      }
-      const execs = await ExecutiveStaff.findAll({ where: { managerId: manager.managerId }, attributes: ["executiveId"] });
-      const execIds = execs.map((e) => e.executiveId);
-      // Only filter by executiveId when there are linked executives.
-      // If managerId is not set on executive records, fall back to showing all
-      // pending reschedules so the manager can still act on them.
-      if (execIds.length > 0) {
-        whereClause.executiveId = { [Op.in]: execIds };
+      if (user.role === "supervisor") {
+        const execIds = await getSupervisorManagedExecutiveIds(user);
+        whereClause.executiveId =
+          execIds.length === 0 ? { [Op.in]: [-1] } : { [Op.in]: execIds };
+      } else {
+        const execIds = await getManagerExecIds(user.id);
+        if (execIds === null) {
+          return res.status(404).json({ status: "Failed", message: "Manager profile not found" });
+        }
+        whereClause.executiveId =
+          execIds.length === 0 ? { [Op.in]: [-1] } : { [Op.in]: execIds };
       }
     }
 
@@ -425,7 +536,11 @@ exports.updateVisit = async (req, res) => {
     }
 
     // Executive accepting a customer's reschedule proposal
-    if (user.role === "executive_staff" && action === "accept_reschedule") {
+    if (hasExecutiveScope(user.role) && action === "accept_reschedule") {
+      const exec = await ExecutiveStaff.findOne({ where: { userId: user.id } });
+      if (!exec || exec.executiveId !== visit.executiveId) {
+        return res.status(403).json({ status: "Failed", message: "You are not assigned to this visit" });
+      }
       if (visit.status !== "rescheduled") {
         return res.status(400).json({ status: "Failed", message: "Visit is not in rescheduled state" });
       }
@@ -465,8 +580,8 @@ exports.submitControlCard = async (req, res) => {
   try {
     const user = req.user;
 
-    if (user.role !== "executive_staff") {
-      return res.status(403).json({ status: "Failed", message: "Only executive staff can submit control cards" });
+    if (!hasExecutiveScope(user.role)) {
+      return res.status(403).json({ status: "Failed", message: "Only executive or supervisor users can submit control cards" });
     }
 
     const exec = await ExecutiveStaff.findOne({ where: { userId: user.id } });
@@ -551,8 +666,8 @@ exports.updateControlCard = async (req, res) => {
   try {
     const user = req.user;
 
-    if (user.role !== "executive_staff") {
-      return res.status(403).json({ status: "Failed", message: "Only executive staff can update control cards" });
+    if (!hasExecutiveScope(user.role)) {
+      return res.status(403).json({ status: "Failed", message: "Only executive or supervisor users can update control cards" });
     }
 
     const exec = await ExecutiveStaff.findOne({ where: { userId: user.id } });
@@ -653,6 +768,33 @@ async function getManagerExecIds(userId) {
   return execs.map((e) => e.executiveId);
 }
 
+/**
+ * Executive IDs a supervisor may see in manager-style views.
+ * Promoted supervisors get their own Manager row (new manager_id), but teammates still have
+ * ExecutiveStaff.managerId pointing at the line manager. Resolving by Manager.userId therefore
+ * returns an empty team — use the supervisor's ExecutiveStaff.managerId instead (same as peers).
+ */
+async function getSupervisorManagedExecutiveIds(user) {
+  const exec = await ExecutiveStaff.findOne({
+    where: { userId: user.id },
+    attributes: ["executiveId", "managerId"],
+  });
+  if (!exec) {
+    const fallback = await getManagerExecIds(user.id);
+    return fallback === null ? [] : fallback;
+  }
+  if (!exec.managerId) {
+    return exec.executiveId ? [exec.executiveId] : [];
+  }
+  const team = await ExecutiveStaff.findAll({
+    where: { managerId: exec.managerId },
+    attributes: ["executiveId"],
+  });
+  const ids = team.map((t) => t.executiveId).filter(Boolean);
+  if (ids.length) return ids;
+  return exec.executiveId ? [exec.executiveId] : [];
+}
+
 // Manager gets visits for their executives
 exports.getManagerVisits = async (req, res) => {
   try {
@@ -664,22 +806,25 @@ exports.getManagerVisits = async (req, res) => {
 
     let whereClause = {};
 
-    if (user.role === "manager" || user.role === "supervisor") {
+    if (user.role === "supervisor") {
+      const execIds = await getSupervisorManagedExecutiveIds(user);
+      whereClause.executiveId =
+        execIds.length === 0 ? { [Op.in]: [-1] } : { [Op.in]: execIds };
+    } else if (user.role === "manager") {
       const execIds = await getManagerExecIds(user.id);
       if (execIds === null) {
         return res.status(404).json({ status: "Failed", message: "Manager profile not found" });
       }
-      // Only filter by executiveId when there are linked executives.
-      // If no executives are linked yet, fall back to showing all visits.
-      if (execIds.length > 0) {
-        whereClause.executiveId = { [Op.in]: execIds };
-      }
+      whereClause.executiveId =
+        execIds.length === 0 ? { [Op.in]: [-1] } : { [Op.in]: execIds };
     }
 
     const visits = await Visit.findAll({
       where: whereClause,
       order: [["visit_date", "DESC"], ["start_time", "ASC"]],
     });
+
+    await sendVisitReminderAndOverdueAlerts(visits);
 
     return res.status(200).json({ status: "Success", visits });
   } catch (error) {
@@ -699,14 +844,17 @@ exports.getManagerControlCards = async (req, res) => {
 
     let whereClause = {};
 
-    if (user.role === "manager" || user.role === "supervisor") {
+    if (user.role === "supervisor") {
+      const execIds = await getSupervisorManagedExecutiveIds(user);
+      whereClause.executiveId =
+        execIds.length === 0 ? { [Op.in]: [-1] } : { [Op.in]: execIds };
+    } else if (user.role === "manager") {
       const execIds = await getManagerExecIds(user.id);
       if (execIds === null) {
         return res.status(404).json({ status: "Failed", message: "Manager profile not found" });
       }
-      if (execIds.length > 0) {
-        whereClause.executiveId = { [Op.in]: execIds };
-      }
+      whereClause.executiveId =
+        execIds.length === 0 ? { [Op.in]: [-1] } : { [Op.in]: execIds };
     }
 
     const controlCards = await ControlCard.findAll({

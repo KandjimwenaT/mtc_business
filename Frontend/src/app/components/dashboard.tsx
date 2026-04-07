@@ -1,11 +1,15 @@
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import { getCurrentUser } from "../api/authApi";
+import { getAllTickets, type TicketRecord } from "../api/ticketApi";
+import { getAllVisits, type VisitRecord } from "../api/visitApi";
 import { 
   Card, 
   CardContent, 
   CardHeader, 
   CardTitle,
   Badge,
+  Select,
   Table,
   TableBody,
   TableCell,
@@ -21,8 +25,6 @@ import {
   CartesianGrid, 
   Tooltip, 
   ResponsiveContainer,
-  LineChart,
-  Line,
   PieChart,
   Pie,
   Cell
@@ -43,10 +45,93 @@ const slaData = [
   { name: 'Breached', value: 5, color: '#0A1628' },
 ];
 
+const PRIORITY_FILTER_OPTIONS = ["critical", "high", "medium", "low"] as const;
+const STATUS_FILTER_OPTIONS = ["assigned", "inprogress", "completed"] as const;
+
 export default function Dashboard() {
   const currentUser = getCurrentUser();
   const role = currentUser?.role ?? "";
   const navigate = useNavigate();
+  const [allTickets, setAllTickets] = useState<TicketRecord[]>([]);
+  const [allVisits, setAllVisits] = useState<VisitRecord[]>([]);
+  const [loadingRecentRows, setLoadingRecentRows] = useState(false);
+  const [categoryFilter, setCategoryFilter] = useState("all");
+  const [priorityFilter, setPriorityFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("all");
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadRecentData = async () => {
+      setLoadingRecentRows(true);
+      try {
+        const [tickets, visits] = await Promise.all([getAllTickets(), getAllVisits()]);
+        if (!cancelled) {
+          setAllTickets(tickets);
+          setAllVisits(visits);
+        }
+      } catch {
+        if (!cancelled) {
+          setAllTickets([]);
+          setAllVisits([]);
+        }
+      } finally {
+        if (!cancelled) setLoadingRecentRows(false);
+      }
+    };
+    void loadRecentData();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const averageRatingsByAccount = useMemo(() => {
+    const grouped = new Map<number, { total: number; count: number }>();
+    allVisits.forEach((visit) => {
+      if (visit.customerRating == null || !visit.accountId) return;
+      const current = grouped.get(visit.accountId) ?? { total: 0, count: 0 };
+      current.total += visit.customerRating;
+      current.count += 1;
+      grouped.set(visit.accountId, current);
+    });
+    const averageMap = new Map<number, number>();
+    grouped.forEach((value, key) => {
+      averageMap.set(key, value.total / value.count);
+    });
+    return averageMap;
+  }, [allVisits]);
+
+  const filteredRecentTickets = useMemo(() => {
+    const normalizeStatus = (status: string): "assigned" | "inprogress" | "completed" | "other" => {
+      const normalized = status.toLowerCase().replace(/\s+/g, "").replace(/_/g, "");
+      if (normalized === "assigned") return "assigned";
+      if (normalized === "inprogress") return "inprogress";
+      if (normalized === "completed" || normalized === "resolved" || normalized === "closed") return "completed";
+      return "other";
+    };
+
+    return allTickets
+      .filter((ticket) => categoryFilter === "all" || ticket.category === categoryFilter)
+      .filter((ticket) => priorityFilter === "all" || ticket.priority === priorityFilter)
+      .filter((ticket) => statusFilter === "all" || normalizeStatus(ticket.status) === statusFilter)
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+      .slice(0, 12);
+  }, [allTickets, categoryFilter, priorityFilter, statusFilter]);
+
+  const categoryOptions = useMemo(
+    () => [...new Set(allTickets.map((ticket) => ticket.category).filter(Boolean))],
+    [allTickets]
+  );
+  const getSlaBadge = (ticket: TicketRecord): { label: string; variant: "success" | "warning" | "breached" | "neutral" } => {
+    if (!ticket.slaDeadline) return { label: "No SLA", variant: "neutral" };
+    const now = Date.now();
+    const deadline = new Date(ticket.slaDeadline).getTime();
+    const isClosed = ["resolved", "closed", "completed"].includes(ticket.status.toLowerCase());
+    if (isClosed) return { label: "Met", variant: "success" };
+    if (deadline < now) return { label: "Breached", variant: "breached" };
+    const hoursToDeadline = (deadline - now) / (1000 * 60 * 60);
+    if (hoursToDeadline <= 24) return { label: "At Risk", variant: "warning" };
+    return { label: "Healthy", variant: "success" };
+  };
 
   return (
     <div className="space-y-6 animate-in fade-in duration-500 slide-in-from-bottom-4">
@@ -254,42 +339,98 @@ export default function Dashboard() {
           </CardTitle>
         </CardHeader>
         <CardContent>
+          <div className="mb-4 grid gap-3 md:grid-cols-3">
+            <Select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)}>
+              <option value="all">All Categories</option>
+              {categoryOptions.map((category) => (
+                <option key={category} value={category}>
+                  {category.charAt(0).toUpperCase() + category.slice(1)}
+                </option>
+              ))}
+            </Select>
+            <Select value={priorityFilter} onChange={(e) => setPriorityFilter(e.target.value)}>
+              <option value="all">All Priorities</option>
+              {PRIORITY_FILTER_OPTIONS.map((priority) => (
+                <option key={priority} value={priority}>
+                  {priority.charAt(0).toUpperCase() + priority.slice(1)}
+                </option>
+              ))}
+            </Select>
+            <Select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+              <option value="all">All Statuses</option>
+              {STATUS_FILTER_OPTIONS.map((status) => (
+                <option key={status} value={status}>
+                  {status === "inprogress"
+                    ? "In Progress"
+                    : status.charAt(0).toUpperCase() + status.slice(1)}
+                </option>
+              ))}
+            </Select>
+          </div>
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>Corporate</TableHead>
-                <TableHead>Issue / Engagement</TableHead>
+                <TableHead>Ticket ID</TableHead>
+                <TableHead>Corporate / Account</TableHead>
+                <TableHead>Category</TableHead>
+                <TableHead>Request Type</TableHead>
+                <TableHead>Subject</TableHead>
+                <TableHead>Priority</TableHead>
                 <TableHead>Status</TableHead>
                 <TableHead>SLA</TableHead>
+                <TableHead>Assigned To</TableHead>
+                <TableHead>Due Date</TableHead>
                 <TableHead className="text-right">Action</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {[
-                { corp: "Acme Corp", issue: "Network Outage", status: "Open", sla: "breached", ticketId: "CMP-00431" },
-                { corp: "Global Tech", issue: "Billing Dispute", status: "In Progress", sla: "warning", ticketId: "REQ-00124" },
-                { corp: "Stark Ind", issue: "New Connection", status: "Resolved", sla: "success", ticketId: "REQ-00125" },
-                { corp: "Wayne Ent", issue: "Monthly Review", status: "Scheduled", sla: "neutral", ticketId: "REQ-00126" },
-              ].map((row, i) => (
-                <TableRow key={i}>
-                  <TableCell className="font-medium text-slate-900">{row.corp}</TableCell>
-                  <TableCell>{row.issue}</TableCell>
-                  <TableCell>{row.status}</TableCell>
-                  <TableCell>
-                    <Badge variant={row.sla as any}>
-                      {row.sla.charAt(0).toUpperCase() + row.sla.slice(1)}
-                    </Badge>
-                  </TableCell>
-                  <TableCell className="text-right">
-                    <button 
-                      className="text-mtc-blue hover:underline text-sm font-medium"
-                      onClick={() => navigate(`/tickets/${row.ticketId}`)}
-                    >
-                      View
-                    </button>
+              {loadingRecentRows ? (
+                <TableRow>
+                  <TableCell colSpan={11} className="py-6 text-center text-slate-500">
+                    Loading recent tickets...
                   </TableCell>
                 </TableRow>
-              ))}
+              ) : filteredRecentTickets.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={11} className="py-6 text-center text-slate-500">
+                    No tickets found for selected filters.
+                  </TableCell>
+                </TableRow>
+              ) : (
+                filteredRecentTickets.map((ticket) => {
+                  const slaBadge = getSlaBadge(ticket);
+                  const rating = averageRatingsByAccount.get(ticket.accountId);
+                  return (
+                    <TableRow key={ticket.ticketId}>
+                      <TableCell className="font-medium text-slate-900">{ticket.ticketNumber}</TableCell>
+                      <TableCell className="max-w-[220px]">
+                        <div className="truncate">{ticket.corporateName || ticket.accountName || "N/A"}</div>
+                        {typeof rating === "number" && (
+                          <div className="text-xs text-amber-600">{`Rating ${rating.toFixed(1)}/5`}</div>
+                        )}
+                      </TableCell>
+                      <TableCell className="capitalize">{ticket.category}</TableCell>
+                      <TableCell>{ticket.type || "N/A"}</TableCell>
+                      <TableCell className="max-w-[280px] truncate">{ticket.title || ticket.type}</TableCell>
+                      <TableCell>{ticket.priority || "N/A"}</TableCell>
+                      <TableCell>{ticket.status}</TableCell>
+                      <TableCell>
+                        <Badge variant={slaBadge.variant}>{slaBadge.label}</Badge>
+                      </TableCell>
+                      <TableCell>{ticket.assignedTo || "Unassigned"}</TableCell>
+                      <TableCell>{ticket.slaDeadline ? new Date(ticket.slaDeadline).toLocaleDateString() : "N/A"}</TableCell>
+                      <TableCell className="text-right">
+                        <button
+                          className="text-mtc-blue hover:underline text-sm font-medium"
+                          onClick={() => navigate(`/tickets/${ticket.ticketId}`)}
+                        >
+                          View
+                        </button>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })
+              )}
             </TableBody>
           </Table>
         </CardContent>

@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from "react";
+import { useOutletContext } from "react-router";
 import { toast } from "sonner";
 import {
   Button,
@@ -40,8 +41,13 @@ import {
   type VisitRecord,
   type ControlCardRecord,
 } from "../../api/visitApi";
+import { getCurrentUser } from "../../api/authApi";
+import { isSupervisorRole } from "../../utils/roleCapabilities";
+import ExecutiveVisits from "../executive/ExecutiveVisits";
+import type { StaffLayoutOutletContext } from "../../layoutOutletContext";
+import { defaultSupervisorBadges } from "../../hooks/useSupervisorHybridBadges";
 
-type Tab = "schedule" | "reschedules" | "feedback" | "controlCards";
+type Tab = "schedule" | "previous" | "reschedules" | "feedback" | "controlCards";
 
 // Status badge styling
 const statusConfig: Record<string, { label: string; variant: "default" | "success" | "warning" | "danger" }> = {
@@ -115,6 +121,12 @@ function execColor(name: string, names: string[]): string {
 }
 
 export default function ManagerVisits() {
+  const outletCtx = useOutletContext<StaffLayoutOutletContext | undefined>();
+  const supervisorBadges = outletCtx?.supervisorBadges ?? defaultSupervisorBadges();
+  const refreshBadges = supervisorBadges.refresh;
+  const currentUser = getCurrentUser();
+  const isSupervisor = isSupervisorRole(currentUser?.role);
+  const [scopeView, setScopeView] = useState<"executive" | "manager">("executive");
   const [activeTab, setActiveTab] = useState<Tab>("schedule");
   const [visits, setVisits] = useState<VisitRecord[]>([]);
   const [controlCards, setControlCards] = useState<ControlCardRecord[]>([]);
@@ -136,8 +148,12 @@ export default function ManagerVisits() {
   const [selectedVisit, setSelectedVisit] = useState<VisitRecord | null>(null);
   const [selectedCard, setSelectedCard] = useState<ControlCardRecord | null>(null);
 
-  // Load data
+  // Load manager-scoped data when needed (supervisor skips until "Manager Oversight")
   useEffect(() => {
+    if (isSupervisor && scopeView === "executive") {
+      setLoading(false);
+      return;
+    }
     const load = async () => {
       setLoading(true);
       try {
@@ -154,10 +170,11 @@ export default function ManagerVisits() {
         toast.error(message);
       } finally {
         setLoading(false);
+        if (isSupervisor) void refreshBadges();
       }
     };
-    load();
-  }, []);
+    void load();
+  }, [isSupervisor, scopeView, refreshBadges]);
 
   // Derived data
   const executiveNames = useMemo(() => {
@@ -167,6 +184,18 @@ export default function ManagerVisits() {
   }, [visits]);
 
   const pendingCount = reschedules.filter((r) => r.execRescheduleStatus === "pending_approval").length;
+  const isOverdueVisit = (visit: VisitRecord) => {
+    const start = new Date(`${visit.visitDate}T${visit.startTime}`);
+    return start < new Date() && ["pending", "approved", "confirmed", "rescheduled"].includes(visit.status);
+  };
+  const previousVisits = useMemo(
+    () =>
+      visits
+        .filter((v) => new Date(`${v.visitDate}T${v.startTime}`) < new Date())
+        .sort((a, b) => new Date(`${b.visitDate}T${b.startTime}`).getTime() - new Date(`${a.visitDate}T${a.startTime}`).getTime()),
+    [visits]
+  );
+  const overdueCount = previousVisits.filter(isOverdueVisit).length;
 
   // Calendar days
   const calendarDays = calendarView === "week" ? getWeekDays(calendarDate) : getMonthDays(calendarDate);
@@ -246,6 +275,7 @@ export default function ManagerVisits() {
       const updated = await getManagerVisits();
       setVisits(updated);
       toast.success("Reschedule approved");
+      if (isSupervisor) void refreshBadges();
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Failed to approve";
       toast.error(message);
@@ -257,6 +287,7 @@ export default function ManagerVisits() {
       await approveReschedule(visitId, "rejected");
       setReschedules((prev) => prev.filter((r) => r.visitId !== visitId));
       toast.success("Reschedule rejected");
+      if (isSupervisor) void refreshBadges();
     } catch (err: unknown) {
       const message = err instanceof Error ? err.message : "Failed to reject";
       toast.error(message);
@@ -273,6 +304,7 @@ export default function ManagerVisits() {
 
   const tabs: { key: Tab; label: string; badge?: number }[] = [
     { key: "schedule", label: "Executive Visit Schedule" },
+    { key: "previous", label: "Previous Visits", badge: overdueCount },
     { key: "reschedules", label: "Pending Reschedules", badge: pendingCount },
     { key: "feedback", label: "Customer Feedback" },
     { key: "controlCards", label: "Control Cards" },
@@ -286,8 +318,53 @@ export default function ManagerVisits() {
     );
   }
 
+  if (isSupervisor && scopeView === "executive") {
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center gap-2">
+          <Button variant="primary" size="sm" onClick={() => setScopeView("executive")} className="inline-flex items-center gap-2">
+            My Executive Work
+            {supervisorBadges.executiveSideDot && (
+              <span className="h-2 w-2 shrink-0 rounded-full bg-red-500" title="Your executive queue needs attention" />
+            )}
+          </Button>
+          <Button variant="outline" size="sm" onClick={() => setScopeView("manager")} className="inline-flex items-center gap-2">
+            Manager Oversight
+          </Button>
+        </div>
+        <ExecutiveVisits />
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-6 animate-in fade-in duration-500 slide-in-from-bottom-4">
+      {isSupervisor && (
+        <div className="flex items-center gap-2">
+          <Button
+            variant={scopeView === "executive" ? "primary" : "outline"}
+            size="sm"
+            onClick={() => setScopeView("executive")}
+            className="inline-flex items-center gap-2"
+          >
+            My Executive Work
+            {supervisorBadges.executiveSideDot && scopeView === "executive" && (
+              <span className="h-2 w-2 shrink-0 rounded-full bg-red-500" title="Your executive queue needs attention" />
+            )}
+          </Button>
+          <Button
+            variant={scopeView === "manager" ? "primary" : "outline"}
+            size="sm"
+            onClick={() => setScopeView("manager")}
+            className="inline-flex items-center gap-2"
+          >
+            Manager Oversight
+            {supervisorBadges.managerSideDot && scopeView === "manager" && (
+              <span className="h-2 w-2 shrink-0 rounded-full bg-red-500" title="Team oversight queue needs attention" />
+            )}
+          </Button>
+        </div>
+      )}
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
@@ -461,6 +538,60 @@ export default function ManagerVisits() {
                           <Button variant="ghost" size="sm" onClick={() => setSelectedVisit(v)}>
                             <Eye className="h-4 w-4 mr-1" /> View
                           </Button>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })
+                )}
+              </TableBody>
+            </Table>
+          </Card>
+        </div>
+      )}
+
+      {activeTab === "previous" && (
+        <div className="space-y-4">
+          {overdueCount > 0 && (
+            <Card className="border-red-200 bg-red-50/40">
+              <CardContent className="py-3 flex items-center justify-between">
+                <span className="text-sm text-red-700 font-medium">
+                  {overdueCount} overdue visit{overdueCount > 1 ? "s" : ""} were not started/completed on time.
+                </span>
+                <Badge variant="danger">{overdueCount} Overdue</Badge>
+              </CardContent>
+            </Card>
+          )}
+          <Card>
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Executive</TableHead>
+                  <TableHead>Corporate</TableHead>
+                  <TableHead>Date</TableHead>
+                  <TableHead>Time</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead>Action</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {previousVisits.length === 0 ? (
+                  <TableRow>
+                    <td colSpan={6} className="text-center py-8 text-slate-400 p-4">No previous visits found.</td>
+                  </TableRow>
+                ) : (
+                  previousVisits.map((v) => {
+                    const sc = statusConfig[v.status] || { label: v.status, variant: "default" as const };
+                    return (
+                      <TableRow key={v.visitId}>
+                        <TableCell className="font-medium text-slate-900">{v.executiveName}</TableCell>
+                        <TableCell>{v.accountName}</TableCell>
+                        <TableCell>{new Date(v.visitDate).toLocaleDateString("en-ZA", { month: "short", day: "numeric", year: "numeric" })}</TableCell>
+                        <TableCell className="text-slate-500">{v.startTime} – {v.endTime}</TableCell>
+                        <TableCell>
+                          {isOverdueVisit(v) ? <Badge variant="danger">Overdue</Badge> : <Badge variant={sc.variant}>{sc.label}</Badge>}
+                        </TableCell>
+                        <TableCell className="text-xs text-slate-500">
+                          {isOverdueVisit(v) ? "Notify executive / customer" : "Closed"}
                         </TableCell>
                       </TableRow>
                     );
