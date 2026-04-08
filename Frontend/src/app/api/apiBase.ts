@@ -4,4 +4,4 @@
 
 // export const API_BASE_URL = "http://localhost:3000/api";
 
-export const API_BASE_URL = "http://uat-api.erongored.com.na/mtc";
+export const API_BASE_URL = "http://uat-api.erongored.com.na/mtc/api";
