@@ -18,9 +18,40 @@ import {
   MessageSquare, 
   History,
 } from "lucide-react";
-import { addInternalTicketNote, getTicketById, updateTicket, type TicketRecord } from "../api/ticketApi";
+import {
+  addInternalTicketNote,
+  getTicketById,
+  updateTicket,
+  type TicketActivityLogRecord,
+  type TicketRecord,
+} from "../api/ticketApi";
 import { getCurrentUser } from "../api/authApi";
 import { format } from "date-fns";
+
+function formatTicketStatusLabel(s: string) {
+  return s.replace(/_/g, " ");
+}
+
+function ticketActivityHeadline(entry: TicketActivityLogRecord) {
+  const statusChanged =
+    entry.previousStatus != null && entry.newStatus != null && entry.previousStatus !== entry.newStatus;
+  const hasAction = !!(entry.actionTaken || "").trim();
+  const hasRes = !!(entry.resolutionPreview || "").trim();
+  const hasNotes = !!(entry.notesPreview || "").trim();
+  if (statusChanged && hasAction) return "Status & action update";
+  if (statusChanged) return "Status changed";
+  if (hasAction) return "Action taken (structured)";
+  if (hasRes && hasNotes) return "Resolution & notes updated";
+  if (hasRes) return "Resolution updated";
+  if (hasNotes) return "Admin notes updated";
+  return "Ticket updated";
+}
+
+function ticketActivityDotType(entry: TicketActivityLogRecord): "escalation" | "closed" | "default" {
+  if (entry.newStatus === "escalated") return "escalation";
+  if (entry.newStatus === "resolved" || entry.newStatus === "closed") return "closed";
+  return "default";
+}
 
 export default function TicketDetails() {
   const { id } = useParams();
@@ -54,6 +85,9 @@ export default function TicketDetails() {
         setTicketStatus(data.status);
         setInternalNote("");
         setResolution(data.resolution || "");
+        const logs = data.activityLog ?? [];
+        const lastWithAction = [...logs].reverse().find((l) => (l.actionTaken || "").trim());
+        setActionTaken(lastWithAction?.actionTaken?.trim() ?? "");
       } catch (err: any) {
         setError(err.message || "Failed to load ticket");
       } finally {
@@ -85,15 +119,116 @@ export default function TicketDetails() {
     };
   }, [ticket]);
 
+  const timeline = useMemo(() => {
+    type TimelineRow =
+      | {
+          kind: "created";
+          id: string;
+          at: number;
+          title: string;
+          dateStr: string;
+          user: string;
+          dot: "default";
+        }
+      | {
+          kind: "activity";
+          id: string;
+          at: number;
+          entry: TicketActivityLogRecord;
+          title: string;
+          dateStr: string;
+          user: string;
+          dot: "escalation" | "closed" | "default";
+          statusLine?: string;
+          actionLine?: string;
+          resolutionBody?: string;
+          notesBody?: string;
+        }
+      | {
+          kind: "internal_note";
+          id: string;
+          at: number;
+          title: string;
+          dateStr: string;
+          user: string;
+          body: string;
+          dot: "comment";
+        };
+
+    if (!ticket) return [];
+
+    const rows: TimelineRow[] = [];
+
+    rows.push({
+      kind: "created",
+      id: "created",
+      at: new Date(ticket.createdAt).getTime(),
+      title: "Ticket Created",
+      dateStr: format(new Date(ticket.createdAt), "MMM dd, HH:mm"),
+      user: ticket.submittedBy,
+      dot: "default",
+    });
+
+    for (const entry of ticket.activityLog ?? []) {
+      const statusChanged =
+        entry.previousStatus != null && entry.newStatus != null && entry.previousStatus !== entry.newStatus;
+      const statusLine =
+        statusChanged
+          ? `${formatTicketStatusLabel(entry.previousStatus!)} → ${formatTicketStatusLabel(entry.newStatus!)}`
+          : undefined;
+      const actionLine = (entry.actionTaken || "").trim() || undefined;
+      const resolutionBody = (entry.resolutionPreview || "").trim() || undefined;
+      const notesBody = (entry.notesPreview || "").trim() || undefined;
+
+      rows.push({
+        kind: "activity",
+        id: `activity-${entry.activityId}`,
+        at: new Date(entry.createdAt).getTime(),
+        entry,
+        title: ticketActivityHeadline(entry),
+        dateStr: format(new Date(entry.createdAt), "MMM dd, HH:mm"),
+        user: entry.actorName,
+        dot: ticketActivityDotType(entry),
+        statusLine,
+        actionLine,
+        resolutionBody,
+        notesBody,
+      });
+    }
+
+    for (const note of ticket.internalNotes ?? []) {
+      const roleLabel =
+        note.authorRole === "manager"
+          ? "Manager"
+          : note.authorRole === "supervisor"
+            ? "Supervisor"
+            : "Admin";
+      rows.push({
+        kind: "internal_note",
+        id: `note-${note.noteId}`,
+        at: new Date(note.createdAt).getTime(),
+        title: `${roleLabel} comment`,
+        dateStr: format(new Date(note.createdAt), "MMM dd, HH:mm"),
+        user: note.authorName,
+        body: note.note,
+        dot: "comment",
+      });
+    }
+
+    rows.sort((a, b) => a.at - b.at);
+    return rows;
+  }, [ticket]);
+
   const handleSave = async () => {
     if (!ticket) return;
     try {
       setSaving(true);
       const updated = await updateTicket(ticket.ticketId, {
         status: ticketStatus,
-        resolution,
+        ...(resolution !== (ticket.resolution ?? "") ? { resolution } : {}),
+        ...(actionTaken.trim() ? { actionTaken: actionTaken.trim() } : {}),
       });
-      setTicket({ ...ticket, ...updated, status: updated.status, notes: updated.notes, resolution: updated.resolution });
+      setTicket(updated);
       toast.success("Ticket updated", { description: `${updated.ticketNumber} was updated successfully.` });
     } catch (err: any) {
       toast.error(err.message || "Failed to update ticket");
@@ -114,20 +249,6 @@ export default function TicketDetails() {
   if (error || !ticket) {
     return <div className="text-red-600">{error || "Ticket not found"}</div>;
   }
-
-  const timeline = [
-    { id: 1, type: "created", title: "Ticket Created", date: format(new Date(ticket.createdAt), "MMM dd, HH:mm"), user: ticket.submittedBy },
-    ...((ticket.internalNotes || []).map((note) => ({
-      id: `note-${note.noteId}`,
-      type: "comment",
-      title: `${note.authorRole === "manager" ? "Manager" : note.authorRole === "supervisor" ? "Supervisor" : "Admin"} Comment`,
-      date: format(new Date(note.createdAt), "MMM dd, HH:mm"),
-      user: note.authorName,
-      body: note.note,
-    }))),
-    ...(ticket.notes ? [{ id: 2, type: "comment", title: "Admin Note Added", date: format(new Date(ticket.updatedAt), "MMM dd, HH:mm"), user: ticket.assignedTo || "Admin" }] : []),
-    ...(ticket.resolution ? [{ id: 3, type: "closed", title: "Resolution Added", date: format(new Date(ticket.updatedAt), "MMM dd, HH:mm"), user: ticket.assignedTo || "Admin" }] : []),
-  ];
 
   const handleAddInternalNote = async () => {
     if (!ticket || !internalNote.trim()) return;
@@ -233,27 +354,69 @@ export default function TicketDetails() {
             </CardHeader>
             <CardContent className="pt-6">
               <div className="relative border-l border-slate-200 ml-3 space-y-8">
-                {timeline.map((event) => (
+                {timeline.map((event) => {
+                  const dotClass =
+                    event.dot === "escalation"
+                      ? "bg-red-500"
+                      : event.dot === "closed"
+                        ? "bg-green-500"
+                        : "bg-mtc-blue";
+                  return (
                   <div key={event.id} className="relative pl-6 animate-in fade-in">
-                    <span className={`absolute -left-2 top-1 h-4 w-4 rounded-full border-2 border-white shadow-sm ${
-                      event.type === 'escalation' ? 'bg-red-500' :
-                      event.type === 'closed' ? 'bg-green-500' :
-                      'bg-mtc-blue'
-                    }`} />
+                    <span
+                      className={`absolute -left-2 top-1 h-4 w-4 rounded-full border-2 border-white shadow-sm ${dotClass}`}
+                    />
                     <div className="flex flex-col gap-1">
-                      <div className="flex items-center gap-2">
+                      <div className="flex items-center gap-2 flex-wrap">
                         <span className="text-sm font-semibold text-slate-900">{event.title}</span>
-                        <span className="text-xs text-slate-500">{event.date}</span>
+                        <span className="text-xs text-slate-500">{event.dateStr}</span>
                       </div>
                       <span className="text-sm text-slate-600">by {event.user}</span>
-                      {event.type === 'comment' && (
-                        <div className="mt-2 text-sm bg-slate-50 p-3 rounded border border-slate-200 text-slate-700">
-                          {event.body || "Internal comment added."}
+                      {event.kind === "activity" && (
+                        <div className="mt-2 space-y-2 text-sm text-slate-700">
+                          {event.statusLine ? (
+                            <div className="rounded-md border border-slate-200 bg-white px-3 py-2">
+                              <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                                Status change
+                              </span>
+                              <p className="mt-1 font-medium text-slate-900">{event.statusLine}</p>
+                            </div>
+                          ) : null}
+                          {event.actionLine ? (
+                            <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2">
+                              <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                                Action taken (structured)
+                              </span>
+                              <p className="mt-1">{event.actionLine}</p>
+                            </div>
+                          ) : null}
+                          {event.resolutionBody ? (
+                            <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-slate-700 whitespace-pre-wrap">
+                              <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                                Resolution
+                              </span>
+                              <p className="mt-1">{event.resolutionBody}</p>
+                            </div>
+                          ) : null}
+                          {event.notesBody ? (
+                            <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-slate-700 whitespace-pre-wrap">
+                              <span className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                                Admin notes
+                              </span>
+                              <p className="mt-1">{event.notesBody}</p>
+                            </div>
+                          ) : null}
                         </div>
                       )}
+                      {event.kind === "internal_note" ? (
+                        <div className="mt-2 text-sm bg-slate-50 p-3 rounded border border-slate-200 text-slate-700 whitespace-pre-wrap">
+                          {event.body}
+                        </div>
+                      ) : null}
                     </div>
                   </div>
-                ))}
+                  );
+                })}
               </div>
             </CardContent>
           </Card>
@@ -312,10 +475,10 @@ export default function TicketDetails() {
                 <Label>Action Taken (Structured)</Label>
                 <Select value={actionTaken} onChange={(e) => setActionTaken(e.target.value)}>
                   <option value="">Select Action...</option>
-                  <option>Contacted Customer</option>
-                  <option>Escalated to Technical</option>
-                  <option>Awaiting Internal Info</option>
-                  <option>Proposed Resolution</option>
+                  <option value="Contacted Customer">Contacted Customer</option>
+                  <option value="Escalated to Technical">Escalated to Technical</option>
+                  <option value="Awaiting Internal Info">Awaiting Internal Info</option>
+                  <option value="Proposed Resolution">Proposed Resolution</option>
                 </Select>
               </div>
               <div className="space-y-2">

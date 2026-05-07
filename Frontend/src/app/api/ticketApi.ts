@@ -62,6 +62,21 @@ export interface TicketRecord {
   corporateId?: number | null;
   corporateName?: string | null;
   internalNotes?: TicketInternalNoteRecord[];
+  activityLog?: TicketActivityLogRecord[];
+}
+
+export interface TicketActivityLogRecord {
+  activityId: number;
+  ticketId: number;
+  actorUserId: number;
+  actorName: string;
+  actorRole: string;
+  previousStatus: string | null;
+  newStatus: string | null;
+  actionTaken: string | null;
+  resolutionPreview: string | null;
+  notesPreview: string | null;
+  createdAt: string;
 }
 
 export interface TicketInternalNoteRecord {
@@ -190,7 +205,7 @@ export const getTicketById = async (ticketId: number): Promise<TicketRecord> => 
 
 export const updateTicket = async (
   ticketId: number,
-  payload: { status?: string; resolution?: string; notes?: string },
+  payload: { status?: string; resolution?: string; notes?: string; actionTaken?: string },
 ): Promise<TicketRecord> => {
   const response = await fetch(`${API_BASE_URL}/tickets/${ticketId}`, {
     method: "PUT",

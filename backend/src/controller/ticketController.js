@@ -7,6 +7,7 @@ const Person = require("../models/Person");
 const User = require("../models/User");
 const Notification = require("../models/Notification");
 const TicketInternalNote = require("../models/TicketInternalNote");
+const TicketActivityLog = require("../models/TicketActivityLog");
 const emailService = require("../services/emailService");
 const { Op } = require("sequelize");
 const { createForUserIds, resolveManagerTeamNotificationUserIds } = require("../services/notificationService");
@@ -145,6 +146,23 @@ async function toTicketWithAccountContext(ticketInstance) {
     accountNumber: account ? account.accountNumber : null,
     corporateId: corporate ? corporate.corporateId : null,
     corporateName: corporate ? corporate.corporateName : null,
+  };
+}
+
+async function buildTicketDetailPayload(ticketInstance) {
+  const detailed = await toTicketWithAccountContext(ticketInstance);
+  const internalNotes = await TicketInternalNote.findAll({
+    where: { ticketId: ticketInstance.ticketId },
+    order: [["created_at", "ASC"]],
+  });
+  const activityLog = await TicketActivityLog.findAll({
+    where: { ticketId: ticketInstance.ticketId },
+    order: [["created_at", "ASC"]],
+  });
+  return {
+    ...detailed,
+    internalNotes: internalNotes.map((note) => note.toJSON()),
+    activityLog: activityLog.map((entry) => entry.toJSON()),
   };
 }
 
@@ -727,17 +745,10 @@ exports.getTicketById = async (req, res) => {
       }
     }
 
-    const detailed = await toTicketWithAccountContext(ticket);
-    const internalNotes = await TicketInternalNote.findAll({
-      where: { ticketId: ticket.ticketId },
-      order: [["created_at", "ASC"]],
-    });
+    const payload = await buildTicketDetailPayload(ticket);
     return res.status(200).json({
       status: "Success",
-      ticket: {
-        ...detailed,
-        internalNotes: internalNotes.map((note) => note.toJSON()),
-      },
+      ticket: payload,
     });
   } catch (error) {
     console.error("Get ticket by id error:", error);
@@ -755,7 +766,7 @@ exports.updateTicket = async (req, res) => {
     }
 
     const { ticketId } = req.params;
-    const { status, resolution, notes } = req.body;
+    const { status, resolution, notes, actionTaken } = req.body;
 
     const ticket = await Ticket.findByPk(ticketId);
     if (!ticket) {
@@ -772,13 +783,37 @@ exports.updateTicket = async (req, res) => {
       return res.status(400).json({ status: "Failed", message: `Invalid status. Allowed: ${allowedStatuses.join(", ")}` });
     }
 
+    const prevStatus = ticket.status;
+    const prevResolution = ticket.resolution ?? "";
+    const prevNotes = ticket.notes ?? "";
+
     if (status) ticket.status = status;
-    if (resolution) ticket.resolution = resolution;
-    if (notes) ticket.notes = notes;
+    if (resolution !== undefined) ticket.resolution = resolution;
+    if (notes !== undefined) ticket.notes = notes;
     if (status === "resolved") ticket.resolvedAt = new Date();
     if (status === "closed") ticket.closedAt = new Date();
 
+    const statusChanged = status !== undefined && status !== prevStatus;
+    const resolutionChanged = resolution !== undefined && String(resolution ?? "") !== String(prevResolution);
+    const notesChanged = notes !== undefined && String(notes ?? "") !== String(prevNotes);
+    const actionTakenTrimmed = actionTaken != null ? String(actionTaken).trim() : "";
+
     await ticket.save();
+
+    if (statusChanged || resolutionChanged || notesChanged || actionTakenTrimmed) {
+      const actorLabel = await resolveActorLabel(user);
+      await TicketActivityLog.create({
+        ticketId: ticket.ticketId,
+        actorUserId: user.id,
+        actorName: actorLabel,
+        actorRole: user.role,
+        previousStatus: statusChanged ? prevStatus : null,
+        newStatus: statusChanged ? ticket.status : null,
+        actionTaken: actionTakenTrimmed || null,
+        resolutionPreview: resolutionChanged ? String(resolution ?? "").slice(0, 800) : null,
+        notesPreview: notesChanged ? String(notes ?? "").slice(0, 800) : null,
+      });
+    }
 
     const customerUserIds = await resolveCustomerUserIdsByAccountId(ticket.accountId);
     const executiveUserId = await resolveExecutiveUserIdByExecutiveProfileId(ticket.executiveId);
@@ -787,7 +822,7 @@ exports.updateTicket = async (req, res) => {
       type: "ticket",
       title: `Ticket Updated - ${ticket.ticketNumber}`,
       message: `${ticket.title} status is now ${ticket.status.replace(/_/g, " ")}.`,
-      priority: status === "escalated" ? "high" : "normal",
+      priority: ticket.status === "escalated" ? "high" : "normal",
       metadata: {
         ticketId: ticket.ticketId,
         ticketNumber: ticket.ticketNumber,
@@ -795,10 +830,12 @@ exports.updateTicket = async (req, res) => {
       },
     });
 
+    const payload = await buildTicketDetailPayload(ticket);
+
     return res.status(200).json({
       status: "Success",
       message: "Ticket updated successfully",
-      ticket: ticket.toJSON(),
+      ticket: payload,
     });
   } catch (error) {
     console.error("Update ticket error:", error);

@@ -27,6 +27,7 @@ const Complaint = require('./src/models/Complaint');
 const AccountRequest = require('./src/models/AccountRequest');
 const Ticket = require('./src/models/Ticket');
 const TicketInternalNote = require('./src/models/TicketInternalNote');
+const TicketActivityLog = require('./src/models/TicketActivityLog');
 const Visit = require('./src/models/Visit');
 const OTPModel = require('./src/models/otpModel');
 const complaintRoutes = require('./src/routes/complaintRoutes');
@@ -291,6 +292,7 @@ const startServer = async () => {
   await AccountRequest.sync();
   await Ticket.sync();
   await TicketInternalNote.sync();
+  await TicketActivityLog.sync();
   await Visit.sync();
   await Notification.sync();
   await OTPModel.sync();
