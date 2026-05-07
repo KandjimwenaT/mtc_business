@@ -1,4 +1,4 @@
-import { API_BASE_URL } from "./apiBase";
+import { API_BASE_URL, API_ORIGIN } from "./apiBase";
 
 const authHeaders = () => {
   const token = localStorage.getItem("accessToken");
@@ -83,6 +83,55 @@ export const markAllNotificationsRead = async (): Promise<void> => {
   if (!response.ok) {
     throw new Error(data.message || "Failed to mark all notifications as read");
   }
+};
+
+/** Absolute URL for a notification attachment path from metadata (e.g. `/uploads/broadcasts/...`). */
+export const resolveNotificationAttachmentUrl = (relativeOrAbsolute: string | undefined | null): string | null => {
+  if (!relativeOrAbsolute || typeof relativeOrAbsolute !== "string") return null;
+  const s = relativeOrAbsolute.trim();
+  if (!s) return null;
+  if (s.startsWith("http://") || s.startsWith("https://")) return s;
+  const path = s.startsWith("/") ? s : `/${s}`;
+  return `${API_ORIGIN}${path}`;
+};
+
+export type BroadcastAudience = "customers" | "executives";
+
+export const broadcastManagerNotification = async (params: {
+  title: string;
+  message: string;
+  audience: BroadcastAudience;
+  attachment?: File | null;
+}): Promise<{ recipientCount: number; message?: string }> => {
+  const token = localStorage.getItem("accessToken");
+  const formData = new FormData();
+  formData.append("title", params.title);
+  formData.append("message", params.message);
+  formData.append("audience", params.audience);
+  if (params.attachment) {
+    formData.append("attachment", params.attachment);
+  }
+
+  const response = await fetch(`${API_BASE_URL}/notifications/broadcast`, {
+    method: "POST",
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    body: formData,
+  });
+
+  if (response.status === 401) {
+    handleUnauthorized();
+    throw new Error("Session expired");
+  }
+
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.message || "Failed to send broadcast");
+  }
+
+  return {
+    recipientCount: Number(data.recipientCount ?? 0),
+    message: typeof data.message === "string" ? data.message : undefined,
+  };
 };
 
 export const getUnreadNotificationCount = async (): Promise<number> => {

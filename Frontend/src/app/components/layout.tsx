@@ -21,6 +21,7 @@ import { logoutUser, getCurrentUser } from "../api/authApi";
 import { getUnreadNotificationCount } from "../api/notificationsApi";
 import { isExecutiveRole, isManagerRole, isSupervisorRole } from "../utils/roleCapabilities";
 import { useSupervisorHybridBadges } from "../hooks/useSupervisorHybridBadges";
+import { ExecutiveDataProvider } from "../hooks/useExecutiveData";
 
 export default function Layout() {
   const navigate = useNavigate();
@@ -46,7 +47,20 @@ export default function Layout() {
       }
     };
     void run();
-  }, [location.pathname]);
+
+    const handleNotificationsChanged = () => {
+      void run();
+    };
+    const handleFocus = () => {
+      void run();
+    };
+    window.addEventListener("notifications:changed", handleNotificationsChanged);
+    window.addEventListener("focus", handleFocus);
+    return () => {
+      window.removeEventListener("notifications:changed", handleNotificationsChanged);
+      window.removeEventListener("focus", handleFocus);
+    };
+  }, []);
 
   const handleLogout = async () => {
     await logoutUser();
@@ -216,7 +230,9 @@ export default function Layout() {
         {/* Main Content Scrollable Area */}
         <main className="flex-1 overflow-y-auto p-6">
           <div className="mx-auto max-w-7xl">
-             <Outlet context={{ role: currentUser?.role ?? "", supervisorBadges }} />
+             <ExecutiveDataProvider>
+               <Outlet context={{ role: currentUser?.role ?? "", supervisorBadges }} />
+             </ExecutiveDataProvider>
           </div>
         </main>
       </div>

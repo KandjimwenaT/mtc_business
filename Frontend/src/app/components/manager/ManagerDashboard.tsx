@@ -7,9 +7,14 @@ import {
   getExecutives,
   getCorporates,
   getAccounts,
+  getExpiringContracts,
+  getManagerMonthlySpendingSummary,
+  getManagerMonthlySpendingTrend,
   type ExecutiveRecord,
   type CorporateRecord,
   type AccountRecord,
+  type ExpiringContractRecord,
+  type SpendingTrendRecord,
 } from "../../api/adminApi";
 import {
   Card,
@@ -28,6 +33,8 @@ import {
 import {
   BarChart,
   Bar,
+  LineChart,
+  Line,
   XAxis,
   YAxis,
   CartesianGrid,
@@ -42,6 +49,7 @@ import {
   Headphones,
   CalendarDays,
   AlertCircle,
+  Clock,
   TrendingUp,
   List,
   Trophy,
@@ -75,6 +83,11 @@ function getSlaStatus(ticket: TicketRecord): "Healthy" | "Warning" | "At Risk" |
 function monthKey(iso: string): string {
   if (!iso) return "";
   return iso.slice(0, 7);
+}
+
+/** AVR submitted or visit fully closed — counts as “held” for KPIs. */
+function visitExecutedWithReport(v: Pick<VisitRecord, "status">) {
+  return v.status === "completed" || v.status === "follow_up_pending";
 }
 
 function recordCreatedAt(r: { created_at?: string; createdAt?: string }): string {
@@ -179,8 +192,11 @@ export default function ManagerDashboard() {
   const [executives, setExecutives] = useState<ExecutiveRecord[]>([]);
   const [corporates, setCorporates] = useState<CorporateRecord[]>([]);
   const [accounts, setAccounts] = useState<AccountRecord[]>([]);
+  const [expiringContracts, setExpiringContracts] = useState<ExpiringContractRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [monthlySpendingTotal, setMonthlySpendingTotal] = useState("0.00");
+  const [spendingTrend, setSpendingTrend] = useState<SpendingTrendRecord[]>([]);
 
   useEffect(() => {
     const run = async () => {
@@ -191,7 +207,7 @@ export default function ManagerDashboard() {
         setProfile(profileData);
         const managerId = profileData.roleProfileId ?? undefined;
 
-        const [ticketsRes, visitsRes, execRes, corpRes, accRes] = await Promise.all([
+        const [ticketsRes, visitsRes, execRes, corpRes, accRes, expContractsRes, spendingSummaryRes, spendingTrendRes] = await Promise.all([
           getAllTickets().catch(() => [] as TicketRecord[]),
           getManagerVisits().catch(() => [] as VisitRecord[]),
           getExecutives().catch(() => [] as ExecutiveRecord[]),
@@ -201,6 +217,14 @@ export default function ManagerDashboard() {
           managerId != null
             ? getAccounts({ managerId }).catch(() => [] as AccountRecord[])
             : getAccounts().catch(() => [] as AccountRecord[]),
+          getExpiringContracts(6).catch(() => [] as ExpiringContractRecord[]),
+          getManagerMonthlySpendingSummary().catch(() => ({
+            total: "0.00",
+            currency: "NAD",
+            byCorporate: {},
+            byAccount: {},
+          })),
+          getManagerMonthlySpendingTrend(6).catch(() => [] as SpendingTrendRecord[]),
         ]);
 
         setTickets(ticketsRes);
@@ -208,6 +232,9 @@ export default function ManagerDashboard() {
         setExecutives(execRes);
         setCorporates(corpRes);
         setAccounts(accRes);
+        setExpiringContracts(expContractsRes);
+        setMonthlySpendingTotal(spendingSummaryRes.total || "0.00");
+        setSpendingTrend(spendingTrendRes);
       } catch (e: unknown) {
         setError(e instanceof Error ? e.message : "Failed to load dashboard");
       } finally {
@@ -247,11 +274,11 @@ export default function ManagerDashboard() {
   const lastMonthKey = `${lastMonthDate.getFullYear()}-${String(lastMonthDate.getMonth() + 1).padStart(2, "0")}`;
 
   const visitsCompletedThisMonth = scopedVisits.filter(
-    (v) => v.status === "completed" && monthKey(v.visitDate) === thisMonthKey,
+    (v) => visitExecutedWithReport(v) && monthKey(v.visitDate) === thisMonthKey,
   ).length;
 
   const visitsCompletedLastMonth = scopedVisits.filter(
-    (v) => v.status === "completed" && monthKey(v.visitDate) === lastMonthKey,
+    (v) => visitExecutedWithReport(v) && monthKey(v.visitDate) === lastMonthKey,
   ).length;
 
   const visitsScheduledThisMonth = scopedVisits.filter((v) => monthKey(v.visitDate) === thisMonthKey).length;
@@ -260,7 +287,7 @@ export default function ManagerDashboard() {
       ? Math.round((visitsCompletedThisMonth / visitsScheduledThisMonth) * 100)
       : scopedVisits.length
         ? Math.round(
-            (scopedVisits.filter((v) => v.status === "completed").length / Math.max(scopedVisits.length, 1)) * 100,
+            (scopedVisits.filter((v) => visitExecutedWithReport(v)).length / Math.max(scopedVisits.length, 1)) * 100,
           )
         : 0;
 
@@ -271,6 +298,7 @@ export default function ManagerDashboard() {
 
   const corporatesCount = corporates.length || new Set(scopedTickets.map((t) => t.corporateId).filter(Boolean)).size;
   const totalLines = accounts.length;
+  const nextExpiringContract = expiringContracts[0] || null;
 
   const corporatesThisMonth = corporates.filter((c) => monthKey(recordCreatedAt(c)) === thisMonthKey).length;
   const corporatesLastMonth = corporates.filter((c) => monthKey(recordCreatedAt(c)) === lastMonthKey).length;
@@ -296,7 +324,7 @@ export default function ManagerDashboard() {
     avgLastMonth > 0 ? `${avgThisMonth >= avgLastMonth ? "+" : ""}${(avgThisMonth - avgLastMonth).toFixed(1)} vs last month` : "— vs last month";
 
   const visitsDoneLastMonthCount = scopedVisits.filter(
-    (v) => v.status === "completed" && monthKey(v.visitDate) === lastMonthKey,
+    (v) => visitExecutedWithReport(v) && monthKey(v.visitDate) === lastMonthKey,
   ).length;
   const visitRateLastMonth = (() => {
     const sched = scopedVisits.filter((v) => monthKey(v.visitDate) === lastMonthKey).length;
@@ -384,8 +412,10 @@ export default function ManagerDashboard() {
         corporate: v.corporateName || v.accountName,
         outcome:
           v.status === "completed"
-            ? "Visit completed"
-            : v.status === "pending"
+            ? "Visit closed (AVR complete)"
+            : v.status === "follow_up_pending"
+              ? "Meeting report filed — AVR sections 6–7 pending"
+              : v.status === "pending"
               ? "Awaiting customer response"
               : `${v.purpose || "Visit update"}`.slice(0, 80),
         typeLabel: "Visit",
@@ -447,7 +477,7 @@ export default function ManagerDashboard() {
         <p className="text-sm text-slate-500 mt-1">{departmentSubtitle}</p>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-6">
         <StatCard
           label="Team Size"
           value={teamExecutives.length}
@@ -473,6 +503,25 @@ export default function ManagerDashboard() {
           subClassName="text-red-600 font-medium"
           icon={AlertCircle}
           iconClassName="text-red-500"
+        />
+        <StatCard
+          label="Monthly Spending"
+          value={`N$ ${Number(monthlySpendingTotal || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+          sub="Paid invoices this month"
+          icon={TrendingUp}
+          iconClassName="text-emerald-500"
+        />
+        <StatCard
+          label="Contracts Expiring (6M)"
+          value={expiringContracts.length}
+          sub={
+            nextExpiringContract
+              ? `${nextExpiringContract.corporateName || nextExpiringContract.accountName} in ${nextExpiringContract.daysRemaining} day(s)`
+              : "No upcoming expiries"
+          }
+          subClassName={expiringContracts.length > 0 ? "text-amber-700 font-medium" : "text-slate-400"}
+          icon={Clock}
+          iconClassName={expiringContracts.length > 0 ? "text-amber-500" : "text-slate-400"}
         />
       </div>
 
@@ -566,6 +615,32 @@ export default function ManagerDashboard() {
           </CardContent>
         </Card>
       </div>
+
+      <Card className="rounded-xl border border-slate-200/90 shadow-sm">
+        <CardHeader>
+          <CardTitle>Monthly Spending Trend</CardTitle>
+        </CardHeader>
+        <CardContent className="pl-2">
+          <div className="h-[280px]">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={spendingTrend.map((p) => ({ month: p.month, total: Number(p.total || 0) }))}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+                <XAxis dataKey="month" stroke="#64748b" fontSize={12} tickLine={false} axisLine={false} />
+                <YAxis stroke="#64748b" fontSize={12} tickLine={false} axisLine={false} />
+                <Tooltip />
+                <Line
+                  type="monotone"
+                  dataKey="total"
+                  name="Spending (NAD)"
+                  stroke="#16a34a"
+                  strokeWidth={2.5}
+                  dot={{ r: 3 }}
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </CardContent>
+      </Card>
 
       <Card className="rounded-xl border border-slate-200/90 shadow-sm overflow-hidden">
         <CardHeader className="flex flex-row items-center gap-2 space-y-0 border-b border-slate-100 bg-white pb-4">

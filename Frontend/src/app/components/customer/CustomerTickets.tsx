@@ -1,4 +1,5 @@
 import { useState, useEffect } from "react";
+import { useSearchParams } from "react-router";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
@@ -11,6 +12,8 @@ import { createTicket, getMyTickets, type TicketRecord } from "../../api/ticketA
 import { format } from "date-fns";
 
 const REQUEST_TYPES = [
+  { value: "request_meeting", label: "Request Meeting" },
+  { value: "new_product_request", label: "New Product Request" },
   { value: "new_line", label: "New Line" },
   { value: "plan_change", label: "Plan Change" },
   { value: "line_suspension", label: "Line Suspension" },
@@ -38,6 +41,8 @@ const COMPLAINT_TYPES = [
 ];
 
 const REQUEST_PRIORITY_MAP: Record<string, "low" | "medium" | "high"> = {
+  request_meeting: "low",
+  new_product_request: "low",
   new_line: "low",
   plan_change: "low",
   line_suspension: "high",
@@ -88,7 +93,10 @@ const STATUS_CONFIG: Record<string, { label: string; className: string }> = {
   rejected: { label: "Rejected", className: "bg-red-100 text-red-800" },
 };
 
+const REQUEST_TYPE_VALUES = new Set(REQUEST_TYPES.map((t) => t.value));
+
 export default function CustomerTickets() {
+  const [searchParams, setSearchParams] = useSearchParams();
   const [showCreate, setShowCreate] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [showFilterPanel, setShowFilterPanel] = useState(false);
@@ -99,7 +107,30 @@ export default function CustomerTickets() {
   const [category, setCategory] = useState<"request" | "complaint">("request");
   const [type, setType] = useState("");
   const [description, setDescription] = useState("");
+  const [meetingProposedDate, setMeetingProposedDate] = useState("");
+  const [meetingProposedTime, setMeetingProposedTime] = useState("");
+  const [meetingAgenda, setMeetingAgenda] = useState("");
   const [submitting, setSubmitting] = useState(false);
+
+  const isMeetingRequest = category === "request" && type === "request_meeting";
+
+  const resetCreateForm = () => {
+    setCategory("request");
+    setType("");
+    setDescription("");
+    setMeetingProposedDate("");
+    setMeetingProposedTime("");
+    setMeetingAgenda("");
+  };
+
+  const handleTypeChange = (value: string) => {
+    setType(value);
+    if (value !== "request_meeting") {
+      setMeetingProposedDate("");
+      setMeetingProposedTime("");
+      setMeetingAgenda("");
+    }
+  };
 
   // Data state
   const [tickets, setTickets] = useState<TicketRecord[]>([]);
@@ -122,6 +153,27 @@ export default function CustomerTickets() {
     fetchTickets();
   }, []);
 
+  useEffect(() => {
+    const prefill = searchParams.get("newRequest");
+    if (!prefill || !REQUEST_TYPE_VALUES.has(prefill)) return;
+    setShowCreate(true);
+    setCategory("request");
+    setType(prefill);
+    if (prefill !== "request_meeting") {
+      setMeetingProposedDate("");
+      setMeetingProposedTime("");
+      setMeetingAgenda("");
+    }
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete("newRequest");
+        return next;
+      },
+      { replace: true },
+    );
+  }, [searchParams, setSearchParams]);
+
   const autoPriority =
     category === "request"
       ? (REQUEST_PRIORITY_MAP[type] || "medium")
@@ -130,10 +182,33 @@ export default function CustomerTickets() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
 
-    if (!type || !description.trim()) {
+    if (!type) {
+      alert("Please select a type");
+      return;
+    }
+
+    if (isMeetingRequest) {
+      if (!meetingProposedDate.trim() || !meetingProposedTime.trim() || !meetingAgenda.trim()) {
+        alert("Please enter the proposed meeting date, time, and agenda");
+        return;
+      }
+    } else if (!description.trim()) {
       alert("Please fill in all required fields");
       return;
     }
+
+    const descriptionPayload = isMeetingRequest
+      ? [
+          `Proposed date: ${meetingProposedDate}`,
+          `Proposed time: ${meetingProposedTime}`,
+          `Agenda:\n${meetingAgenda.trim()}`,
+          ...(description.trim() ? [`Additional details:\n${description.trim()}`] : []),
+        ].join("\n\n")
+      : description.trim();
+
+    const titlePayload = isMeetingRequest
+      ? `Meeting request — ${meetingProposedDate}`.slice(0, 80)
+      : description.trim().slice(0, 80);
 
     try {
       setSubmitting(true);
@@ -141,12 +216,11 @@ export default function CustomerTickets() {
         category,
         type,
         priority: autoPriority,
-        title: description.trim().slice(0, 80),
-        description,
+        title: titlePayload,
+        description: descriptionPayload,
       });
       setShowCreate(false);
-      setType("");
-      setDescription("");
+      resetCreateForm();
       await fetchTickets();
     } catch (err: any) {
       alert(err.message || "Failed to create ticket");
@@ -200,7 +274,13 @@ export default function CustomerTickets() {
           >
             <Filter className="h-4 w-4" /> Filter
           </Button>
-          <Button onClick={() => setShowCreate(!showCreate)} className="flex items-center gap-2">
+          <Button
+            onClick={() => {
+              if (!showCreate) resetCreateForm();
+              setShowCreate(!showCreate);
+            }}
+            className="flex items-center gap-2"
+          >
             <Plus className="h-4 w-4" /> New Ticket
           </Button>
         </div>
@@ -289,7 +369,14 @@ export default function CustomerTickets() {
           <CardHeader className="pb-4">
             <div className="flex items-center justify-between">
               <CardTitle className="text-lg">Create New Ticket</CardTitle>
-              <Button variant="ghost" size="sm" onClick={() => setShowCreate(false)}>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setShowCreate(false);
+                  resetCreateForm();
+                }}
+              >
                 Cancel
               </Button>
             </div>
@@ -304,7 +391,13 @@ export default function CustomerTickets() {
                     id="cat-request"
                     name="category"
                     checked={category === "request"}
-                    onChange={() => { setCategory("request"); setType(""); }}
+                    onChange={() => {
+                      setCategory("request");
+                      setType("");
+                      setMeetingProposedDate("");
+                      setMeetingProposedTime("");
+                      setMeetingAgenda("");
+                    }}
                     className="text-blue-600 focus:ring-blue-500"
                   />
                   <Label htmlFor="cat-request" className="cursor-pointer">Service Request</Label>
@@ -315,7 +408,13 @@ export default function CustomerTickets() {
                     id="cat-complaint"
                     name="category"
                     checked={category === "complaint"}
-                    onChange={() => { setCategory("complaint"); setType(""); }}
+                    onChange={() => {
+                      setCategory("complaint");
+                      setType("");
+                      setMeetingProposedDate("");
+                      setMeetingProposedTime("");
+                      setMeetingAgenda("");
+                    }}
                     className="text-blue-600 focus:ring-blue-500"
                   />
                   <Label htmlFor="cat-complaint" className="cursor-pointer">Issue/Complaint</Label>
@@ -325,7 +424,7 @@ export default function CustomerTickets() {
               <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
                 <div className="space-y-2">
                   <Label>Type <span className="text-red-500">*</span></Label>
-                  <Select value={type} onValueChange={setType}>
+                  <Select value={type} onValueChange={handleTypeChange}>
                     <SelectTrigger>
                       <SelectValue placeholder="Select type..." />
                     </SelectTrigger>
@@ -434,11 +533,55 @@ export default function CustomerTickets() {
                   </div>
                 )}
 
+                {isMeetingRequest && (
+                  <div className="md:col-span-2 lg:col-span-3 grid gap-4 sm:grid-cols-2">
+                    <div className="space-y-2">
+                      <Label>Proposed date <span className="text-red-500">*</span></Label>
+                      <Input
+                        type="date"
+                        value={meetingProposedDate}
+                        onChange={(e) => setMeetingProposedDate(e.target.value)}
+                        className="bg-white"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Proposed time <span className="text-red-500">*</span></Label>
+                      <Input
+                        type="time"
+                        value={meetingProposedTime}
+                        onChange={(e) => setMeetingProposedTime(e.target.value)}
+                        className="bg-white"
+                      />
+                    </div>
+                    <div className="space-y-2 sm:col-span-2">
+                      <Label>Agenda <span className="text-red-500">*</span></Label>
+                      <textarea
+                        className="flex min-h-[88px] w-full rounded-md border border-slate-300 bg-white px-3 py-2 text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                        placeholder="What should be covered in the meeting?"
+                        value={meetingAgenda}
+                        onChange={(e) => setMeetingAgenda(e.target.value)}
+                      />
+                    </div>
+                  </div>
+                )}
+
                 <div className="space-y-2 md:col-span-2 lg:col-span-3">
-                  <Label>Description <span className="text-red-500">*</span></Label>
+                  <Label>
+                    {isMeetingRequest ? (
+                      <>Additional details (optional)</>
+                    ) : (
+                      <>
+                        Description <span className="text-red-500">*</span>
+                      </>
+                    )}
+                  </Label>
                   <textarea
                     className="flex min-h-[80px] w-full rounded-md border border-slate-300 bg-transparent px-3 py-2 text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
-                    placeholder="Provide full details for this request or complaint..."
+                    placeholder={
+                      isMeetingRequest
+                        ? "Any other context for your meeting request..."
+                        : "Provide full details for this request or complaint..."
+                    }
                     value={description}
                     onChange={(e) => setDescription(e.target.value)}
                   />

@@ -8,6 +8,7 @@ import { format } from "date-fns";
 import { isSupervisorRole } from "../utils/roleCapabilities";
 import type { StaffLayoutOutletContext } from "../layoutOutletContext";
 import { defaultSupervisorBadges } from "../hooks/useSupervisorHybridBadges";
+import StaffTicketCreate from "./staff/StaffTicketCreate";
 
 const STATUS_CONFIG: Record<string, { label: string; className: string }> = {
   new: { label: "New", className: "bg-blue-100 text-blue-800" },
@@ -57,8 +58,10 @@ export default function Tickets() {
   const [error, setError] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [showFilterPanel, setShowFilterPanel] = useState(false);
+  const [showCreateForm, setShowCreateForm] = useState(false);
   const [statusFilter, setStatusFilter] = useState("all");
   const [categoryFilter, setCategoryFilter] = useState("all");
+  const canCreateTicket = ["admin", "executive_staff", "supervisor", "manager", "gm"].includes(currentUser?.role || "");
 
   const refreshBadges = supervisorBadges.refresh;
   const fetchTickets = useCallback(async () => {
@@ -118,14 +121,35 @@ export default function Tickets() {
               : "Customer tickets linked to your assigned executives"}
           </p>
         </div>
-        <Button
-          variant={showFilterPanel ? "default" : "outline"}
-          onClick={() => setShowFilterPanel(!showFilterPanel)}
-          className="flex items-center gap-2"
-        >
-          <Filter className="h-4 w-4" /> Filter
-        </Button>
+        <div className="flex items-center gap-2">
+          {canCreateTicket && (
+            <Button
+              variant="default"
+              className="bg-blue-600 text-white hover:bg-blue-700"
+              onClick={() => setShowCreateForm((prev) => !prev)}
+            >
+              {showCreateForm ? "Hide Create Ticket" : "Create Ticket"}
+            </Button>
+          )}
+          <Button
+            variant={showFilterPanel ? "default" : "outline"}
+            onClick={() => setShowFilterPanel(!showFilterPanel)}
+            className="flex items-center gap-2"
+          >
+            <Filter className="h-4 w-4" /> Filter
+          </Button>
+        </div>
       </div>
+      {showCreateForm && canCreateTicket && (
+        <StaffTicketCreate
+          showHeading={false}
+          onCreated={() => {
+            setShowCreateForm(false);
+            void fetchTickets();
+          }}
+          onCancel={() => setShowCreateForm(false)}
+        />
+      )}
       {isSupervisor && (
         <div className="flex items-center gap-2">
           <Button

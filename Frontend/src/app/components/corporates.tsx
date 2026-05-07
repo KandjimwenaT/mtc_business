@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useNavigate, useOutletContext } from "react-router";
 import { toast } from "sonner";
 import { 
@@ -17,21 +17,25 @@ import {
   TableHeader,
   TableRow
 } from "./ui-components";
-import { Building2, Search, Users, Star, X, FileText, Database, Loader2, CheckCircle, UserPlus, Trash2 } from "lucide-react";
+import { Building2, Search, Users, Star, X, FileText, Database, Loader2, CheckCircle, UserPlus, Trash2, AlertTriangle } from "lucide-react";
 import {
   getAccounts, getAccountContracts, getAccountServices, getPersonsByType,
   createAccount, createContract, createService, createCorporate, getCorporates,
+  getExpiringContracts,
   updateAccountServiceStatus, deleteAccountService,
   submitCorporateForApproval, approveCorporate,
-  type AccountRecord, type ContractRecord, type ServiceRecord, type PersonRecord, type CorporateRecord,
+  getCorporateContactPersons, assignContactPersonToCorporate, removeContactPersonFromCorporate,
+  type AccountRecord, type ContractRecord, type ServiceRecord, type PersonRecord, type CorporateRecord, type ExpiringContractRecord,
   type AccountPayload, type ContractPayload, type ServicePayload, type CorporatePayload,
 } from "../api/adminApi";
-import { getMyAccounts, type ExecutiveAccountRecord } from "../api/authApi";
+import { getMyExpiringContracts, type ExecutiveAccountRecord, type ExpiringContractRecord as ExecutiveExpiringContractRecord } from "../api/authApi";
+import { getAllTickets, type TicketRecord } from "../api/ticketApi";
 import { Mail, Phone } from "lucide-react";
 import AdminCorporateWizard from "./admin/adminCorporateWizard";
 import { isExecutiveRole, isManagerRole, isSupervisorRole } from "../utils/roleCapabilities";
 import type { StaffLayoutOutletContext } from "../layoutOutletContext";
 import { defaultSupervisorBadges } from "../hooks/useSupervisorHybridBadges";
+import { useExecutiveData } from "../hooks/useExecutiveData";
 
 const mockCorporates = [
   { 
@@ -66,7 +70,41 @@ const mockCorporates = [
   },
 ];
 
+type AccountContactLike = {
+  contactFirstName?: string | null;
+  contactLastName?: string | null;
+  contactEmail?: string | null;
+};
+
+// Treat blank contact fields and legacy "Imported Contact" / "@placeholder.local"
+// dummy values from the bulk Excel import as a missing contact person.
+const isAccountContactMissing = (acc: AccountContactLike | null | undefined) => {
+  if (!acc) return true;
+  const fn = (acc.contactFirstName || "").trim();
+  const ln = (acc.contactLastName || "").trim();
+  const em = (acc.contactEmail || "").trim().toLowerCase();
+  const looksLikeImportPlaceholder =
+    (fn === "Imported" && ln === "Contact") ||
+    em.endsWith("@placeholder.local") ||
+    em.endsWith(".contact@placeholder.local");
+  return looksLikeImportPlaceholder || (!fn && !ln && !em);
+};
+
+const formatContactName = (acc: AccountContactLike | null | undefined) => {
+  if (!acc) return "Not assigned";
+  if (isAccountContactMissing(acc)) return "Not assigned";
+  return `${acc.contactFirstName || ""} ${acc.contactLastName || ""}`.trim() || "Not assigned";
+};
+
+const formatContactEmail = (acc: AccountContactLike | null | undefined) => {
+  if (!acc) return "Not assigned";
+  if (isAccountContactMissing(acc)) return "Not assigned";
+  return (acc.contactEmail || "").trim() || "Not assigned";
+};
+
 export default function Corporates() {
+  const formatNad = (value: string | number | null | undefined) =>
+    `N$ ${Number(value || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   const navigate = useNavigate();
   const outletCtx = useOutletContext<StaffLayoutOutletContext | undefined>();
   const supervisorBadges = outletCtx?.supervisorBadges ?? defaultSupervisorBadges();
@@ -91,9 +129,15 @@ export default function Corporates() {
     "/dashboard";
   const showCorporatePanel = isAdmin || isManager;
   const canManageCorporates = isManager || isAdmin;
+  const CARD_PAGE_SIZE = 12;
+  const ALPHABET_FILTER_OPTIONS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 
   // Shared state
   const [searchQuery, setSearchQuery] = useState("");
+  const [expiryFilterMonths, setExpiryFilterMonths] = useState<0 | 1 | 3 | 6 | 12>(0);
+  const [alphabetFilter, setAlphabetFilter] = useState<string>("all");
+  const [executiveFilter, setExecutiveFilter] = useState<string>("all");
+  const [currentListPage, setCurrentListPage] = useState(1);
 
   // === Mock data state (non-manager roles) ===
   const [selectedCorp, setSelectedCorp] = useState(mockCorporates[0]);
@@ -106,6 +150,8 @@ export default function Corporates() {
   const [executives, setExecutives] = useState<PersonRecord[]>([]);
   const [managers, setManagers] = useState<PersonRecord[]>([]);
   const [accountManagers, setAccountManagers] = useState<PersonRecord[]>([]);
+  const [managerExpiringContracts, setManagerExpiringContracts] = useState<ExpiringContractRecord[]>([]);
+  const [allTickets, setAllTickets] = useState<TicketRecord[]>([]);
   const [loadingAccounts, setLoadingAccounts] = useState(false);
   const [selectedCorporate, setSelectedCorporate] = useState<CorporateRecord | null>(null);
   const [selectedAccount, setSelectedAccount] = useState<AccountRecord | null>(null);
@@ -124,6 +170,14 @@ export default function Corporates() {
 
   // Approve modal state
   const [corporateExecId, setCorporateExecId] = useState<string>("");
+
+  // Corporate contact-persons (M:N AM ↔ Corporate)
+  const [corporateContactPersons, setCorporateContactPersons] = useState<PersonRecord[]>([]);
+  const [loadingCorporateContacts, setLoadingCorporateContacts] = useState(false);
+  const [showContactPersonModal, setShowContactPersonModal] = useState(false);
+  const [contactSearchQuery, setContactSearchQuery] = useState("");
+  const [assigningContactId, setAssigningContactId] = useState<number | null>(null);
+  const [removingContactId, setRemovingContactId] = useState<number | null>(null);
 
   // Create corporate wizard (admin)
   const [showCreateCorporateWizard, setShowCreateCorporateWizard] = useState(false);
@@ -178,8 +232,15 @@ export default function Corporates() {
   ]);
 
   // === Executive state (own assigned accounts) ===
-  const [execAccounts, setExecAccounts] = useState<ExecutiveAccountRecord[]>([]);
-  const [loadingExecAccounts, setLoadingExecAccounts] = useState(false);
+  // Backed by ExecutiveDataProvider so revisiting Corporates does not trigger
+  // another full reload of /auth/my-accounts.
+  const {
+    accounts: execAccounts,
+    initialLoading: execInitialLoading,
+    initialized: execInitialized,
+  } = useExecutiveData();
+  const loadingExecAccounts = execInitialLoading || (!execInitialized && hasExecutiveScope);
+  const [execExpiringContracts, setExecExpiringContracts] = useState<ExecutiveExpiringContractRecord[]>([]);
   const [selectedExecAccount, setSelectedExecAccount] = useState<ExecutiveAccountRecord | null>(null);
   const [execDetailContracts, setExecDetailContracts] = useState<ContractRecord[]>([]);
   const [execDetailServices, setExecDetailServices] = useState<ServiceRecord[]>([]);
@@ -203,25 +264,108 @@ export default function Corporates() {
       setManagers(mgrs);
       setAccountManagers(acctMgrs);
       if (showCorporatePanel) {
-        if (corps.length > 0 && !selectedCorporate) setSelectedCorporate(corps[0]);
-      } else if (accs.length > 0 && !selectedAccount) {
-        setSelectedAccount(accs[0]);
+        setSelectedCorporate((prev) => prev ?? (corps.length > 0 ? corps[0] : null));
+      } else {
+        setSelectedAccount((prev) => prev ?? (accs.length > 0 ? accs[0] : null));
       }
     } catch (err) {
       toast.error("Failed to load accounts", { description: err instanceof Error ? err.message : undefined });
     } finally {
       setLoadingAccounts(false);
     }
-  }, [showCorporatePanel, selectedAccount, selectedCorporate]);
+  }, [showCorporatePanel]);
 
   useEffect(() => {
     if (canManageCorporates) fetchAccounts();
   }, [canManageCorporates, fetchAccounts]);
 
-  const selectedAccountManager =
-    selectedCorporate?.corporateId != null
-      ? accountManagers.find((am) => am.corporateId === selectedCorporate.corporateId) ?? null
-      : null;
+  const refreshCorporateContactPersons = useCallback(
+    async (corporateId: number | null | undefined) => {
+      if (!corporateId) {
+        setCorporateContactPersons([]);
+        return;
+      }
+      setLoadingCorporateContacts(true);
+      try {
+        const persons = await getCorporateContactPersons(corporateId);
+        setCorporateContactPersons(persons);
+      } catch (err) {
+        toast.error("Failed to load contact persons", {
+          description: err instanceof Error ? err.message : undefined,
+        });
+        setCorporateContactPersons([]);
+      } finally {
+        setLoadingCorporateContacts(false);
+      }
+    },
+    []
+  );
+
+  useEffect(() => {
+    if (!canManageCorporates) return;
+    refreshCorporateContactPersons(selectedCorporate?.corporateId ?? null);
+  }, [canManageCorporates, selectedCorporate?.corporateId, refreshCorporateContactPersons]);
+
+  // Existing contact persons (across the system) that are NOT yet linked to
+  // the currently-selected corporate, filtered by the modal search query.
+  const availableContactCandidates = useMemo(() => {
+    const linkedIds = new Set(corporateContactPersons.map((c) => c.id));
+    const q = contactSearchQuery.trim().toLowerCase();
+    return accountManagers
+      .filter((am) => !linkedIds.has(am.id))
+      .filter((am) => {
+        if (!q) return true;
+        const fullName = `${am.firstName ?? ""} ${am.lastName ?? ""}`.toLowerCase();
+        return (
+          fullName.includes(q) ||
+          (am.email ?? "").toLowerCase().includes(q) ||
+          (am.phone ?? "").toLowerCase().includes(q) ||
+          (am.department ?? "").toLowerCase().includes(q)
+        );
+      });
+  }, [accountManagers, corporateContactPersons, contactSearchQuery]);
+
+  const handleAssignContactPerson = async (accountManagerId: number) => {
+    if (!selectedCorporate) return;
+    setAssigningContactId(accountManagerId);
+    try {
+      await assignContactPersonToCorporate(selectedCorporate.corporateId, accountManagerId);
+      toast.success("Contact person linked to corporate");
+      await Promise.all([
+        refreshCorporateContactPersons(selectedCorporate.corporateId),
+        // Refresh global AM list so other corporate views reflect the new link.
+        getPersonsByType("customer").then(setAccountManagers).catch(() => {}),
+      ]);
+      setShowContactPersonModal(false);
+      setContactSearchQuery("");
+    } catch (err) {
+      toast.error("Failed to link contact person", {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    } finally {
+      setAssigningContactId(null);
+    }
+  };
+
+  const handleRemoveContactPerson = async (accountManagerId: number) => {
+    if (!selectedCorporate) return;
+    if (!window.confirm("Remove this contact person from this corporate?")) return;
+    setRemovingContactId(accountManagerId);
+    try {
+      await removeContactPersonFromCorporate(selectedCorporate.corporateId, accountManagerId);
+      toast.success("Contact person removed");
+      await Promise.all([
+        refreshCorporateContactPersons(selectedCorporate.corporateId),
+        getPersonsByType("customer").then(setAccountManagers).catch(() => {}),
+      ]);
+    } catch (err) {
+      toast.error("Failed to remove contact person", {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    } finally {
+      setRemovingContactId(null);
+    }
+  };
 
   // Load detail for selected executive account (uses inline data from getMyAccounts)
   const handleExecAccountSelect = (acc: ExecutiveAccountRecord) => {
@@ -230,18 +374,49 @@ export default function Corporates() {
     setExecDetailServices(acc.services as unknown as ServiceRecord[]);
   };
 
-  // Fetch executive's own accounts
+  // Auto-select the first cached account when executive data finishes loading.
+  // The accounts themselves are now fetched once at Layout level, so navigation
+  // back to Corporates is instant.
   useEffect(() => {
     if (!isExecutive) return;
-    setLoadingExecAccounts(true);
-    getMyAccounts()
-      .then((accs) => {
-        setExecAccounts(accs);
-        if (accs.length > 0) handleExecAccountSelect(accs[0]);
-      })
-      .catch((err) => toast.error("Failed to load accounts", { description: err instanceof Error ? err.message : undefined }))
-      .finally(() => setLoadingExecAccounts(false));
-  }, [isExecutive]);
+    if (!execAccounts.length) return;
+    if (selectedExecAccount) return;
+    handleExecAccountSelect(execAccounts[0]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isExecutive, execAccounts]);
+
+  useEffect(() => {
+    if (expiryFilterMonths === 0) {
+      setManagerExpiringContracts([]);
+      return;
+    }
+    if (!isManager) return;
+    getExpiringContracts(expiryFilterMonths)
+      .then(setManagerExpiringContracts)
+      .catch((err) => toast.error("Failed to load expiring contracts", { description: err instanceof Error ? err.message : undefined }));
+  }, [isManager, expiryFilterMonths]);
+
+  useEffect(() => {
+    if (expiryFilterMonths === 0) {
+      setExecExpiringContracts([]);
+      return;
+    }
+    if (!isExecutive) return;
+    getMyExpiringContracts(expiryFilterMonths)
+      .then(setExecExpiringContracts)
+      .catch((err) => toast.error("Failed to load expiring contracts", { description: err instanceof Error ? err.message : undefined }));
+  }, [isExecutive, expiryFilterMonths]);
+
+  useEffect(() => {
+    if (!canManageCorporates) return;
+    getAllTickets()
+      .then(setAllTickets)
+      .catch((err) =>
+        toast.error("Failed to load tickets", {
+          description: err instanceof Error ? err.message : undefined,
+        })
+      );
+  }, [canManageCorporates]);
 
   // Open account detail modal (fetches contracts + services)
   const handleOpenDetail = async (acc: AccountRecord) => {
@@ -503,12 +678,38 @@ export default function Corporates() {
   };
 
   // Filter logic
-  const filteredExecAccounts = execAccounts.filter(a =>
-    searchQuery === "" ||
-    a.accountName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    a.accountNumber.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    (a.industry || "").toLowerCase().includes(searchQuery.toLowerCase())
+  const executiveExpiringAccountIds = new Set(execExpiringContracts.map((contract) => contract.accountId));
+  const managerExpiringCorporateIds = new Set(
+    managerExpiringContracts
+      .map((contract) => contract.corporateId)
+      .filter((id): id is number => typeof id === "number" && Number.isInteger(id) && id > 0)
   );
+  const managerExpiringAccountIds = new Set(managerExpiringContracts.map((contract) => contract.accountId));
+  const corporateActiveTicketCounts = allTickets.reduce<Record<number, number>>((acc, ticket) => {
+    const corporateId = ticket.corporateId;
+    if (!corporateId) return acc;
+    const isClosedState = ["resolved", "closed", "rejected"].includes(ticket.status);
+    if (isClosedState) return acc;
+    acc[corporateId] = (acc[corporateId] || 0) + 1;
+    return acc;
+  }, {});
+  const corporatesWithIncompleteAccount = new Set<number>(
+    accounts
+      .filter((a) => a.corporateId != null && isAccountContactMissing(a))
+      .map((a) => a.corporateId as number)
+  );
+
+  const filteredExecAccounts = execAccounts.filter((a) => {
+    const matchesExpiry = expiryFilterMonths === 0 || executiveExpiringAccountIds.has(a.accountId);
+    if (!matchesExpiry) return false;
+    if (searchQuery === "") return true;
+    const q = searchQuery.toLowerCase();
+    return (
+      a.accountName.toLowerCase().includes(q) ||
+      a.accountNumber.toLowerCase().includes(q) ||
+      (a.industry || "").toLowerCase().includes(q)
+    );
+  });
 
   const filteredCorps = mockCorporates.filter(c =>
     searchQuery === "" ||
@@ -516,20 +717,72 @@ export default function Corporates() {
     c.industry.toLowerCase().includes(searchQuery.toLowerCase())
   );
 
+  const normalizedSearchQuery = searchQuery.toLowerCase();
+  const matchesAlphabetFilter = (name: string) =>
+    alphabetFilter === "all" || (name || "").charAt(0).toUpperCase() === alphabetFilter;
+
   const filteredAccounts = accounts.filter(a =>
     searchQuery === "" ||
-    a.accountName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    a.accountNumber.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    (a.industry || "").toLowerCase().includes(searchQuery.toLowerCase())
+    a.accountName.toLowerCase().includes(normalizedSearchQuery) ||
+    a.accountNumber.toLowerCase().includes(normalizedSearchQuery) ||
+    (a.industry || "").toLowerCase().includes(normalizedSearchQuery)
   );
+  // Note: corporate.executiveId references ExecutiveStaff.executiveId, which is a
+  // different identifier than Person.id used in the dropdown. We therefore match
+  // on the executive's full name (which is mirrored on both records server-side).
+  const buildExecKey = (firstName?: string | null, lastName?: string | null) =>
+    `${(firstName || "").trim()} ${(lastName || "").trim()}`.trim().toLowerCase();
+  const matchesExecutiveFilter = (
+    execId: number | null | undefined,
+    firstName?: string | null,
+    lastName?: string | null,
+  ) => {
+    if (executiveFilter === "all") return true;
+    if (executiveFilter === "unassigned") return execId == null;
+    return buildExecKey(firstName, lastName) === executiveFilter;
+  };
   const filteredCorporateRecords = corporates.filter((c) =>
-    searchQuery === "" ||
-    c.corporateName.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    c.corporateNumber.toLowerCase().includes(searchQuery.toLowerCase()) ||
-    (c.industry || "").toLowerCase().includes(searchQuery.toLowerCase())
+    (!isManager || expiryFilterMonths === 0 || managerExpiringCorporateIds.has(c.corporateId)) &&
+    matchesExecutiveFilter(c.executiveId ?? null, c.executiveFirstName, c.executiveLastName) &&
+    (
+      searchQuery === "" ||
+      c.corporateName.toLowerCase().includes(normalizedSearchQuery) ||
+      c.corporateNumber.toLowerCase().includes(normalizedSearchQuery) ||
+      (c.industry || "").toLowerCase().includes(normalizedSearchQuery)
+    )
+  );
+  const alphabetFilteredCorporateRecords = filteredCorporateRecords.filter((corp) =>
+    matchesAlphabetFilter(corp.corporateName || "")
+  );
+  const alphabetFilteredAccounts = filteredAccounts.filter((account) =>
+    matchesAlphabetFilter(account.accountName || "")
+  );
+  const alphabetFilteredExecAccounts = filteredExecAccounts.filter((account) =>
+    matchesAlphabetFilter(account.accountName || "")
+  );
+  const listItemsTotal = isExecutive
+    ? alphabetFilteredExecAccounts.length
+    : showCorporatePanel
+    ? alphabetFilteredCorporateRecords.length
+    : alphabetFilteredAccounts.length;
+  const totalListPages = Math.max(1, Math.ceil(listItemsTotal / CARD_PAGE_SIZE));
+  const paginatedCorporateRecords = alphabetFilteredCorporateRecords.slice(
+    (currentListPage - 1) * CARD_PAGE_SIZE,
+    currentListPage * CARD_PAGE_SIZE
+  );
+  const paginatedAccounts = alphabetFilteredAccounts.slice(
+    (currentListPage - 1) * CARD_PAGE_SIZE,
+    currentListPage * CARD_PAGE_SIZE
+  );
+  const paginatedExecAccounts = alphabetFilteredExecAccounts.slice(
+    (currentListPage - 1) * CARD_PAGE_SIZE,
+    currentListPage * CARD_PAGE_SIZE
   );
   const selectedCorporateChildAccounts = selectedCorporate
-    ? accounts.filter((account) => account.corporateId === selectedCorporate.corporateId)
+    ? accounts.filter((account) =>
+        account.corporateId === selectedCorporate.corporateId &&
+        (!isManager || expiryFilterMonths === 0 || managerExpiringAccountIds.has(account.accountId))
+      )
     : [];
   const selectedCorporateContacts: Array<{
     name: string;
@@ -539,6 +792,39 @@ export default function Corporates() {
     username: string;
     access: string;
   }> = [];
+
+  useEffect(() => {
+    if (!isExecutive) return;
+    if (alphabetFilteredExecAccounts.length === 0) {
+      if (selectedExecAccount) {
+        setSelectedExecAccount(null);
+      }
+      setExecDetailContracts((prev) => (prev.length === 0 ? prev : []));
+      setExecDetailServices((prev) => (prev.length === 0 ? prev : []));
+      return;
+    }
+
+    if (!selectedExecAccount || !alphabetFilteredExecAccounts.some((account) => account.accountId === selectedExecAccount.accountId)) {
+      handleExecAccountSelect(alphabetFilteredExecAccounts[0]);
+    }
+  }, [isExecutive, alphabetFilteredExecAccounts, selectedExecAccount]);
+
+  useEffect(() => {
+    if (!isManager) return;
+    if (!selectedCorporate || !alphabetFilteredCorporateRecords.some((corp) => corp.corporateId === selectedCorporate.corporateId)) {
+      setSelectedCorporate(alphabetFilteredCorporateRecords[0] ?? null);
+    }
+  }, [isManager, alphabetFilteredCorporateRecords, selectedCorporate]);
+
+  useEffect(() => {
+    setCurrentListPage(1);
+  }, [searchQuery, expiryFilterMonths, alphabetFilter, executiveFilter, showCorporatePanel]);
+
+  useEffect(() => {
+    if (currentListPage > totalListPages) {
+      setCurrentListPage(totalListPages);
+    }
+  }, [currentListPage, totalListPages]);
 
   // Manager/supervisor should only see executives under their own team.
   const currentManagerPerson = managers.find((m) => m.email === currentUser?.email);
@@ -611,7 +897,65 @@ export default function Corporates() {
               onChange={(e) => setSearchQuery(e.target.value)}
             />
          </div>
+         {canManageCorporates && (
+           <Select
+             value={executiveFilter}
+             onChange={(e) => setExecutiveFilter(e.target.value)}
+             className="w-64"
+           >
+             <option value="all">All Executives</option>
+             <option value="unassigned">Unassigned</option>
+             {assignmentExecutives
+               .slice()
+               .sort((a, b) =>
+                 `${a.firstName} ${a.lastName}`.localeCompare(`${b.firstName} ${b.lastName}`)
+               )
+               .map((exec) => {
+                 const key = buildExecKey(exec.firstName, exec.lastName);
+                 return (
+                   <option key={exec.id} value={key}>
+                     {exec.firstName} {exec.lastName}
+                   </option>
+                 );
+               })}
+           </Select>
+         )}
+         {(isManager || isExecutive) && (
+           <Select
+             value={String(expiryFilterMonths)}
+             onChange={(e) => setExpiryFilterMonths(Number(e.target.value) as 0 | 1 | 3 | 6 | 12)}
+             className="w-64"
+           >
+             <option value="0">All Contract Timelines</option>
+             <option value="1">Expiring within 1 month</option>
+             <option value="3">Expiring within 3 months</option>
+             <option value="6">Expiring within 6 months</option>
+             <option value="12">Expiring within 12 months</option>
+           </Select>
+         )}
       </div>
+      {(canManageCorporates || isExecutive) && (
+        <div className="flex items-center gap-2 overflow-x-auto pb-1">
+          <Button
+            variant={alphabetFilter === "all" ? "primary" : "outline"}
+            size="sm"
+            onClick={() => setAlphabetFilter("all")}
+          >
+            All
+          </Button>
+          {ALPHABET_FILTER_OPTIONS.map((letter) => (
+            <Button
+              key={letter}
+              variant={alphabetFilter === letter ? "primary" : "outline"}
+              size="sm"
+              onClick={() => setAlphabetFilter(letter)}
+              className="min-w-9 px-3"
+            >
+              {letter}
+            </Button>
+          ))}
+        </div>
+      )}
 
       {/* ═══════════ EXECUTIVE VIEW: Own assigned accounts ═══════════ */}
       {isExecutive ? (
@@ -623,7 +967,7 @@ export default function Corporates() {
           <div className="grid gap-6 md:grid-cols-3">
             {/* Left sidebar: account cards */}
             <div className="md:col-span-1 space-y-4 max-h-[75vh] overflow-y-auto pr-1">
-              {filteredExecAccounts.map((acc) => (
+              {paginatedExecAccounts.map((acc) => (
                 <Card
                   key={acc.accountId}
                   className={`cursor-pointer transition-colors ${selectedExecAccount?.accountId === acc.accountId ? "border-mtc-blue ring-1 ring-mtc-blue" : "hover:border-mtc-blue"}`}
@@ -645,12 +989,43 @@ export default function Corporates() {
                       <span className="flex items-center gap-1"><Building2 className="h-3 w-3" /> {acc.services.length} Services</span>
                       <Badge variant={acc.isActive ? "success" : "danger"} className="text-[10px]">{acc.isActive ? "Active" : "Inactive"}</Badge>
                     </div>
+                    <div className="mt-2 text-xs text-slate-500">Monthly spend: {formatNad(acc.monthlySpending)}</div>
+                    {isAccountContactMissing(acc) && (
+                      <div className="mt-2 inline-flex items-center gap-1 text-[10px] font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5">
+                        <AlertTriangle className="h-3 w-3" /> Profile incomplete
+                      </div>
+                    )}
                   </CardContent>
                 </Card>
               ))}
-              {filteredExecAccounts.length === 0 && (
+              {alphabetFilteredExecAccounts.length === 0 && (
                 <div className="py-8 text-center text-slate-500 text-sm">
                   {execAccounts.length === 0 ? "No accounts assigned to you yet." : "No accounts match your search."}
+                </div>
+              )}
+              {listItemsTotal > 0 && (
+                <div className="flex items-center justify-between border-t border-slate-200 pt-3">
+                  <p className="text-xs text-slate-500">
+                    Page {currentListPage} of {totalListPages}
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setCurrentListPage((prev) => Math.max(1, prev - 1))}
+                      disabled={currentListPage === 1}
+                    >
+                      Prev
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setCurrentListPage((prev) => Math.min(totalListPages, prev + 1))}
+                      disabled={currentListPage >= totalListPages}
+                    >
+                      Next
+                    </Button>
+                  </div>
                 </div>
               )}
             </div>
@@ -670,11 +1045,16 @@ export default function Corporates() {
                           </div>
                           <p className="text-sm text-slate-500">{selectedExecAccount.industry || selectedExecAccount.accountType} • {selectedExecAccount.accountNumber}</p>
                         </div>
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap justify-end">
                           <Badge variant={selectedExecAccount.approvalStatus === "approved" ? "success" : selectedExecAccount.approvalStatus === "rejected" ? "danger" : "warning"}>
                             {selectedExecAccount.approvalStatus === "approved" ? "Approved" : selectedExecAccount.approvalStatus === "rejected" ? "Rejected" : "Pending"}
                           </Badge>
                           <Badge variant={selectedExecAccount.isActive ? "success" : "danger"}>{selectedExecAccount.isActive ? "Active" : "Inactive"}</Badge>
+                          {isAccountContactMissing(selectedExecAccount) && (
+                            <Badge variant="warning" className="inline-flex items-center gap-1">
+                              <AlertTriangle className="h-3 w-3" /> Profile Incomplete
+                            </Badge>
+                          )}
                         </div>
                       </div>
                     </CardHeader>
@@ -682,11 +1062,15 @@ export default function Corporates() {
                       <div className="grid grid-cols-2 md:grid-cols-3 divide-x divide-slate-200 border-b border-slate-200">
                         <div className="p-4 text-center">
                           <div className="text-sm text-slate-500 mb-1">Contact Person</div>
-                          <div className="font-semibold text-slate-900">{selectedExecAccount.contactFirstName} {selectedExecAccount.contactLastName}</div>
+                          <div className={`font-semibold ${isAccountContactMissing(selectedExecAccount) ? "text-amber-700 italic" : "text-slate-900"}`}>{formatContactName(selectedExecAccount)}</div>
                         </div>
                         <div className="p-4 text-center">
                           <div className="text-sm text-slate-500 mb-1">Contact Email</div>
-                          <div className="font-semibold text-slate-900 text-sm flex items-center justify-center gap-1"><Mail className="h-3.5 w-3.5 text-slate-400" />{selectedExecAccount.contactEmail}</div>
+                          {isAccountContactMissing(selectedExecAccount) ? (
+                            <div className="font-semibold text-amber-700 italic text-sm">Not assigned</div>
+                          ) : (
+                            <div className="font-semibold text-slate-900 text-sm flex items-center justify-center gap-1"><Mail className="h-3.5 w-3.5 text-slate-400" />{formatContactEmail(selectedExecAccount)}</div>
+                          )}
                         </div>
                         <div className="p-4 text-center">
                           <div className="text-sm text-slate-500 mb-1">Contact Phone</div>
@@ -812,7 +1196,7 @@ export default function Corporates() {
           <div className="grid gap-6 md:grid-cols-3">
             {/* Left sidebar: account cards */}
             <div className="md:col-span-1 space-y-4 max-h-[75vh] overflow-y-auto pr-1">
-              {showCorporatePanel ? filteredCorporateRecords.map((corp) => (
+              {showCorporatePanel ? paginatedCorporateRecords.map((corp) => (
                 <Card
                   key={corp.corporateId}
                   className={`cursor-pointer transition-colors ${selectedCorporate?.corporateId === corp.corporateId ? "border-mtc-blue ring-1 ring-mtc-blue" : "hover:border-mtc-blue"}`}
@@ -837,9 +1221,15 @@ export default function Corporates() {
                       <span className="flex items-center gap-1"><Building2 className="h-3 w-3" /> {corp.corporateType}</span>
                       <Badge variant={corp.isActive ? "success" : "danger"} className="text-[10px]">{corp.isActive ? "Active" : "Inactive"}</Badge>
                     </div>
+                    <div className="mt-2 text-xs text-slate-500">Monthly spend: {formatNad(corp.monthlySpending)}</div>
+                    {corporatesWithIncompleteAccount.has(corp.corporateId) && (
+                      <div className="mt-2 inline-flex items-center gap-1 text-[10px] font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5">
+                        <AlertTriangle className="h-3 w-3" /> Profile incomplete
+                      </div>
+                    )}
                   </CardContent>
                 </Card>
-              )) : filteredAccounts.map((acc) => (
+              )) : paginatedAccounts.map((acc) => (
                 <Card
                   key={acc.accountId}
                   className={`cursor-pointer transition-colors ${selectedAccount?.accountId === acc.accountId ? "border-mtc-blue ring-1 ring-mtc-blue" : "hover:border-mtc-blue"}`}
@@ -858,14 +1248,45 @@ export default function Corporates() {
                       <span className="flex items-center gap-1"><Building2 className="h-3 w-3" /> {acc.accountType}</span>
                       <Badge variant={acc.isActive ? "success" : "danger"} className="text-[10px]">{acc.isActive ? "Active" : "Inactive"}</Badge>
                     </div>
+                    <div className="mt-2 text-xs text-slate-500">Monthly spend: {formatNad(acc.monthlySpending)}</div>
+                    {isAccountContactMissing(acc) && (
+                      <div className="mt-2 inline-flex items-center gap-1 text-[10px] font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5">
+                        <AlertTriangle className="h-3 w-3" /> Profile incomplete
+                      </div>
+                    )}
                   </CardContent>
                 </Card>
               ))}
-              {(showCorporatePanel ? filteredCorporateRecords.length === 0 : filteredAccounts.length === 0) && (
+              {(showCorporatePanel ? alphabetFilteredCorporateRecords.length === 0 : alphabetFilteredAccounts.length === 0) && (
                 <div className="py-8 text-center text-slate-500 text-sm">
                   {showCorporatePanel
                     ? (corporates.length === 0 ? "No corporates created yet." : "No corporates match your search.")
                     : (accounts.length === 0 ? "No accounts created yet." : "No corporate accounts match your search.")}
+                </div>
+              )}
+              {listItemsTotal > 0 && (
+                <div className="flex items-center justify-between border-t border-slate-200 pt-3">
+                  <p className="text-xs text-slate-500">
+                    Page {currentListPage} of {totalListPages}
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setCurrentListPage((prev) => Math.max(1, prev - 1))}
+                      disabled={currentListPage === 1}
+                    >
+                      Prev
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setCurrentListPage((prev) => Math.min(totalListPages, prev + 1))}
+                      disabled={currentListPage >= totalListPages}
+                    >
+                      Next
+                    </Button>
+                  </div>
                 </div>
               )}
             </div>
@@ -908,7 +1329,7 @@ export default function Corporates() {
                               onClick={async () => {
                                 if (!selectedCorporate) return;
                                 const hasAccounts = selectedCorporateChildAccounts.length > 0;
-                                const hasContact = Boolean(selectedAccountManager);
+                                const hasContact = corporateContactPersons.length > 0;
 
                                 if (!hasAccounts) {
                                   toast.error("Add at least one account before submitting for approval.");
@@ -936,7 +1357,7 @@ export default function Corporates() {
                               disabled={
                                 submittingCorporateApproval ||
                                 selectedCorporateChildAccounts.length === 0 ||
-                                !selectedAccountManager
+                                corporateContactPersons.length === 0
                               }
                             >
                               {submittingCorporateApproval ? "Submitting..." : "Submit for Approval"}
@@ -1001,7 +1422,7 @@ export default function Corporates() {
                           </div>
                         </div>
                       )}
-                      <div className="grid grid-cols-3 divide-x divide-slate-200 border-b border-slate-200">
+                      <div className="grid grid-cols-2 md:grid-cols-4 divide-x divide-slate-200 border-b border-slate-200">
                         <div className="p-4 text-center">
                           <div className="text-sm text-slate-500 mb-1">Assigned Executive</div>
                           <div className="font-semibold text-slate-900">
@@ -1011,12 +1432,22 @@ export default function Corporates() {
                           </div>
                         </div>
                         <div className="p-4 text-center">
-                          <div className="text-sm text-slate-500 mb-1">Total Active Tickets</div>
-                          <div className="font-semibold text-slate-900">0</div>
+                          <div className="text-sm text-slate-500 mb-1">Expired Child Accounts</div>
+                          <div className="font-semibold text-amber-600">{selectedCorporate?.expiredAccountsCount ?? 0}</div>
                         </div>
                         <div className="p-4 text-center">
-                          <div className="text-sm text-slate-500 mb-1">Avg Rating (YTD)</div>
-                          <div className="font-semibold text-blue-600">4.8 ⭐</div>
+                          <div className="text-sm text-slate-500 mb-1">Total Renewals</div>
+                          <div className="font-semibold text-blue-600">{selectedCorporate?.renewalCount ?? 0}</div>
+                        </div>
+                        <div className="p-4 text-center">
+                          <div className="text-sm text-slate-500 mb-1">Total Active Tickets</div>
+                          <div className="font-semibold text-slate-900">
+                            {selectedCorporate ? corporateActiveTicketCounts[selectedCorporate.corporateId] || 0 : 0}
+                          </div>
+                        </div>
+                        <div className="p-4 text-center">
+                          <div className="text-sm text-slate-500 mb-1">Monthly Spending</div>
+                          <div className="font-semibold text-emerald-700">{formatNad(selectedCorporate?.monthlySpending)}</div>
                         </div>
                       </div>
 
@@ -1031,13 +1462,14 @@ export default function Corporates() {
                                 <TableHead>Account ID</TableHead>
                                 <TableHead>Location / Dept</TableHead>
                                 <TableHead>Services</TableHead>
+                                  <TableHead>Monthly Spending</TableHead>
                                 <TableHead className="text-right">Action</TableHead>
                               </TableRow>
                             </TableHeader>
                             <TableBody>
                               {selectedCorporateChildAccounts.length === 0 ? (
                                 <TableRow>
-                                  <td colSpan={4} className="p-4 text-slate-500">No sub-accounts yet.</td>
+                                  <td colSpan={5} className="p-4 text-slate-500">No sub-accounts yet.</td>
                                 </TableRow>
                               ) : (
                                 selectedCorporateChildAccounts.map((account) => (
@@ -1045,6 +1477,7 @@ export default function Corporates() {
                                     <TableCell className="font-medium">{account.accountNumber}</TableCell>
                                     <TableCell>{account.accountName}</TableCell>
                                     <TableCell>{account.accountType}</TableCell>
+                                    <TableCell>{formatNad(account.monthlySpending)}</TableCell>
                                     <TableCell className="text-right">
                                       <Button variant="ghost" size="sm" onClick={() => handleOpenDetail(account)}>Details</Button>
                                     </TableCell>
@@ -1070,40 +1503,69 @@ export default function Corporates() {
                                   <th className="px-4 py-2.5">Email</th>
                                   <th className="px-4 py-2.5">Phone</th>
                                   <th className="px-4 py-2.5">Position</th>
-                                  <th className="px-4 py-2.5">Username</th>
                                   <th className="px-4 py-2.5">Portal Access</th>
+                                  {isAdmin && <th className="px-4 py-2.5 text-right">Action</th>}
                                 </tr>
                               </thead>
                               <tbody className="divide-y divide-slate-100">
-                                {selectedAccountManager ? (
+                                {loadingCorporateContacts ? (
                                   <tr>
-                                    <td className="px-4 py-3 font-medium">
-                                      {selectedAccountManager.firstName} {selectedAccountManager.lastName}
+                                    <td colSpan={isAdmin ? 6 : 5} className="px-4 py-3 text-slate-500">
+                                      <span className="inline-flex items-center gap-2">
+                                        <Loader2 className="h-4 w-4 animate-spin" /> Loading contact persons…
+                                      </span>
                                     </td>
-                                    <td className="px-4 py-3">{selectedAccountManager.email}</td>
-                                    <td className="px-4 py-3">{selectedAccountManager.phone || "—"}</td>
-                                    <td className="px-4 py-3">Account Manager</td>
-                                    <td className="px-4 py-3">{selectedAccountManager.email}</td>
-                                    <td className="px-4 py-3">
-                                      {selectedAccountManager.hasPortalAccess ? (
-                                        <Badge variant="success">Enabled</Badge>
-                                      ) : (
-                                        <Badge variant="warning">Not enabled</Badge>
-                                      )}
+                                  </tr>
+                                ) : corporateContactPersons.length === 0 ? (
+                                  <tr>
+                                    <td colSpan={isAdmin ? 6 : 5} className="px-4 py-3 text-slate-500">
+                                      No contact person added.
                                     </td>
                                   </tr>
                                 ) : (
-                                  <tr>
-                                    <td colSpan={6} className="px-4 py-3 text-slate-500">No contact person added.</td>
-                                  </tr>
+                                  corporateContactPersons.map((cp) => (
+                                    <tr key={cp.id}>
+                                      <td className="px-4 py-3 font-medium">
+                                        {cp.firstName} {cp.lastName}
+                                      </td>
+                                      <td className="px-4 py-3">{cp.email}</td>
+                                      <td className="px-4 py-3">{cp.phone || "—"}</td>
+                                      <td className="px-4 py-3">Account Manager</td>
+                                      <td className="px-4 py-3">
+                                        {cp.hasPortalAccess ? (
+                                          <Badge variant="success">Enabled</Badge>
+                                        ) : (
+                                          <Badge variant="warning">Not enabled</Badge>
+                                        )}
+                                      </td>
+                                      {isAdmin && (
+                                        <td className="px-4 py-3 text-right">
+                                          <Button
+                                            variant="ghost"
+                                            size="sm"
+                                            onClick={() => handleRemoveContactPerson(cp.id)}
+                                            disabled={removingContactId === cp.id}
+                                          >
+                                            {removingContactId === cp.id ? (
+                                              <Loader2 className="h-4 w-4 animate-spin" />
+                                            ) : (
+                                              <span className="inline-flex items-center gap-1 text-red-600">
+                                                <Trash2 className="h-4 w-4" /> Remove
+                                              </span>
+                                            )}
+                                          </Button>
+                                        </td>
+                                      )}
+                                    </tr>
+                                  ))
                                 )}
                               </tbody>
                             </table>
                           </div>
-                          {!selectedAccountManager && isAdmin && (
-                            <div className="flex justify-end mt-4">
-                              <Button onClick={() => navigate(profileHref)}>
-                                Add Contact Person
+                          {isAdmin && (
+                            <div className="flex justify-end mt-4 gap-2">
+                              <Button onClick={() => { setShowContactPersonModal(true); setContactSearchQuery(""); }}>
+                                <UserPlus className="h-4 w-4 mr-1" /> Add Contact Person
                               </Button>
                             </div>
                           )}
@@ -1122,13 +1584,18 @@ export default function Corporates() {
                           </div>
                           <p className="text-sm text-slate-500">{selectedAccount!.industry || selectedAccount!.accountType} • {selectedAccount!.accountNumber}</p>
                         </div>
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 flex-wrap justify-end">
                           <Badge variant={
                             selectedAccount!.approvalStatus === "approved" ? "success" :
                             selectedAccount!.approvalStatus === "rejected" ? "danger" : "warning"
                           }>
                             {selectedAccount!.approvalStatus === "approved" ? "Approved" : selectedAccount!.approvalStatus === "rejected" ? "Rejected" : "Pending Approval"}
                           </Badge>
+                          {isAccountContactMissing(selectedAccount) && (
+                            <Badge variant="warning" className="inline-flex items-center gap-1">
+                              <AlertTriangle className="h-3 w-3" /> Profile Incomplete
+                            </Badge>
+                          )}
                           <Button size="sm" onClick={() => handleOpenDetail(selectedAccount!)}>
                             View Details & Manage
                           </Button>
@@ -1139,11 +1606,11 @@ export default function Corporates() {
                       <div className="grid grid-cols-3 divide-x divide-slate-200 border-b border-slate-200">
                         <div className="p-4 text-center">
                           <div className="text-sm text-slate-500 mb-1">Contact Person</div>
-                          <div className="font-semibold text-slate-900">{selectedAccount!.contactFirstName} {selectedAccount!.contactLastName}</div>
+                          <div className={`font-semibold ${isAccountContactMissing(selectedAccount) ? "text-amber-700 italic" : "text-slate-900"}`}>{formatContactName(selectedAccount)}</div>
                         </div>
                         <div className="p-4 text-center">
                           <div className="text-sm text-slate-500 mb-1">Contact Email</div>
-                          <div className="font-semibold text-slate-900 text-sm">{selectedAccount!.contactEmail}</div>
+                          <div className={`font-semibold text-sm ${isAccountContactMissing(selectedAccount) ? "text-amber-700 italic" : "text-slate-900"}`}>{formatContactEmail(selectedAccount)}</div>
                         </div>
                         <div className="p-4 text-center">
                           <div className="text-sm text-slate-500 mb-1">Assigned Executive</div>
@@ -1304,6 +1771,11 @@ export default function Corporates() {
                   {detailAccount.approvalStatus === "approved" ? "Approved" : detailAccount.approvalStatus === "rejected" ? "Rejected" : "Pending Approval"}
                 </Badge>
                 <Badge variant={detailAccount.isActive ? "success" : "danger"}>{detailAccount.isActive ? "Active" : "Inactive"}</Badge>
+                {isAccountContactMissing(detailAccount) && (
+                  <Badge variant="warning" className="inline-flex items-center gap-1">
+                    <AlertTriangle className="h-3 w-3" /> Profile Incomplete
+                  </Badge>
+                )}
                 <button onClick={handleCloseDetail} className="rounded-lg p-1.5 hover:bg-slate-100 text-slate-500 hover:text-slate-900 transition-colors">
                   <X className="h-5 w-5" />
                 </button>
@@ -1326,8 +1798,18 @@ export default function Corporates() {
                     <div><p className="text-xs text-slate-400">Account Type</p><p className="text-sm font-medium text-slate-900 mt-0.5">{detailAccount.accountType}</p></div>
                     <div><p className="text-xs text-slate-400">Industry</p><p className="text-sm font-medium text-slate-900 mt-0.5">{detailAccount.industry || "—"}</p></div>
                     <div><p className="text-xs text-slate-400">Created</p><p className="text-sm font-medium text-slate-900 mt-0.5">{new Date(detailAccount.created_at).toLocaleDateString()}</p></div>
-                    <div><p className="text-xs text-slate-400">Contact Name</p><p className="text-sm font-medium text-slate-900 mt-0.5">{detailAccount.contactFirstName} {detailAccount.contactLastName}</p></div>
-                    <div><p className="text-xs text-slate-400">Contact Email</p><p className="text-sm font-medium text-slate-900 mt-0.5">{detailAccount.contactEmail}</p></div>
+                    <div>
+                      <p className="text-xs text-slate-400">Contact Name</p>
+                      <p className={`text-sm font-medium mt-0.5 ${isAccountContactMissing(detailAccount) ? "text-amber-700 italic" : "text-slate-900"}`}>
+                        {formatContactName(detailAccount)}
+                      </p>
+                    </div>
+                    <div>
+                      <p className="text-xs text-slate-400">Contact Email</p>
+                      <p className={`text-sm font-medium mt-0.5 ${isAccountContactMissing(detailAccount) ? "text-amber-700 italic" : "text-slate-900"}`}>
+                        {formatContactEmail(detailAccount)}
+                      </p>
+                    </div>
                     <div><p className="text-xs text-slate-400">Contact Phone</p><p className="text-sm font-medium text-slate-900 mt-0.5">{detailAccount.contactPhone || "—"}</p></div>
                     <div>
                       <p className="text-xs text-slate-400">Assigned Executive</p>
@@ -1459,7 +1941,7 @@ export default function Corporates() {
                   )}
                 </div>
 
-                {isManager && detailAccount.approvalStatus === "approved" && (
+                {isManager && detailAccount.approvalStatus === "approved" && !isAccountContactMissing(detailAccount) && (
                   <div className="border-t border-slate-200 pt-6">
                     <div className="p-4 rounded-lg bg-green-50 border border-green-200 flex items-center gap-3">
                       <CheckCircle className="h-5 w-5 text-green-600 shrink-0" />
@@ -1473,6 +1955,19 @@ export default function Corporates() {
                     </div>
                   </div>
                 )}
+                {isManager && detailAccount.approvalStatus === "approved" && isAccountContactMissing(detailAccount) && (
+                  <div className="border-t border-slate-200 pt-6">
+                    <div className="p-4 rounded-lg bg-amber-50 border border-amber-200 flex items-center gap-3">
+                      <AlertTriangle className="h-5 w-5 text-amber-600 shrink-0" />
+                      <div>
+                        <p className="text-sm font-medium text-amber-800">Profile Incomplete</p>
+                        <p className="text-xs text-amber-700 mt-0.5">
+                          No contact person has been assigned to this account yet. Add a contact name, email, and phone before sending portal credentials.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
               </div>
             )}
 
@@ -1480,6 +1975,144 @@ export default function Corporates() {
               <Button variant="outline" onClick={handleCloseDetail}>Close</Button>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* ═══════════ Add / Select Contact Person Modal (admin) ═══════════ */}
+      {isAdmin && showContactPersonModal && selectedCorporate && (
+        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in">
+          <Card className="w-full max-w-2xl max-h-[90vh] flex flex-col">
+            <CardHeader className="flex flex-row items-center justify-between border-b border-slate-200 py-4">
+              <div>
+                <CardTitle className="flex items-center gap-2">
+                  <Users className="h-5 w-5 text-mtc-blue" />
+                  Select Contact Person
+                </CardTitle>
+                <p className="text-xs text-slate-500 mt-1">
+                  Choose an existing contact person to link to{" "}
+                  <span className="font-medium text-slate-700">{selectedCorporate.corporateName}</span>.
+                  A contact person can be linked to multiple corporates.
+                </p>
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => { setShowContactPersonModal(false); setContactSearchQuery(""); }}
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            </CardHeader>
+            <CardContent className="pt-4 flex-1 overflow-hidden flex flex-col gap-3">
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400 pointer-events-none" />
+                <Input
+                  className="pl-9"
+                  placeholder="Search by name, email, phone, or current corporate…"
+                  value={contactSearchQuery}
+                  onChange={(e) => setContactSearchQuery(e.target.value)}
+                  autoFocus
+                />
+              </div>
+
+              <div className="rounded-lg border border-slate-200 overflow-y-auto flex-1">
+                {accountManagers.length === 0 ? (
+                  <div className="p-6 text-sm text-slate-500 text-center space-y-3">
+                    <div>No contact persons exist yet.</div>
+                    <Button
+                      size="sm"
+                      onClick={() => {
+                        setShowContactPersonModal(false);
+                        setContactSearchQuery("");
+                        navigate(profileHref);
+                      }}
+                    >
+                      <UserPlus className="h-4 w-4 mr-1" />
+                      Create New Account Manager
+                    </Button>
+                  </div>
+                ) : availableContactCandidates.length === 0 ? (
+                  <div className="p-6 text-sm text-slate-500 text-center">
+                    {contactSearchQuery
+                      ? "No contact persons match your search."
+                      : "All existing contact persons are already linked to this corporate."}
+                  </div>
+                ) : (
+                  <table className="w-full text-sm">
+                    <thead className="bg-slate-50 sticky top-0">
+                      <tr className="text-left text-slate-500">
+                        <th className="px-4 py-2.5">Name</th>
+                        <th className="px-4 py-2.5">Email</th>
+                        <th className="px-4 py-2.5">Phone</th>
+                        <th className="px-4 py-2.5">Current Corporate</th>
+                        <th className="px-4 py-2.5 text-right">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {availableContactCandidates.map((cp) => (
+                        <tr key={cp.id} className="hover:bg-slate-50">
+                          <td className="px-4 py-3 font-medium text-slate-900">
+                            {cp.firstName} {cp.lastName}
+                          </td>
+                          <td className="px-4 py-3 text-slate-700 inline-flex items-center gap-1">
+                            <Mail className="h-3 w-3 text-slate-400" /> {cp.email}
+                          </td>
+                          <td className="px-4 py-3 text-slate-700">
+                            {cp.phone ? (
+                              <span className="inline-flex items-center gap-1">
+                                <Phone className="h-3 w-3 text-slate-400" /> {cp.phone}
+                              </span>
+                            ) : (
+                              "—"
+                            )}
+                          </td>
+                          <td className="px-4 py-3 text-slate-600">{cp.department || "—"}</td>
+                          <td className="px-4 py-3 text-right">
+                            <Button
+                              size="sm"
+                              onClick={() => handleAssignContactPerson(cp.id)}
+                              disabled={assigningContactId !== null}
+                            >
+                              {assigningContactId === cp.id ? (
+                                <span className="inline-flex items-center gap-1">
+                                  <Loader2 className="h-4 w-4 animate-spin" /> Linking…
+                                </span>
+                              ) : (
+                                "Select"
+                              )}
+                            </Button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+
+              <div className="rounded-md border border-dashed border-slate-300 bg-slate-50 p-3 text-xs text-slate-600">
+                Can't find the contact person you're looking for? Create a new
+                Account Manager on the My Profile page, then come back here to
+                link them to this corporate.
+              </div>
+            </CardContent>
+            <div className="flex flex-col-reverse gap-2 px-6 py-4 border-t border-slate-200 sm:flex-row sm:justify-between">
+              <Button
+                variant="outline"
+                onClick={() => { setShowContactPersonModal(false); setContactSearchQuery(""); }}
+              >
+                Close
+              </Button>
+              <Button
+                onClick={() => {
+                  setShowContactPersonModal(false);
+                  setContactSearchQuery("");
+                  navigate(profileHref);
+                }}
+              >
+                <UserPlus className="h-4 w-4 mr-1" />
+                Create New Account Manager
+              </Button>
+            </div>
+          </Card>
         </div>
       )}
 

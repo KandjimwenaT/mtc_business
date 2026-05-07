@@ -1,5 +1,8 @@
 const express = require('express');
+const path = require('path');
+const fs = require('fs');
 const http = require('http');
+const multer = require('multer');
 const cors = require('cors');
 const helmet = require('helmet');
 const { connectDB, sequelize } = require('./src/config/database');
@@ -15,12 +18,15 @@ const Manager = require('./src/models/Manager');
 const ExecutiveStaff = require('./src/models/ExecutiveStaff');
 const Corporate = require('./src/models/Corporate');
 const AccountManager = require('./src/models/AccountManager');
+const CorporateContactPerson = require('./src/models/CorporateContactPerson');
 const Account = require('./src/models/Account');
 const Contract = require('./src/models/Contract');
 const Service = require('./src/models/Service');
+const Invoice = require('./src/models/Invoice');
 const Complaint = require('./src/models/Complaint');
 const AccountRequest = require('./src/models/AccountRequest');
 const Ticket = require('./src/models/Ticket');
+const TicketInternalNote = require('./src/models/TicketInternalNote');
 const Visit = require('./src/models/Visit');
 const OTPModel = require('./src/models/otpModel');
 const complaintRoutes = require('./src/routes/complaintRoutes');
@@ -34,8 +40,12 @@ require('dotenv').config();
 const app = express();
 const PORT = 3003;
 
-// Security middleware
-app.use(helmet());
+// Security middleware — cross-origin images from /uploads (e.g. Vite on :5173, API on :3003)
+app.use(
+  helmet({
+    crossOriginResourcePolicy: { policy: 'cross-origin' },
+  })
+);
 app.use(cors({
   origin: [
     process.env.FRONTEND_URL || 'http://localhost:5173',
@@ -43,9 +53,20 @@ app.use(cors({
     // 'http://41.219.113.1',
     // 'http://41.219.113.1:4000',
   ],
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   credentials: true,
 }));
+
+const uploadsRoot = path.join(__dirname, 'uploads');
+const broadcastUploadsDir = path.join(uploadsRoot, 'broadcasts');
+const ticketUploadsDir = path.join(uploadsRoot, 'tickets');
+if (!fs.existsSync(broadcastUploadsDir)) {
+  fs.mkdirSync(broadcastUploadsDir, { recursive: true });
+}
+if (!fs.existsSync(ticketUploadsDir)) {
+  fs.mkdirSync(ticketUploadsDir, { recursive: true });
+}
+app.use('/uploads', express.static(uploadsRoot));
 
 // Body parsing
 app.use(express.json());
@@ -92,6 +113,12 @@ app.use((err, req, res, next) => {
   // Body-parser / JSON parse errors
   if (err.status === 400 && err.type === 'entity.parse.failed') {
     return res.status(400).json({ status: 'Failed', message: 'Invalid JSON in request body' });
+  }
+  if (err instanceof multer.MulterError) {
+    return res.status(400).json({
+      status: 'Failed',
+      message: err.code === 'LIMIT_FILE_SIZE' ? 'Attachment must be 5MB or smaller' : err.message,
+    });
   }
   console.error('Unhandled error:', err);
   res.status(500).json({ status: 'Failed', message: 'Internal server error' });
@@ -194,6 +221,60 @@ const startServer = async () => {
   } catch (err) {
     // Swallow to preserve startup in partially initialized environments.
   }
+  // Ensure tickets table has creator/source/attachment columns on legacy DBs
+  try {
+    const ticketTable = await queryInterface.describeTable('tickets');
+    const dt = require('sequelize').DataTypes;
+    if (!ticketTable.created_by_user_id) {
+      await queryInterface.addColumn('tickets', 'created_by_user_id', { type: dt.INTEGER, allowNull: true });
+    }
+    if (!ticketTable.created_by_role) {
+      await queryInterface.addColumn('tickets', 'created_by_role', { type: dt.STRING, allowNull: true });
+    }
+    if (!ticketTable.created_by_name) {
+      await queryInterface.addColumn('tickets', 'created_by_name', { type: dt.STRING, allowNull: true });
+    }
+    if (!ticketTable.created_for_account_id) {
+      await queryInterface.addColumn('tickets', 'created_for_account_id', { type: dt.INTEGER, allowNull: true });
+    }
+    if (!ticketTable.created_for_customer_user_id) {
+      await queryInterface.addColumn('tickets', 'created_for_customer_user_id', { type: dt.INTEGER, allowNull: true });
+    }
+    if (!ticketTable.source_context_note) {
+      await queryInterface.addColumn('tickets', 'source_context_note', { type: dt.TEXT, allowNull: true });
+    }
+    if (!ticketTable.attachment_url) {
+      await queryInterface.addColumn('tickets', 'attachment_url', { type: dt.STRING, allowNull: true });
+    }
+    if (!ticketTable.source_channel) {
+      await queryInterface.addColumn('tickets', 'source_channel', {
+        type: dt.ENUM('portal', 'email', 'phone'),
+        allowNull: false,
+        defaultValue: 'portal',
+      });
+    }
+  } catch (err) {
+    // Fresh environments may not have tickets table yet; Ticket.sync will create it.
+  }
+  // Ensure services.current_service_owner exists on legacy DBs
+  try {
+    const servicesTable = await queryInterface.describeTable('services');
+    const dt = require('sequelize').DataTypes;
+    if (!servicesTable.current_service_owner) {
+      await queryInterface.addColumn('services', 'current_service_owner', {
+        type: dt.STRING,
+        allowNull: true,
+      });
+    }
+    // Legacy DBs may still have a unique constraint on msisdn; imports can contain duplicate service lines.
+    try {
+      await queryInterface.removeIndex('services', 'unique_msisdn');
+    } catch (_) {
+      // Index may not exist; ignore.
+    }
+  } catch (err) {
+    // Fresh environments may not have services table yet; Service.sync will create it.
+  }
   // Sync all models (tables already exist — use plain sync to avoid index accumulation)
   await Person.sync();
   await GM.sync();
@@ -201,12 +282,15 @@ const startServer = async () => {
   await ExecutiveStaff.sync();
   await Corporate.sync();
   await AccountManager.sync();
+  await CorporateContactPerson.sync();
   await Account.sync();
   await Contract.sync();
   await Service.sync();
+  await Invoice.sync();
   await Complaint.sync();
   await AccountRequest.sync();
   await Ticket.sync();
+  await TicketInternalNote.sync();
   await Visit.sync();
   await Notification.sync();
   await OTPModel.sync();

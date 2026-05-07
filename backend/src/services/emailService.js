@@ -723,6 +723,312 @@ If you didn't request a password reset, please ignore this email and your passwo
       throw new Error("Failed to send portal credentials email");
     }
   }
+
+  /**
+   * Send assignment update email to an executive when reassigned.
+   */
+  async sendExecutiveReassignmentEmail(email, name, corporateName) {
+    const dashboardUrl = `${process.env.FRONTEND_URL || "http://localhost:5173"}/dashboard`;
+
+    const mailOptions = {
+      from: {
+        name: "MTC Business",
+        address: process.env.EMAIL_FROM || "noreply@mtcbusiness.com",
+      },
+      to: email,
+      subject: `New Corporate Assignment - ${corporateName}`,
+      html: `
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <title>Corporate Reassignment - MTC Business</title>
+          <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; }
+            .header { background: linear-gradient(135deg, #1a1a2e, #16213e); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
+            .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }
+            .info-box { background: white; border: 1px solid #d1d5db; padding: 18px; border-radius: 8px; margin: 18px 0; }
+            .button { display: inline-block; background: #1a1a2e; color: white; padding: 12px 24px; text-decoration: none; border-radius: 5px; margin-top: 10px; }
+            .footer { text-align: center; margin-top: 24px; color: #666; font-size: 13px; }
+          </style>
+        </head>
+        <body>
+          <div class="header">
+            <h1>Corporate Assignment Updated</h1>
+            <p>MTC Business CRM</p>
+          </div>
+          <div class="content">
+            <h2>Hello ${name},</h2>
+            <p>You have been assigned to a new corporate account by your manager.</p>
+            <div class="info-box">
+              <p><strong>Corporate:</strong> ${corporateName}</p>
+              <p>Please review the account details and continue with follow-up actions.</p>
+            </div>
+            <a href="${dashboardUrl}" class="button">Open Dashboard</a>
+          </div>
+          <div class="footer">
+            <p>&copy; 2024 MTC Business. All rights reserved.</p>
+          </div>
+        </body>
+        </html>
+      `,
+      text: `Hello ${name},\n\nYou have been assigned to a new corporate account: ${corporateName}.\nPlease review the account details and continue with follow-up actions.\n\nOpen dashboard: ${dashboardUrl}\n\n© 2024 MTC Business.`,
+    };
+
+    try {
+      if (!this.transporter) {
+        console.log(`📧 Executive reassignment email would be sent to: ${email}`);
+        console.log(`🏢 Corporate: ${corporateName}`);
+        return { success: true, messageId: "console-log", previewUrl: null };
+      }
+
+      const result = await this.transporter.sendMail(mailOptions);
+      const previewUrl =
+        process.env.NODE_ENV !== "production"
+          ? nodemailer.getTestMessageUrl(result)
+          : null;
+
+      return { success: true, messageId: result.messageId, previewUrl };
+    } catch (error) {
+      console.error("Executive reassignment email send error:", error);
+      throw new Error("Failed to send executive reassignment email");
+    }
+  }
+
+  /**
+   * Send contract expiry alert email to manager/supervisor.
+   */
+  async sendContractExpiryAlertEmail(email, name, corporateName, accountName, contractType, contractEndDate, daysRemaining) {
+    const dashboardUrl = `${process.env.FRONTEND_URL || "http://localhost:5173"}/dashboard`;
+
+    const mailOptions = {
+      from: {
+        name: "MTC Business",
+        address: process.env.EMAIL_FROM || "noreply@mtcbusiness.com",
+      },
+      to: email,
+      subject: `Contract Expiry Alert - ${corporateName}`,
+      html: `
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <title>Contract Expiry Alert - MTC Business</title>
+          <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; }
+            .header { background: linear-gradient(135deg, #1a1a2e, #16213e); color: white; padding: 24px; text-align: center; border-radius: 10px 10px 0 0; }
+            .content { background: #f9f9f9; padding: 24px; border-radius: 0 0 10px 10px; }
+            .info-box { background: #fff; border: 1px solid #d1d5db; border-left: 4px solid #f59e0b; padding: 14px; border-radius: 6px; margin-top: 12px; }
+            .button { display: inline-block; background: #1a1a2e; color: white; padding: 10px 18px; text-decoration: none; border-radius: 5px; margin-top: 16px; }
+            .footer { text-align: center; margin-top: 24px; color: #666; font-size: 13px; }
+          </style>
+        </head>
+        <body>
+          <div class="header">
+            <h2>Contract Expiry Alert</h2>
+            <p>MTC Business CRM</p>
+          </div>
+          <div class="content">
+            <p>Hello ${name},</p>
+            <p>A corporate contract in your portfolio is approaching expiry and requires attention.</p>
+            <div class="info-box">
+              <p><strong>Corporate:</strong> ${corporateName}</p>
+              <p><strong>Account:</strong> ${accountName}</p>
+              <p><strong>Contract Type:</strong> ${contractType}</p>
+              <p><strong>Expiry Date:</strong> ${contractEndDate}</p>
+              <p><strong>Time Remaining:</strong> ${daysRemaining} day(s)</p>
+            </div>
+            <a href="${dashboardUrl}" class="button">Open Dashboard</a>
+          </div>
+          <div class="footer">
+            <p>&copy; 2024 MTC Business. All rights reserved.</p>
+          </div>
+        </body>
+        </html>
+      `,
+      text: `Hello ${name},\n\nA corporate contract in your portfolio is approaching expiry.\n\nCorporate: ${corporateName}\nAccount: ${accountName}\nContract Type: ${contractType}\nExpiry Date: ${contractEndDate}\nTime Remaining: ${daysRemaining} day(s)\n\nOpen dashboard: ${dashboardUrl}\n\n© 2024 MTC Business.`,
+    };
+
+    try {
+      if (!this.transporter) {
+        console.log(`📧 Contract expiry alert email would be sent to: ${email}`);
+        console.log(`🏢 Corporate: ${corporateName} | Account: ${accountName}`);
+        return { success: true, messageId: "console-log", previewUrl: null };
+      }
+
+      const result = await this.transporter.sendMail(mailOptions);
+      const previewUrl =
+        process.env.NODE_ENV !== "production"
+          ? nodemailer.getTestMessageUrl(result)
+          : null;
+
+      return { success: true, messageId: result.messageId, previewUrl };
+    } catch (error) {
+      console.error("Contract expiry email send error:", error);
+      throw new Error("Failed to send contract expiry email");
+    }
+  }
+
+  /**
+   * Send ticket internal note alert email.
+   */
+  async sendTicketInternalNoteEmail(email, name, ticketNumber, noteAuthorName, noteAuthorRole, noteText) {
+    const ticketUrl = `${process.env.FRONTEND_URL || "http://localhost:5173"}/tickets`;
+    const safeRole = String(noteAuthorRole || "").replace(/_/g, " ");
+
+    const mailOptions = {
+      from: {
+        name: "MTC Business",
+        address: process.env.EMAIL_FROM || "noreply@mtcbusiness.com",
+      },
+      to: email,
+      subject: `Internal Note Added - ${ticketNumber}`,
+      html: `
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <title>Ticket Internal Note - MTC Business</title>
+          <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; }
+            .header { background: linear-gradient(135deg, #1a1a2e, #16213e); color: white; padding: 24px; text-align: center; border-radius: 10px 10px 0 0; }
+            .content { background: #f9f9f9; padding: 24px; border-radius: 0 0 10px 10px; }
+            .note-box { background: #fff; border: 1px solid #d1d5db; border-left: 4px solid #1a1a2e; padding: 12px; border-radius: 6px; margin-top: 12px; }
+            .button { display: inline-block; background: #1a1a2e; color: white; padding: 10px 18px; text-decoration: none; border-radius: 5px; margin-top: 16px; }
+            .footer { text-align: center; margin-top: 24px; color: #666; font-size: 13px; }
+          </style>
+        </head>
+        <body>
+          <div class="header">
+            <h2>Ticket Internal Note</h2>
+            <p>${ticketNumber}</p>
+          </div>
+          <div class="content">
+            <p>Hello ${name},</p>
+            <p><strong>${noteAuthorName}</strong> (${safeRole}) added an internal note on ticket <strong>${ticketNumber}</strong>.</p>
+            <div class="note-box">${String(noteText || "").replace(/</g, "&lt;").replace(/>/g, "&gt;")}</div>
+            <a href="${ticketUrl}" class="button">Open Tickets</a>
+          </div>
+          <div class="footer">
+            <p>&copy; 2024 MTC Business. All rights reserved.</p>
+          </div>
+        </body>
+        </html>
+      `,
+      text: `Hello ${name},\n\n${noteAuthorName} (${safeRole}) added an internal note on ${ticketNumber}.\n\nNote:\n${noteText}\n\nOpen tickets: ${ticketUrl}\n\n© 2024 MTC Business.`,
+    };
+
+    try {
+      if (!this.transporter) {
+        console.log(`📧 Ticket internal note email would be sent to: ${email}`);
+        console.log(`🎫 Ticket: ${ticketNumber}`);
+        return { success: true, messageId: "console-log", previewUrl: null };
+      }
+
+      const result = await this.transporter.sendMail(mailOptions);
+      const previewUrl =
+        process.env.NODE_ENV !== "production"
+          ? nodemailer.getTestMessageUrl(result)
+          : null;
+
+      return { success: true, messageId: result.messageId, previewUrl };
+    } catch (error) {
+      console.error("Ticket internal note email send error:", error);
+      throw new Error("Failed to send ticket internal note email");
+    }
+  }
 }
+
+/**
+ * Send a visit/meeting invitation email to a teammate selected as an attendee
+ * by the visit organizer. `visit` can be a Sequelize Visit instance or a plain
+ * object with the same fields.
+ */
+EmailService.prototype.sendVisitInvitationEmail = async function (email, name, visit, organizerName) {
+  const dashboardUrl = `${process.env.FRONTEND_URL || "http://localhost:5173"}/dashboard`;
+
+  const meetingTypeLabel = visit?.meetingType === "online" ? "Online Meeting" : "In-Person Visit";
+  const locationOrLink =
+    visit?.meetingType === "online"
+      ? (visit?.onlineLink || "Link will be shared closer to the time")
+      : (visit?.location || "To be confirmed");
+  const safeAgenda = String(visit?.agenda || "").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  const subject = `Meeting Invitation - ${visit?.accountName || "Customer Visit"} (${visit?.visitDate || ""})`;
+
+  const mailOptions = {
+    from: {
+      name: "MTC Business",
+      address: process.env.EMAIL_FROM || "noreply@mtcbusiness.com",
+    },
+    to: email,
+    subject,
+    html: `
+      <!DOCTYPE html>
+      <html lang="en">
+      <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Meeting Invitation - MTC Business</title>
+        <style>
+          body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; }
+          .header { background: linear-gradient(135deg, #1a1a2e, #16213e); color: white; padding: 24px; text-align: center; border-radius: 10px 10px 0 0; }
+          .content { background: #f9f9f9; padding: 24px; border-radius: 0 0 10px 10px; }
+          .info-box { background: #fff; border: 1px solid #d1d5db; border-left: 4px solid #1a1a2e; padding: 14px; border-radius: 6px; margin-top: 12px; }
+          .info-box p { margin: 4px 0; }
+          .button { display: inline-block; background: #1a1a2e; color: white; padding: 10px 18px; text-decoration: none; border-radius: 5px; margin-top: 16px; }
+          .footer { text-align: center; margin-top: 24px; color: #666; font-size: 13px; }
+        </style>
+      </head>
+      <body>
+        <div class="header">
+          <h2>You're Invited to a Customer Visit</h2>
+          <p>${visit?.visitNumber || ""}</p>
+        </div>
+        <div class="content">
+          <p>Hello ${name || "there"},</p>
+          <p>${organizerName ? `<strong>${organizerName}</strong>` : "A teammate"} has scheduled a customer visit and added you as an attendee.</p>
+          <div class="info-box">
+            <p><strong>Customer:</strong> ${visit?.accountName || "—"}</p>
+            <p><strong>Purpose:</strong> ${visit?.purpose || "—"}</p>
+            <p><strong>Date:</strong> ${visit?.visitDate || "—"}</p>
+            <p><strong>Time:</strong> ${visit?.startTime || "—"} – ${visit?.endTime || "—"}</p>
+            <p><strong>Type:</strong> ${meetingTypeLabel}</p>
+            <p><strong>${visit?.meetingType === "online" ? "Meeting Link" : "Location"}:</strong> ${locationOrLink}</p>
+            ${safeAgenda ? `<p><strong>Agenda:</strong> ${safeAgenda}</p>` : ""}
+          </div>
+          <p style="margin-top:14px;">The visit is currently <strong>pending customer acceptance</strong>. You'll receive further updates as its status changes.</p>
+          <a href="${dashboardUrl}" class="button">Open Dashboard</a>
+        </div>
+        <div class="footer">
+          <p>&copy; 2024 MTC Business. All rights reserved.</p>
+        </div>
+      </body>
+      </html>
+    `,
+    text: `Hello ${name || "there"},\n\n${organizerName || "A teammate"} has scheduled a customer visit and added you as an attendee.\n\nCustomer: ${visit?.accountName || "—"}\nPurpose: ${visit?.purpose || "—"}\nDate: ${visit?.visitDate || "—"}\nTime: ${visit?.startTime || "—"} - ${visit?.endTime || "—"}\nType: ${meetingTypeLabel}\n${visit?.meetingType === "online" ? "Meeting Link" : "Location"}: ${locationOrLink}\n${visit?.agenda ? `Agenda: ${visit.agenda}\n` : ""}\nThe visit is currently pending customer acceptance.\n\nOpen dashboard: ${dashboardUrl}\n\n© 2024 MTC Business.`,
+  };
+
+  try {
+    if (!this.transporter) {
+      console.log(`📧 Visit invitation email would be sent to: ${email}`);
+      console.log(`📅 Visit: ${visit?.visitNumber || "(no number)"} - ${visit?.accountName || "(no account)"}`);
+      return { success: true, messageId: "console-log", previewUrl: null };
+    }
+
+    const result = await this.transporter.sendMail(mailOptions);
+    const previewUrl =
+      process.env.NODE_ENV !== "production"
+        ? nodemailer.getTestMessageUrl(result)
+        : null;
+
+    return { success: true, messageId: result.messageId, previewUrl };
+  } catch (error) {
+    console.error("Visit invitation email send error:", error);
+    throw new Error("Failed to send visit invitation email");
+  }
+};
 
 module.exports = new EmailService();

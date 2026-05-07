@@ -48,7 +48,16 @@ export interface VisitRecord {
   location: string | null;
   onlineLink: string | null;
   attendees: string[];
-  status: "pending" | "approved" | "declined" | "confirmed" | "completed" | "cancelled" | "rescheduled";
+  status:
+    | "pending"
+    | "approved"
+    | "declined"
+    | "confirmed"
+    /** AVR submitted — exec still owes §6 feedback + §7 account health */
+    | "follow_up_pending"
+    | "completed"
+    | "cancelled"
+    | "rescheduled";
   customerResponse: string | null;
   customerRespondedAt: string | null;
   rescheduleDate: string | null;
@@ -63,8 +72,17 @@ export interface VisitRecord {
   customerRating: number | null;
   customerRatingComment: string | null;
   customerRatedAt: string | null;
+  /** First time the executive opened “Start visit” with GPS (server). */
+  meetingStartedAt?: string | null;
+  startGeoLatitude?: number | null;
+  startGeoLongitude?: number | null;
   createdAt: string;
   updatedAt: string;
+}
+
+/** Open map at meeting start coordinates (new tab). */
+export function openStreetMapMeetingStartLink(lat: number, lng: number): string {
+  return `https://www.openstreetmap.org/?mlat=${lat}&mlon=${lng}&zoom=16`;
 }
 
 export interface ControlCardRecord {
@@ -85,7 +103,17 @@ export interface ControlCardRecord {
   risksCompetitive: string | null;
   opportunitiesUpsell: string | null;
   opportunitiesProcess: string | null;
-  actionItems: Array<{ action: string; owner: string; deadline: string }>;
+  actionItems: Array<{
+    item?: string;
+    action?: string;
+    quantity?: string;
+    dueDate?: string;
+    deadline?: string;
+    owner?: string;
+    notes?: string;
+    category?: string;
+    requestType?: string;
+  }>;
   submittedAt: string;
   geoLatitude: number | null;
   geoLongitude: number | null;
@@ -120,6 +148,23 @@ export const getMyVisits = async (): Promise<VisitRecord[]> => {
   const data = await response.json();
   if (!response.ok) throw new Error(data.message || "Failed to fetch visits");
   return data.visits as VisitRecord[];
+};
+
+/** Persist GPS when the executive starts a visit (AVR modal). Server keeps the first capture only. */
+export const recordVisitMeetingStart = async (
+  visitId: number,
+  coords: { latitude: number; longitude: number },
+): Promise<VisitRecord> => {
+  const response = await fetch(`${API_BASE_URL}/visits/${visitId}/meeting-start`, {
+    method: "PATCH",
+    headers: authHeaders(),
+    body: JSON.stringify({ latitude: coords.latitude, longitude: coords.longitude }),
+  });
+
+  if (response.status === 401) { handleUnauthorized(); throw new Error("Session expired"); }
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.message || "Failed to record meeting start");
+  return data.visit as VisitRecord;
 };
 
 // Customer gets their visits
@@ -215,7 +260,12 @@ export const updateVisit = async (
 export const submitControlCard = async (
   visitId: number,
   controlCardData: Record<string, unknown>,
-): Promise<{ controlCard: ControlCardRecord; visit: VisitRecord }> => {
+): Promise<{
+  controlCard: ControlCardRecord;
+  visit: VisitRecord;
+  ticketsCreated?: number;
+  ticketNumbers?: string[];
+}> => {
   const response = await fetch(`${API_BASE_URL}/visits/${visitId}/control-card`, {
     method: "PUT",
     headers: authHeaders(),
@@ -225,7 +275,12 @@ export const submitControlCard = async (
   if (response.status === 401) { handleUnauthorized(); throw new Error("Session expired"); }
   const data = await response.json();
   if (!response.ok) throw new Error(data.message || "Failed to submit control card");
-  return { controlCard: data.controlCard as ControlCardRecord, visit: data.visit as VisitRecord };
+  return {
+    controlCard: data.controlCard as ControlCardRecord,
+    visit: data.visit as VisitRecord,
+    ticketsCreated: typeof data.ticketsCreated === "number" ? data.ticketsCreated : 0,
+    ticketNumbers: Array.isArray(data.ticketNumbers) ? data.ticketNumbers : [],
+  };
 };
 
 // Get control card for a visit
@@ -245,7 +300,7 @@ export const getControlCard = async (visitId: number): Promise<ControlCardRecord
 export const updateControlCard = async (
   visitId: number,
   payload: { customerFeedback?: string; accountHealth?: "green" | "amber" | "red" },
-): Promise<ControlCardRecord> => {
+): Promise<{ controlCard: ControlCardRecord; visit?: VisitRecord }> => {
   const response = await fetch(`${API_BASE_URL}/visits/${visitId}/control-card`, {
     method: "PATCH",
     headers: authHeaders(),
@@ -255,7 +310,10 @@ export const updateControlCard = async (
   if (response.status === 401) { handleUnauthorized(); throw new Error("Session expired"); }
   const data = await response.json();
   if (!response.ok) throw new Error(data.message || "Failed to update control card");
-  return data.controlCard as ControlCardRecord;
+  return {
+    controlCard: data.controlCard as ControlCardRecord,
+    visit: data.visit as VisitRecord | undefined,
+  };
 };
 
 // Customer submits rating for a completed visit
@@ -276,6 +334,37 @@ export const submitVisitRating = async (
   const data = await response.json();
   if (!response.ok) throw new Error(data.message || "Failed to submit rating");
   return data.visit as VisitRecord;
+};
+
+export interface DepartmentTeamMember {
+  id: string;
+  firstName: string;
+  lastName: string;
+  fullName: string;
+  email: string;
+  role: "manager" | "supervisor" | "executive_staff" | "admin" | string;
+}
+
+export interface DepartmentTeamResponse {
+  department: string | null;
+  members: DepartmentTeamMember[];
+}
+
+// Executive / supervisor / manager fetches their department teammates
+// for the Attendees picker on the schedule-visit form.
+export const getDepartmentTeam = async (): Promise<DepartmentTeamResponse> => {
+  const response = await fetch(`${API_BASE_URL}/visits/department-team`, {
+    method: "GET",
+    headers: authHeaders(),
+  });
+
+  if (response.status === 401) { handleUnauthorized(); throw new Error("Session expired"); }
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.message || "Failed to fetch department team");
+  return {
+    department: data.department ?? null,
+    members: (data.members ?? []) as DepartmentTeamMember[],
+  };
 };
 
 // Manager gets visits scoped to their executives

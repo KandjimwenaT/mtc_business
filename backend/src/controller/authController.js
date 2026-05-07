@@ -1,6 +1,6 @@
 const securityService = require("../services/securityService");
 const emailService = require("../services/emailService");
-const { where } = require("sequelize");
+const { Op } = require("sequelize");
 const OTPModel = require("../models/otpModel");
 const User = require("../models/User");
 const Person = require("../models/Person");
@@ -12,9 +12,25 @@ const Corporate = require("../models/Corporate");
 const Account = require("../models/Account");
 const Service = require("../models/Service");
 const Contract = require("../models/Contract");
+const Invoice = require("../models/Invoice");
+const Notification = require("../models/Notification");
+const { createForUserIds } = require("../services/notificationService");
+const {
+  getCorporateIdsForAccountManager,
+  enrichAccountsWithCorporateContact,
+} = require("../services/contactPersonService");
 
 const hasExecutiveScope = (role) =>
   role === "executive_staff" || role === "supervisor";
+
+const isoMonth = (dateValue) => {
+  if (!dateValue) return "";
+  const d = new Date(dateValue);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toISOString().slice(0, 7);
+};
+
+const toMoney = (amount) => Number(amount || 0).toFixed(2);
 
 exports.userRegistration = async (req, res) => {
   let { firstName, lastName, phone, email, password, role } = req.body;
@@ -929,51 +945,349 @@ exports.getMyAccounts = async (req, res) => {
       ? await Corporate.findAll({ where: { corporateId: corporateIds } })
       : [];
     const corporateMap = Object.fromEntries(corporates.map((corp) => [corp.corporateId, corp]));
+    const accountIds = accounts.map((acc) => acc.accountId);
+    const monthKey = new Date().toISOString().slice(0, 7);
+    const paidInvoices = accountIds.length
+      ? await Invoice.findAll({
+          where: {
+            accountId: { [Op.in]: accountIds },
+            status: "paid",
+          },
+          attributes: ["accountId", "corporateId", "amount", "paidAt"],
+        })
+      : [];
+    const monthlyByAccount = {};
+    const monthlyByCorporate = {};
+    for (const invoice of paidInvoices) {
+      if (isoMonth(invoice.paidAt) !== monthKey) continue;
+      const amount = Number(invoice.amount || 0);
+      monthlyByAccount[invoice.accountId] = (monthlyByAccount[invoice.accountId] || 0) + amount;
+      if (invoice.corporateId) {
+        monthlyByCorporate[invoice.corporateId] = (monthlyByCorporate[invoice.corporateId] || 0) + amount;
+      }
+    }
 
-    // For each account, fetch services and contracts counts + details
-    const result = await Promise.all(
-      accounts.map(async (acc) => {
-        const services = await Service.findAll({ where: { accountId: acc.accountId } });
-        const contracts = await Contract.findAll({ where: { accountId: acc.accountId } });
-        return {
-          accountId: acc.accountId,
-          corporateId: acc.corporateId || null,
-          corporateName: acc.corporateId ? (corporateMap[acc.corporateId]?.corporateName || null) : null,
-          accountNumber: acc.accountNumber,
-          accountName: acc.accountName,
-          accountType: acc.accountType,
-          industry: acc.industry,
-          contactFirstName: acc.contactFirstName,
-          contactLastName: acc.contactLastName,
-          contactEmail: acc.contactEmail,
-          contactPhone: acc.contactPhone,
-          isActive: acc.isActive,
-          approvalStatus: acc.approvalStatus,
-          createdAt: acc.createdAt,
-          services: services.map(s => ({
-            serviceId: s.serviceId,
-            msisdn: s.msisdn,
-            serviceType: s.serviceType,
-            status: s.status,
-          })),
-          contracts: contracts.map(c => ({
-            contractId: c.contractId,
-            contractType: c.contractType,
-            contractStartDate: c.contractStartDate,
-            contractEndDate: c.contractEndDate,
-            contractEffectiveDate: c.contractEffectiveDate,
-            srNumber: c.srNumber,
-            usageLimit: c.usageLimit,
-            entitlement: c.entitlement,
-            notes: c.notes,
-          })),
-        };
-      })
-    );
+    // Two batch queries instead of 2 * N: fetch all services and contracts for
+    // every account at once, then group by accountId in JS.
+    const [allServices, allContracts] = accountIds.length
+      ? await Promise.all([
+          Service.findAll({ where: { accountId: { [Op.in]: accountIds } } }),
+          Contract.findAll({ where: { accountId: { [Op.in]: accountIds } } }),
+        ])
+      : [[], []];
+
+    const servicesByAccount = new Map();
+    for (const s of allServices) {
+      const list = servicesByAccount.get(s.accountId) || [];
+      list.push(s);
+      servicesByAccount.set(s.accountId, list);
+    }
+    const contractsByAccount = new Map();
+    for (const c of allContracts) {
+      const list = contractsByAccount.get(c.accountId) || [];
+      list.push(c);
+      contractsByAccount.set(c.accountId, list);
+    }
+
+    const result = accounts.map((acc) => {
+      const services = servicesByAccount.get(acc.accountId) || [];
+      const contracts = contractsByAccount.get(acc.accountId) || [];
+      return {
+        accountId: acc.accountId,
+        corporateId: acc.corporateId || null,
+        corporateName: acc.corporateId ? (corporateMap[acc.corporateId]?.corporateName || null) : null,
+        accountNumber: acc.accountNumber,
+        accountName: acc.accountName,
+        accountType: acc.accountType,
+        industry: acc.industry,
+        contactFirstName: acc.contactFirstName,
+        contactLastName: acc.contactLastName,
+        contactEmail: acc.contactEmail,
+        contactPhone: acc.contactPhone,
+        isActive: acc.isActive,
+        approvalStatus: acc.approvalStatus,
+        createdAt: acc.createdAt,
+        monthlySpending: toMoney(monthlyByAccount[acc.accountId] || 0),
+        corporateMonthlySpending: toMoney(monthlyByCorporate[acc.corporateId] || 0),
+        services: services.map((s) => ({
+          serviceId: s.serviceId,
+          msisdn: s.msisdn,
+          serviceType: s.serviceType,
+          status: s.status,
+        })),
+        contracts: contracts.map((c) => ({
+          contractId: c.contractId,
+          contractType: c.contractType,
+          contractStartDate: c.contractStartDate,
+          contractEndDate: c.contractEndDate,
+          contractEffectiveDate: c.contractEffectiveDate,
+          srNumber: c.srNumber,
+          usageLimit: c.usageLimit,
+          entitlement: c.entitlement,
+          notes: c.notes,
+        })),
+      };
+    });
+
+    // Lazy fallback: fill in placeholder/empty per-account contact fields
+    // from the corporate's contact person (legacy or junction-linked).
+    await enrichAccountsWithCorporateContact(result);
 
     return res.status(200).json({ status: "Success", accounts: result });
   } catch (error) {
     console.error("Get my accounts error:", error);
+    return res.status(500).json({ status: "Failed", message: "Internal server error" });
+  }
+};
+
+// ── Get contracts expiring for current executive ───────────────────
+exports.getMyExpiringContracts = async (req, res) => {
+  try {
+    const user = req.user;
+    if (!hasExecutiveScope(user.role)) {
+      return res.status(403).json({ status: "Failed", message: "This endpoint is for executive and supervisor users" });
+    }
+
+    const requestedMonths = Number(req.query.withinMonths || 6);
+    const withinMonths = Number.isFinite(requestedMonths)
+      ? Math.min(Math.max(Math.trunc(requestedMonths), 1), 24)
+      : 6;
+
+    const exec = await ExecutiveStaff.findOne({ where: { userId: user.id } });
+    if (!exec) {
+      return res.status(404).json({ status: "Failed", message: "Executive profile not found" });
+    }
+
+    const accounts = await Account.findAll({
+      where: { executiveId: exec.executiveId },
+      attributes: ["accountId", "accountName", "corporateId"],
+    });
+    if (!accounts.length) {
+      return res.status(200).json({ status: "Success", contracts: [] });
+    }
+
+    const accountIds = accounts.map((account) => account.accountId);
+    const accountById = new Map(accounts.map((account) => [account.accountId, account]));
+    const corporateIds = [...new Set(accounts.map((a) => a.corporateId).filter((id) => Number.isInteger(id) && id > 0))];
+    const corporates = corporateIds.length
+      ? await Corporate.findAll({
+          where: { corporateId: { [Op.in]: corporateIds } },
+          attributes: ["corporateId", "corporateName"],
+        })
+      : [];
+    const corporateNameById = new Map(corporates.map((corp) => [corp.corporateId, corp.corporateName]));
+
+    const now = new Date();
+    const startDate = now.toISOString().slice(0, 10);
+    const cutoffDate = new Date(now);
+    cutoffDate.setMonth(cutoffDate.getMonth() + withinMonths);
+    const cutoffDateString = cutoffDate.toISOString().slice(0, 10);
+
+    const contracts = await Contract.findAll({
+      where: {
+        accountId: { [Op.in]: accountIds },
+        contractEndDate: {
+          [Op.not]: null,
+          [Op.gte]: startDate,
+          [Op.lte]: cutoffDateString,
+        },
+      },
+      order: [["contract_end_date", "ASC"]],
+    });
+
+    const executiveDisplayName = `${user.firstName || ""} ${user.lastName || ""}`.trim() || user.email;
+
+    // Build the list of new alerts that need to be created without awaiting any
+    // Notification.findOne / email send inside the request path.
+    const candidateAlerts = [];
+    const candidateTitles = [];
+    for (const contract of contracts) {
+      const account = accountById.get(contract.accountId);
+      if (!account) continue;
+      const corporateName = account.corporateId ? corporateNameById.get(account.corporateId) || null : null;
+      const endDate = new Date(contract.contractEndDate);
+      const daysRemaining = Math.max(0, Math.ceil((endDate.getTime() - now.getTime()) / (24 * 60 * 60 * 1000)));
+      const notificationTitle = `Contract Expiring Soon - ${account.accountName} (${contract.contractEndDate})`;
+      candidateTitles.push(notificationTitle);
+      candidateAlerts.push({
+        contract,
+        account,
+        corporateName,
+        daysRemaining,
+        notificationTitle,
+      });
+    }
+
+    // One query instead of N: load every existing alert title for this user.
+    const existingAlerts = candidateTitles.length
+      ? await Notification.findAll({
+          where: {
+            userId: user.id,
+            type: "sla",
+            title: { [Op.in]: candidateTitles },
+          },
+          attributes: ["title"],
+        })
+      : [];
+    const existingTitleSet = new Set(existingAlerts.map((n) => n.title));
+
+    // Fire-and-forget: don't block the HTTP response on notifications/emails.
+    setImmediate(() => {
+      (async () => {
+        for (const item of candidateAlerts) {
+          if (existingTitleSet.has(item.notificationTitle)) continue;
+          try {
+            await createForUserIds([user.id], {
+              type: "sla",
+              title: item.notificationTitle,
+              message: `${item.corporateName || item.account.accountName} contract (${item.contract.contractType}) expires in ${item.daysRemaining} day(s).`,
+              priority: item.daysRemaining <= 30 ? "high" : "normal",
+              metadata: {
+                kind: "contract_expiring",
+                contractId: item.contract.contractId,
+                accountId: item.account.accountId,
+                corporateId: item.account.corporateId || null,
+                contractEndDate: item.contract.contractEndDate,
+                daysRemaining: item.daysRemaining,
+              },
+            });
+          } catch (notifyErr) {
+            console.error("Failed to create contract expiry notification:", notifyErr);
+          }
+
+          try {
+            await emailService.sendContractExpiryAlertEmail(
+              user.email,
+              executiveDisplayName,
+              item.corporateName || item.account.accountName,
+              item.account.accountName,
+              item.contract.contractType,
+              item.contract.contractEndDate,
+              item.daysRemaining,
+            );
+          } catch (emailErr) {
+            console.error("Failed to send contract expiry email:", emailErr);
+          }
+        }
+      })().catch((err) => console.error("Background contract expiry alert run failed:", err));
+    });
+
+    const mappedContracts = contracts.map((contract) => {
+      const account = accountById.get(contract.accountId);
+      const corporateName = account?.corporateId ? corporateNameById.get(account.corporateId) || null : null;
+      const endDate = new Date(contract.contractEndDate);
+      const daysRemaining = Math.max(0, Math.ceil((endDate.getTime() - now.getTime()) / (24 * 60 * 60 * 1000)));
+      return {
+        contractId: contract.contractId,
+        accountId: contract.accountId,
+        corporateId: account?.corporateId || null,
+        corporateName,
+        accountName: account?.accountName || "Unknown Account",
+        contractType: contract.contractType,
+        contractEndDate: contract.contractEndDate,
+        daysRemaining,
+      };
+    });
+
+    return res.status(200).json({ status: "Success", contracts: mappedContracts });
+  } catch (error) {
+    console.error("Get my expiring contracts error:", error);
+    return res.status(500).json({ status: "Failed", message: "Internal server error" });
+  }
+};
+
+exports.getMyMonthlySpendingSummary = async (req, res) => {
+  try {
+    const user = req.user;
+    if (!hasExecutiveScope(user.role)) {
+      return res.status(403).json({ status: "Failed", message: "This endpoint is for executive and supervisor users" });
+    }
+
+    const exec = await ExecutiveStaff.findOne({ where: { userId: user.id } });
+    if (!exec) {
+      return res.status(404).json({ status: "Failed", message: "Executive profile not found" });
+    }
+
+    const accounts = await Account.findAll({
+      where: { executiveId: exec.executiveId },
+      attributes: ["accountId", "corporateId"],
+    });
+    const accountIds = accounts.map((a) => a.accountId);
+    if (!accountIds.length) {
+      return res.status(200).json({ status: "Success", summary: { total: "0.00", currency: "NAD", byCorporate: {}, byAccount: {} } });
+    }
+
+    const monthKey = new Date().toISOString().slice(0, 7);
+    const paidInvoices = await Invoice.findAll({
+      where: { accountId: { [Op.in]: accountIds }, status: "paid" },
+      attributes: ["accountId", "corporateId", "amount", "paidAt"],
+    });
+    const byCorporate = {};
+    const byAccount = {};
+    let total = 0;
+    for (const invoice of paidInvoices) {
+      if (isoMonth(invoice.paidAt) !== monthKey) continue;
+      const amount = Number(invoice.amount || 0);
+      total += amount;
+      byAccount[invoice.accountId] = Number((byAccount[invoice.accountId] || 0) + amount);
+      if (invoice.corporateId) byCorporate[invoice.corporateId] = Number((byCorporate[invoice.corporateId] || 0) + amount);
+    }
+
+    return res.status(200).json({
+      status: "Success",
+      summary: {
+        total: toMoney(total),
+        currency: "NAD",
+        byCorporate: Object.fromEntries(Object.entries(byCorporate).map(([k, v]) => [k, toMoney(v)])),
+        byAccount: Object.fromEntries(Object.entries(byAccount).map(([k, v]) => [k, toMoney(v)])),
+      },
+    });
+  } catch (error) {
+    console.error("Get my monthly spending summary error:", error);
+    return res.status(500).json({ status: "Failed", message: "Internal server error" });
+  }
+};
+
+exports.getMyMonthlySpendingTrend = async (req, res) => {
+  try {
+    const user = req.user;
+    if (!hasExecutiveScope(user.role)) {
+      return res.status(403).json({ status: "Failed", message: "This endpoint is for executive and supervisor users" });
+    }
+    const requestedMonths = Number(req.query.months || 6);
+    const months = Number.isFinite(requestedMonths) ? Math.min(Math.max(Math.trunc(requestedMonths), 3), 24) : 6;
+
+    const exec = await ExecutiveStaff.findOne({ where: { userId: user.id } });
+    if (!exec) {
+      return res.status(404).json({ status: "Failed", message: "Executive profile not found" });
+    }
+
+    const accounts = await Account.findAll({ where: { executiveId: exec.executiveId }, attributes: ["accountId"] });
+    const accountIds = accounts.map((a) => a.accountId);
+    if (!accountIds.length) return res.status(200).json({ status: "Success", trend: [] });
+
+    const invoices = await Invoice.findAll({
+      where: { accountId: { [Op.in]: accountIds }, status: "paid" },
+      attributes: ["amount", "paidAt"],
+    });
+    const monthTotals = {};
+    for (const invoice of invoices) {
+      const month = isoMonth(invoice.paidAt);
+      if (!month) continue;
+      monthTotals[month] = Number((monthTotals[month] || 0) + Number(invoice.amount || 0));
+    }
+
+    const trend = [];
+    const pivot = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+    for (let i = months - 1; i >= 0; i -= 1) {
+      const d = new Date(pivot.getFullYear(), pivot.getMonth() - i, 1);
+      const m = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+      trend.push({ month: m, total: toMoney(monthTotals[m] || 0), currency: "NAD" });
+    }
+
+    return res.status(200).json({ status: "Success", trend });
+  } catch (error) {
+    console.error("Get my monthly spending trend error:", error);
     return res.status(500).json({ status: "Failed", message: "Internal server error" });
   }
 };
@@ -992,22 +1306,44 @@ exports.getMyAccount = async (req, res) => {
       return res.status(404).json({ status: "Failed", message: "No corporate linked to your access" });
     }
 
-    const corporate = await Corporate.findByPk(accountManager.corporateId);
-    if (!corporate) {
+    // A contact person can be linked to multiple corporates (legacy primary
+    // AccountManager.corporateId + corporate_contact_persons junction table).
+    const linkedCorporateIds = await getCorporateIdsForAccountManager(accountManager);
+    if (linkedCorporateIds.length === 0) {
+      return res.status(404).json({ status: "Failed", message: "No corporate linked to your access" });
+    }
+
+    const linkedCorporates = await Corporate.findAll({
+      where: { corporateId: linkedCorporateIds },
+    });
+    if (linkedCorporates.length === 0) {
       return res.status(404).json({ status: "Failed", message: "Linked corporate not found" });
     }
 
+    // Keep the AM's primary corporate first for backward-compatible fields,
+    // then any additional junction-linked corporates after it.
+    const primaryCorporateId = accountManager.corporateId;
+    linkedCorporates.sort((a, b) => {
+      if (a.corporateId === primaryCorporateId) return -1;
+      if (b.corporateId === primaryCorporateId) return 1;
+      return a.corporateName.localeCompare(b.corporateName);
+    });
+    const corporate = linkedCorporates[0];
+    const corporateById = Object.fromEntries(
+      linkedCorporates.map((c) => [c.corporateId, c])
+    );
+
     const accounts = await Account.findAll({
-      where: { corporateId: corporate.corporateId },
+      where: { corporateId: linkedCorporateIds },
       order: [["created_at", "DESC"]],
     });
     if (accounts.length === 0) {
       return res.status(404).json({ status: "Failed", message: "No accounts found under your corporate" });
     }
 
-    const account = accounts[0];
+    const account = accounts.find((a) => a.executiveId) || accounts[0];
 
-    // Fetch the assigned executive staff
+    // Fetch the assigned executive staff (from first sub-account that has an executive)
     let executive = null;
     if (account.executiveId) {
       const exec = await ExecutiveStaff.findByPk(account.executiveId);
@@ -1024,9 +1360,52 @@ exports.getMyAccount = async (req, res) => {
     }
 
     const accountIds = accounts.map((a) => a.accountId);
-    const services = await Service.findAll({ where: { accountId: accountIds } });
-    const contracts = await Contract.findAll({ where: { accountId: accountIds } });
+    const services = await Service.findAll({ where: { accountId: { [Op.in]: accountIds } } });
+    const serviceIds = services.map((s) => s.serviceId);
+    const contractOr = [{ accountId: { [Op.in]: accountIds } }];
+    if (serviceIds.length > 0) {
+      contractOr.push({ serviceId: { [Op.in]: serviceIds } });
+    }
+    const contracts = await Contract.findAll({ where: { [Op.or]: contractOr } });
+    const paidInvoices = await Invoice.findAll({
+      where: { accountId: { [Op.in]: accountIds }, status: "paid" },
+      attributes: ["accountId", "amount", "paidAt"],
+    });
     const accountById = Object.fromEntries(accounts.map((a) => [a.accountId, a]));
+    const serviceById = Object.fromEntries(services.map((s) => [s.serviceId, s]));
+    const monthKey = new Date().toISOString().slice(0, 7);
+    const monthlySpendingByAccount = {};
+    let monthlyCorporateSpending = 0;
+    for (const invoice of paidInvoices) {
+      if (isoMonth(invoice.paidAt) !== monthKey) continue;
+      const amount = Number(invoice.amount || 0);
+      monthlyCorporateSpending += amount;
+      monthlySpendingByAccount[invoice.accountId] = (monthlySpendingByAccount[invoice.accountId] || 0) + amount;
+    }
+
+    const accountsPayload = accounts.map((acc) => ({
+      accountId: acc.accountId,
+      corporateId: acc.corporateId,
+      corporateName: corporateById[acc.corporateId]?.corporateName || null,
+      accountNumber: acc.accountNumber,
+      accountName: acc.accountName,
+      accountType: acc.accountType,
+      industry: acc.industry,
+      contactFirstName: acc.contactFirstName,
+      contactLastName: acc.contactLastName,
+      contactEmail: acc.contactEmail,
+      contactPhone: acc.contactPhone,
+      isActive: acc.isActive,
+      approvalStatus: acc.approvalStatus,
+      createdAt: acc.createdAt,
+      monthlySpending: toMoney(monthlySpendingByAccount[acc.accountId] || 0),
+    }));
+    // Lazy fallback: fill in placeholder/empty per-account contact fields
+    // from the corporate's contact person (legacy or junction-linked).
+    await enrichAccountsWithCorporateContact(accountsPayload);
+    const primaryAccountPayload = accountsPayload.find(
+      (a) => a.accountId === account.accountId
+    ) || accountsPayload[0];
 
     return res.status(200).json({
       status: "Success",
@@ -1038,6 +1417,14 @@ exports.getMyAccount = async (req, res) => {
         businessEmail: corporate.businessEmail,
         industry: corporate.industry,
       },
+      corporates: linkedCorporates.map((corp) => ({
+        corporateId: corp.corporateId,
+        corporateNumber: corp.corporateNumber,
+        corporateName: corp.corporateName,
+        corporateType: corp.corporateType,
+        businessEmail: corp.businessEmail,
+        industry: corp.industry,
+      })),
       accountManager: {
         accountManagerId: accountManager.accountManagerId,
         firstName: accountManager.firstName,
@@ -1045,34 +1432,12 @@ exports.getMyAccount = async (req, res) => {
         email: accountManager.email,
         phone: accountManager.phone,
       },
-      accounts: accounts.map((acc) => ({
-        accountId: acc.accountId,
-        accountNumber: acc.accountNumber,
-        accountName: acc.accountName,
-        accountType: acc.accountType,
-        industry: acc.industry,
-        contactFirstName: acc.contactFirstName,
-        contactLastName: acc.contactLastName,
-        contactEmail: acc.contactEmail,
-        contactPhone: acc.contactPhone,
-        isActive: acc.isActive,
-        approvalStatus: acc.approvalStatus,
-        createdAt: acc.createdAt,
-      })),
+      accounts: accountsPayload,
       // Backward compatibility for existing UI paths that still expect a single account object.
-      account: {
-        accountId: account.accountId,
-        accountNumber: account.accountNumber,
-        accountName: account.accountName,
-        accountType: account.accountType,
-        industry: account.industry,
-        contactFirstName: account.contactFirstName,
-        contactLastName: account.contactLastName,
-        contactEmail: account.contactEmail,
-        contactPhone: account.contactPhone,
-        isActive: account.isActive,
-        approvalStatus: account.approvalStatus,
-        createdAt: account.createdAt,
+      account: primaryAccountPayload,
+      spendingSummary: {
+        corporateMonthlySpending: toMoney(monthlyCorporateSpending),
+        currency: "NAD",
       },
       executive,
       services: services.map(s => ({
@@ -1083,19 +1448,29 @@ exports.getMyAccount = async (req, res) => {
         serviceType: s.serviceType,
         status: s.status,
       })),
-      contracts: contracts.map(c => ({
-        contractId: c.contractId,
-        accountId: c.accountId,
-        accountName: accountById[c.accountId]?.accountName || null,
-        contractType: c.contractType,
-        contractStartDate: c.contractStartDate,
-        contractEndDate: c.contractEndDate,
-        contractEffectiveDate: c.contractEffectiveDate,
-        srNumber: c.srNumber,
-        usageLimit: c.usageLimit,
-        entitlement: c.entitlement,
-        notes: c.notes,
-      })),
+      contracts: contracts.map((c) => {
+        const resolvedAccountId =
+          c.accountId != null
+            ? c.accountId
+            : c.serviceId
+              ? serviceById[c.serviceId]?.accountId ?? null
+              : null;
+        return {
+          contractId: c.contractId,
+          accountId: resolvedAccountId,
+          serviceId: c.serviceId,
+          accountName:
+            resolvedAccountId != null ? accountById[resolvedAccountId]?.accountName || null : null,
+          contractType: c.contractType,
+          contractStartDate: c.contractStartDate,
+          contractEndDate: c.contractEndDate,
+          contractEffectiveDate: c.contractEffectiveDate,
+          srNumber: c.srNumber,
+          usageLimit: c.usageLimit,
+          entitlement: c.entitlement,
+          notes: c.notes,
+        };
+      }),
     });
   } catch (error) {
     console.error("Get my account error:", error);

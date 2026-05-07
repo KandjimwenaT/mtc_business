@@ -21,6 +21,11 @@ export interface TicketPayload {
   priority?: string;
   title?: string;
   description?: string;
+  accountId?: number;
+  createdForAccountId?: number;
+  sourceChannel?: "portal" | "email" | "phone";
+  sourceContextNote?: string;
+  attachment?: File | null;
 }
 
 export interface TicketRecord {
@@ -35,6 +40,14 @@ export interface TicketRecord {
   description: string | null;
   status: string;
   submittedBy: string;
+  createdByUserId?: number | null;
+  createdByRole?: string | null;
+  createdByName?: string | null;
+  createdForAccountId?: number | null;
+  createdForCustomerUserId?: number | null;
+  sourceChannel?: "portal" | "email" | "phone";
+  sourceContextNote?: string | null;
+  attachmentUrl?: string | null;
   assignedTo: string | null;
   resolution: string | null;
   resolvedAt: string | null;
@@ -48,15 +61,39 @@ export interface TicketRecord {
   accountNumber?: string;
   corporateId?: number | null;
   corporateName?: string | null;
+  internalNotes?: TicketInternalNoteRecord[];
+}
+
+export interface TicketInternalNoteRecord {
+  noteId: number;
+  ticketId: number;
+  authorUserId: number;
+  authorName: string;
+  authorRole: string;
+  note: string;
+  createdAt: string;
 }
 
 export const createTicket = async (
   payload: TicketPayload,
 ): Promise<TicketRecord> => {
+  const token = localStorage.getItem("accessToken");
+  const formData = new FormData();
+  formData.append("category", payload.category);
+  formData.append("type", payload.type);
+  if (payload.priority) formData.append("priority", payload.priority);
+  if (payload.title) formData.append("title", payload.title);
+  if (payload.description) formData.append("description", payload.description);
+  if (payload.accountId != null) formData.append("accountId", String(payload.accountId));
+  if (payload.createdForAccountId != null) formData.append("createdForAccountId", String(payload.createdForAccountId));
+  if (payload.sourceChannel) formData.append("sourceChannel", payload.sourceChannel);
+  if (payload.sourceContextNote) formData.append("sourceContextNote", payload.sourceContextNote);
+  if (payload.attachment) formData.append("attachment", payload.attachment);
+
   const response = await fetch(`${API_BASE_URL}/tickets`, {
     method: "POST",
-    headers: authHeaders(),
-    body: JSON.stringify(payload),
+    headers: token ? { Authorization: `Bearer ${token}` } : {},
+    body: formData,
   });
 
   if (response.status === 401) {
@@ -173,4 +210,28 @@ export const updateTicket = async (
   }
 
   return data.ticket as TicketRecord;
+};
+
+export const addInternalTicketNote = async (
+  ticketId: number,
+  note: string,
+): Promise<TicketInternalNoteRecord> => {
+  const response = await fetch(`${API_BASE_URL}/tickets/${ticketId}/internal-notes`, {
+    method: "POST",
+    headers: authHeaders(),
+    body: JSON.stringify({ note }),
+  });
+
+  if (response.status === 401) {
+    handleUnauthorized();
+    throw new Error("Session expired");
+  }
+
+  const data = await response.json();
+
+  if (!response.ok) {
+    throw new Error(data.message || "Failed to add internal note");
+  }
+
+  return data.note as TicketInternalNoteRecord;
 };

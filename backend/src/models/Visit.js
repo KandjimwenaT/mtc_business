@@ -95,6 +95,8 @@ const Visit = sequelize.define(
         "approved",
         "declined",
         "confirmed",
+        /** AVR submitted; customer may rate; executive still owes §6 feedback + §7 account health */
+        "follow_up_pending",
         "completed",
         "cancelled",
         "rescheduled"
@@ -183,6 +185,22 @@ const Visit = sequelize.define(
       type: DataTypes.DATE,
       allowNull: true,
       field: "customer_rated_at",
+    },
+    /** When the executive opened “Start visit” and GPS was captured (first write wins). */
+    meetingStartedAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+      field: "meeting_started_at",
+    },
+    startGeoLatitude: {
+      type: DataTypes.DOUBLE,
+      allowNull: true,
+      field: "start_geo_latitude",
+    },
+    startGeoLongitude: {
+      type: DataTypes.DOUBLE,
+      allowNull: true,
+      field: "start_geo_longitude",
     },
   },
   {

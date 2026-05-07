@@ -8,6 +8,10 @@ router.post("/", visitController.createVisit);
 // Executive gets their visits
 router.get("/my", visitController.getMyVisits);
 
+// Executive / supervisor / manager gets their department teammates
+// (used to populate the "Attendees" picker on the schedule-visit form)
+router.get("/department-team", visitController.getDepartmentTeam);
+
 // Customer gets their visits
 router.get("/customer", visitController.getCustomerVisits);
 
@@ -31,6 +35,9 @@ router.put("/:visitId/request-reschedule", visitController.requestReschedule);
 
 // Manager approves/rejects reschedule
 router.put("/:visitId/approve-reschedule", visitController.approveReschedule);
+
+// Executive records GPS / timestamp when starting a visit (AVR modal)
+router.patch("/:visitId/meeting-start", visitController.recordMeetingStart);
 
 // Executive submits control card
 router.put("/:visitId/control-card", visitController.submitControlCard);

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useMemo, useRef } from "react";
 import { toast } from "sonner";
 import {
   Button, Card, CardContent, CardHeader, CardTitle, Input, Select, Label, Badge,
@@ -9,22 +9,25 @@ import {
   Plus, Edit, X, CheckCircle, Search,
   Mail, Activity, Database, UserPlus, Key, Loader2, RefreshCw,
   Building2, ChevronRight, Settings, Eye, Trash2, UserCircle,
+  UserCheck,
 } from "lucide-react";
 import {
   createPerson, getPersonsByType, createPortalAccess, getPortalUsers, revokePortalAccess, deletePersonWithoutPortalAccess,
   getExecutives, getCorporatesWithoutContactPersons,
   createAccount, getAccounts, createContract, createService, getAccountServices, getAccountContracts,
+  getPendingImportedExecutives, completeImportedExecutive,
   type PersonPayload, type PersonRecord, type PortalUser,
   type ExecutiveRecord,
   type AccountPayload, type AccountRecord, type ContractPayload, type ContractRecord, type CorporateRecord,
   type ServicePayload, type ServiceRecord,
+  type PendingImportedExecutive,
 } from "../api/adminApi";
 import { getMyProfile } from "../api/authApi";
 import type { UserProfile } from "../api/authApi";
 import ProfileEditSection from "../components/profile-edit-section";
 import PortalUserHierarchyModal from "../components/admin/PortalUserHierarchyModal";
 
-type Tab = "profile" | "users" | "noPortalUsers" | "roles" | "sla" | "notifications" | "audit" | "settings";
+type Tab = "profile" | "users" | "noPortalUsers" | "pendingExecutives" | "roles" | "sla" | "notifications" | "audit" | "settings";
 
 const USER_TYPES = [
   { value: "gm", label: "GM" },
@@ -68,6 +71,9 @@ export default function SuperAdminProfile() {
   const [executivePersonList, setExecutivePersonList] = useState<PersonRecord[]>([]);
   const [availableCorporateList, setAvailableCorporateList] = useState<CorporateRecord[]>([]);
   const [loadingHierarchy, setLoadingHierarchy] = useState(false);
+  const [corporateSearchQuery, setCorporateSearchQuery] = useState("");
+  const [corporateDropdownOpen, setCorporateDropdownOpen] = useState(false);
+  const corporatePickerRef = useRef<HTMLDivElement | null>(null);
 
   // ── Create Portal Access (user management tab) state ────────────
   const [showPortalAccess, setShowPortalAccess] = useState(false);
@@ -84,6 +90,16 @@ export default function SuperAdminProfile() {
   const [noPortalUsers, setNoPortalUsers] = useState<PersonRecord[]>([]);
   const [loadingNoPortalUsers, setLoadingNoPortalUsers] = useState(false);
   const [deletingNoPortalId, setDeletingNoPortalId] = useState<number | null>(null);
+
+  // ── Pending imported executives state ───────────────────────────
+  const [pendingExecutives, setPendingExecutives] = useState<PendingImportedExecutive[]>([]);
+  const [loadingPendingExecutives, setLoadingPendingExecutives] = useState(false);
+  const [selectedPendingExec, setSelectedPendingExec] = useState<PendingImportedExecutive | null>(null);
+  const [onboardingForm, setOnboardingForm] = useState<{ firstName: string; lastName: string; email: string; phone: string; managerPersonId: number | undefined; existingExecutiveId: number | undefined }>({
+    firstName: "", lastName: "", email: "", phone: "", managerPersonId: undefined, existingExecutiveId: undefined,
+  });
+  const [onboardingMode, setOnboardingMode] = useState<"new" | "existing">("new");
+  const [submittingOnboarding, setSubmittingOnboarding] = useState(false);
 
   // ── User hierarchy modal (from Edit action) ────────────────────
   const [hierarchyModalUser, setHierarchyModalUser] = useState<PortalUser | null>(null);
@@ -131,6 +147,7 @@ export default function SuperAdminProfile() {
     { key: "profile", label: "Super Admin Profile", icon: <User className="h-4 w-4" /> },
     { key: "users", label: "User Management", icon: <Users className="h-4 w-4" /> },
     { key: "noPortalUsers", label: "Users Without Portal Access", icon: <Lock className="h-4 w-4" /> },
+    { key: "pendingExecutives", label: "Pending Imported Executives", icon: <UserCheck className="h-4 w-4" /> },
     { key: "settings", label: "Profile", icon: <UserCircle className="h-4 w-4" /> },
     // { key: "roles", label: "Role Management", icon: <Lock className="h-4 w-4" /> },
     // { key: "sla", label: "Global SLA Settings", icon: <Clock className="h-4 w-4" /> },
@@ -140,10 +157,6 @@ export default function SuperAdminProfile() {
   ];
 
   const selectedManager = managerList.find((m) => m.id === createUserForm.managerId);
-  const executivesForSelectedManager = executivePersonList.filter(
-    (executive) => executive.managerId === createUserForm.managerId
-  );
-
   // ── Fetch portal users when User Management tab is active ───────
   const fetchPortalUsers = useCallback(async () => {
     setLoadingPortalUsers(true);
@@ -185,9 +198,30 @@ export default function SuperAdminProfile() {
     }
   }, []);
 
+  const fetchPendingExecutives = useCallback(async () => {
+    setLoadingPendingExecutives(true);
+    try {
+      const [pending, managers] = await Promise.all([
+        getPendingImportedExecutives(),
+        getPersonsByType("manager"),
+      ]);
+      setPendingExecutives(pending);
+      setManagerList(managers);
+      if (executiveList.length === 0) {
+        const execs = await getExecutives();
+        setExecutiveList(execs);
+      }
+    } catch (err: unknown) {
+      toast.error("Failed to load pending executives", { description: err instanceof Error ? err.message : undefined });
+    } finally {
+      setLoadingPendingExecutives(false);
+    }
+  }, []);
+
   useEffect(() => {
     if (activeTab === "users") fetchPortalUsers();
     if (activeTab === "noPortalUsers") fetchNoPortalUsers();
+    if (activeTab === "pendingExecutives") fetchPendingExecutives();
     if (activeTab === "profile") {
       setLoadingHierarchy(true);
       Promise.all([getPersonsByType("gm"), getPersonsByType("manager"), getPersonsByType("executive_staff")])
@@ -195,7 +229,7 @@ export default function SuperAdminProfile() {
         .catch(() => {})
         .finally(() => setLoadingHierarchy(false));
     }
-  }, [activeTab, fetchPortalUsers, fetchAccounts, fetchNoPortalUsers]);
+  }, [activeTab, fetchPortalUsers, fetchAccounts, fetchNoPortalUsers, fetchPendingExecutives]);
 
   // ── Fetch persons by type for portal access ─────────────────────
   useEffect(() => {
@@ -224,13 +258,54 @@ export default function SuperAdminProfile() {
     if (createUserForm.type === "executive_staff" && managerList.length === 0) {
       getPersonsByType("manager").then(setManagerList).catch(() => {});
     }
-    if (createUserForm.type === "admin" && executivePersonList.length === 0) {
-      getPersonsByType("executive_staff").then(setExecutivePersonList).catch(() => {});
-    }
     if (createUserForm.type === "customer" && availableCorporateList.length === 0) {
       getCorporatesWithoutContactPersons().then(setAvailableCorporateList).catch(() => {});
     }
-  }, [createUserForm.type, gmList.length, managerList.length, executivePersonList.length, availableCorporateList.length]);
+  }, [createUserForm.type, gmList.length, managerList.length, availableCorporateList.length]);
+
+  // Reset the corporate picker whenever the user-type changes away from customer
+  useEffect(() => {
+    if (createUserForm.type !== "customer") {
+      setCorporateSearchQuery("");
+      setCorporateDropdownOpen(false);
+    }
+  }, [createUserForm.type]);
+
+  // Close the corporate-picker dropdown when clicking outside of it
+  useEffect(() => {
+    if (!corporateDropdownOpen) return;
+    const handleClickOutside = (event: MouseEvent) => {
+      if (
+        corporatePickerRef.current &&
+        !corporatePickerRef.current.contains(event.target as Node)
+      ) {
+        setCorporateDropdownOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, [corporateDropdownOpen]);
+
+  const selectedCorporate = useMemo(
+    () =>
+      availableCorporateList.find(
+        (corporate) => corporate.corporateId === createUserForm.corporateId
+      ) ?? null,
+    [availableCorporateList, createUserForm.corporateId]
+  );
+
+  const filteredCorporateOptions = useMemo(() => {
+    const q = corporateSearchQuery.trim().toLowerCase();
+    if (!q) return availableCorporateList;
+    return availableCorporateList.filter((corporate) => {
+      return (
+        corporate.corporateName.toLowerCase().includes(q) ||
+        (corporate.corporateNumber || "").toLowerCase().includes(q) ||
+        (corporate.industry || "").toLowerCase().includes(q) ||
+        (corporate.businessEmail || "").toLowerCase().includes(q)
+      );
+    });
+  }, [availableCorporateList, corporateSearchQuery]);
 
   // ── Handlers ────────────────────────────────────────────────────
   const handleCreateUser = async () => {
@@ -258,8 +333,8 @@ export default function SuperAdminProfile() {
       toast.error("Please select a Manager for this Admin");
       return;
     }
-    if (createUserForm.type === "admin" && (!createUserForm.executiveIds || createUserForm.executiveIds.length === 0)) {
-      toast.error("Please select at least one Executive for this Admin");
+    if (createUserForm.type === "admin" && !createUserForm.department) {
+      toast.error("Admin must be linked to a department");
       return;
     }
     setCreatingUser(true);
@@ -345,6 +420,90 @@ export default function SuperAdminProfile() {
       toast.error("Failed to delete user", { description: err instanceof Error ? err.message : undefined });
     } finally {
       setDeletingNoPortalId(null);
+    }
+  };
+
+  const openOnboardPendingExec = (exec: PendingImportedExecutive) => {
+    setSelectedPendingExec(exec);
+    setOnboardingForm({
+      firstName: exec.firstName ?? "",
+      lastName: exec.lastName ?? "",
+      email: "",
+      phone: exec.phone ?? "",
+      managerPersonId: undefined,
+      existingExecutiveId: undefined,
+    });
+    setOnboardingMode("new");
+  };
+
+  const closeOnboardPendingExec = () => {
+    if (submittingOnboarding) return;
+    setSelectedPendingExec(null);
+    setOnboardingForm({ firstName: "", lastName: "", email: "", phone: "", managerPersonId: undefined, existingExecutiveId: undefined });
+    setOnboardingMode("new");
+  };
+
+  const handleCompletePendingExec = async () => {
+    if (!selectedPendingExec) return;
+    setSubmittingOnboarding(true);
+    try {
+      if (onboardingMode === "existing") {
+        const onboardedExecutiveList = executiveList.filter((ex) => !!ex.userId);
+        if (!onboardingForm.existingExecutiveId) {
+          toast.error("Please select an existing executive");
+          return;
+        }
+        const selectedExisting = onboardedExecutiveList.find(
+          (ex) => ex.executiveId === onboardingForm.existingExecutiveId
+        );
+        if (!selectedExisting) {
+          toast.error("Please select an executive with completed onboarding");
+          return;
+        }
+        await completeImportedExecutive(selectedPendingExec.executiveId, {
+          existingExecutiveId: onboardingForm.existingExecutiveId,
+        });
+        toast.success("Executive reassigned", {
+          description: "Linked corporates and accounts were moved to the selected executive.",
+        });
+      } else {
+        const firstName = onboardingForm.firstName.trim();
+        const lastName = onboardingForm.lastName.trim();
+        const email = onboardingForm.email.trim();
+        if (!firstName || !lastName) {
+          toast.error("Please provide first and last name");
+          return;
+        }
+        if (!email) {
+          toast.error("Please provide an email address");
+          return;
+        }
+        if (!onboardingForm.managerPersonId) {
+          toast.error("Please select a manager");
+          return;
+        }
+        const response = await completeImportedExecutive(selectedPendingExec.executiveId, {
+          firstName,
+          lastName,
+          email,
+          phone: onboardingForm.phone.trim() || undefined,
+          managerPersonId: onboardingForm.managerPersonId,
+        });
+        const emailSent = response.emailSent !== false;
+        toast.success("Executive onboarded", {
+          description: emailSent
+            ? `Credentials sent to ${email}`
+            : `Email delivery failed. Temp password: ${response.user?.password ?? "(check server logs)"}`,
+        });
+      }
+      setSelectedPendingExec(null);
+      setOnboardingForm({ firstName: "", lastName: "", email: "", phone: "", managerPersonId: undefined, existingExecutiveId: undefined });
+      setOnboardingMode("new");
+      await Promise.all([fetchPendingExecutives(), fetchPortalUsers()]);
+    } catch (err: unknown) {
+      toast.error("Failed to onboard executive", { description: err instanceof Error ? err.message : undefined });
+    } finally {
+      setSubmittingOnboarding(false);
     }
   };
 
@@ -548,7 +707,7 @@ export default function SuperAdminProfile() {
               <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
                 <div className="space-y-2">
                   <Label>User Type <span className="text-red-500">*</span></Label>
-                  <Select value={createUserForm.type} onChange={(e) => setCreateUserForm(f => ({ ...f, type: e.target.value as PersonPayload["type"], gmId: undefined, managerId: undefined, executiveIds: undefined, corporateId: undefined, department: "" }))}>
+                  <Select value={createUserForm.type} onChange={(e) => setCreateUserForm(f => ({ ...f, type: e.target.value as PersonPayload["type"], gmId: undefined, managerId: undefined, corporateId: undefined, department: "" }))}>
                     {USER_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
                   </Select>
                 </div>
@@ -571,24 +730,97 @@ export default function SuperAdminProfile() {
                 {createUserForm.type === "customer" && (
                   <div className="space-y-2">
                     <Label>Corporate Company <span className="text-red-500">*</span></Label>
-                    <Select
-                      value={createUserForm.corporateId?.toString() ?? ""}
-                      onChange={(e) => {
-                        const selectedCorporate = availableCorporateList.find((corporate) => corporate.corporateId === Number(e.target.value));
-                        setCreateUserForm((f) => ({
-                          ...f,
-                          corporateId: e.target.value ? Number(e.target.value) : undefined,
-                          department: selectedCorporate?.corporateName ?? "",
-                        }));
-                      }}
-                    >
-                      <option value="">Select Corporate...{loadingHierarchy ? " (loading)" : ""}</option>
-                      {availableCorporateList.map((corporate) => (
-                        <option key={corporate.corporateId} value={corporate.corporateId}>
-                          {corporate.corporateName} — {corporate.corporateNumber}
-                        </option>
-                      ))}
-                    </Select>
+                    <div className="relative" ref={corporatePickerRef}>
+                      <div className="relative">
+                        <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400 pointer-events-none" />
+                        <Input
+                          className="pl-9 pr-9"
+                          placeholder={
+                            availableCorporateList.length === 0
+                              ? loadingHierarchy
+                                ? "Loading corporates..."
+                                : "No corporates available"
+                              : "Search corporate by name or number..."
+                          }
+                          value={
+                            corporateDropdownOpen
+                              ? corporateSearchQuery
+                              : selectedCorporate
+                              ? `${selectedCorporate.corporateName} — ${selectedCorporate.corporateNumber}`
+                              : corporateSearchQuery
+                          }
+                          onFocus={() => setCorporateDropdownOpen(true)}
+                          onChange={(e) => {
+                            setCorporateSearchQuery(e.target.value);
+                            setCorporateDropdownOpen(true);
+                            if (createUserForm.corporateId !== undefined) {
+                              setCreateUserForm((f) => ({
+                                ...f,
+                                corporateId: undefined,
+                                department: "",
+                              }));
+                            }
+                          }}
+                          disabled={availableCorporateList.length === 0 && !loadingHierarchy}
+                        />
+                        {(selectedCorporate || corporateSearchQuery) && (
+                          <button
+                            type="button"
+                            className="absolute right-2 top-1/2 -translate-y-1/2 p-1 text-slate-400 hover:text-slate-600"
+                            onClick={() => {
+                              setCorporateSearchQuery("");
+                              setCorporateDropdownOpen(true);
+                              setCreateUserForm((f) => ({
+                                ...f,
+                                corporateId: undefined,
+                                department: "",
+                              }));
+                            }}
+                            aria-label="Clear corporate selection"
+                          >
+                            <X className="h-3.5 w-3.5" />
+                          </button>
+                        )}
+                      </div>
+                      {corporateDropdownOpen && availableCorporateList.length > 0 && (
+                        <div className="absolute z-20 mt-1 w-full max-h-64 overflow-y-auto rounded-md border border-slate-200 bg-white shadow-lg">
+                          {filteredCorporateOptions.length === 0 ? (
+                            <div className="px-3 py-2 text-sm text-slate-500">
+                              No corporates match "{corporateSearchQuery}".
+                            </div>
+                          ) : (
+                            filteredCorporateOptions.map((corporate) => {
+                              const isSelected =
+                                corporate.corporateId === createUserForm.corporateId;
+                              return (
+                                <button
+                                  type="button"
+                                  key={corporate.corporateId}
+                                  onClick={() => {
+                                    setCreateUserForm((f) => ({
+                                      ...f,
+                                      corporateId: corporate.corporateId,
+                                      department: corporate.corporateName,
+                                    }));
+                                    setCorporateSearchQuery("");
+                                    setCorporateDropdownOpen(false);
+                                  }}
+                                  className={`block w-full text-left px-3 py-2 text-sm hover:bg-slate-50 ${
+                                    isSelected ? "bg-mtc-blue-50 text-mtc-blue" : "text-slate-700"
+                                  }`}
+                                >
+                                  <div className="font-medium">{corporate.corporateName}</div>
+                                  <div className="text-xs text-slate-500">
+                                    {corporate.corporateNumber}
+                                    {corporate.industry ? ` • ${corporate.industry}` : ""}
+                                  </div>
+                                </button>
+                              );
+                            })
+                          )}
+                        </div>
+                      )}
+                    </div>
                   </div>
                 )}
 
@@ -659,7 +891,6 @@ export default function SuperAdminProfile() {
                             ...f,
                             managerId: nextManagerId,
                             department: manager?.department ?? "",
-                            executiveIds: [],
                           }));
                         }}
                       >
@@ -672,41 +903,9 @@ export default function SuperAdminProfile() {
                       <Input value={selectedManager?.department ?? createUserForm.department ?? ""} readOnly />
                     </div>
                     <div className="space-y-2 md:col-span-2 lg:col-span-3">
-                      <Label>Linked Executives <span className="text-red-500">*</span></Label>
-                      <div className="max-h-40 overflow-y-auto rounded-md border border-slate-300 p-3 space-y-2">
-                        {!createUserForm.managerId ? (
-                          <p className="text-sm text-slate-500">Select a manager first.</p>
-                        ) : executivesForSelectedManager.length === 0 ? (
-                          <p className="text-sm text-slate-500">No executives found for this manager.</p>
-                        ) : (
-                          executivesForSelectedManager.map((executive) => {
-                            const isChecked = (createUserForm.executiveIds ?? []).includes(executive.id);
-                            return (
-                              <label key={executive.id} className="flex items-center gap-2 text-sm text-slate-700">
-                                <input
-                                  type="checkbox"
-                                  className="h-4 w-4 rounded border-slate-300 text-mtc-blue focus:ring-mtc-blue"
-                                  checked={isChecked}
-                                  onChange={(e) => {
-                                    setCreateUserForm((f) => {
-                                      const currentIds = f.executiveIds ?? [];
-                                      const nextIds = e.target.checked
-                                        ? [...currentIds, executive.id]
-                                        : currentIds.filter((id) => id !== executive.id);
-                                      return { ...f, executiveIds: nextIds };
-                                    });
-                                  }}
-                                />
-                                <span>
-                                  {executive.firstName} {executive.lastName}
-                                  {executive.region ? ` — ${executive.region}` : ""}
-                                </span>
-                              </label>
-                            );
-                          })
-                        )}
-                      </div>
-                      <p className="text-xs text-slate-500">Pick one or more executives linked to this manager.</p>
+                      <p className="text-xs text-slate-500">
+                        Admin access is department-based. All admins in this department can action all department tickets.
+                      </p>
                     </div>
                   </>
                 )}
@@ -938,6 +1137,79 @@ export default function SuperAdminProfile() {
         </Card>
       )}
 
+      {/* PENDING IMPORTED EXECUTIVES (placeholders from Excel import) */}
+      {activeTab === "pendingExecutives" && (
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between">
+            <div>
+              <CardTitle className="text-base flex items-center gap-2">
+                <UserCheck className="h-5 w-5 text-mtc-blue" />
+                Pending Imported Executives
+              </CardTitle>
+              <p className="text-xs text-slate-500 mt-1">
+                Placeholder executive records created during the corporate import. Add their real email and assign a manager to give them portal access. Existing corporate and account links are preserved.
+              </p>
+            </div>
+            <Button size="sm" variant="outline" onClick={fetchPendingExecutives} disabled={loadingPendingExecutives}>
+              <RefreshCw className={`h-4 w-4 mr-1 ${loadingPendingExecutives ? "animate-spin" : ""}`} /> Refresh
+            </Button>
+          </CardHeader>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Name</TableHead>
+                <TableHead>Placeholder Email</TableHead>
+                <TableHead>Region</TableHead>
+                <TableHead className="text-right">Corporates</TableHead>
+                <TableHead className="text-right">Accounts</TableHead>
+                <TableHead className="text-right">Action</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {loadingPendingExecutives ? (
+                <TableRow>
+                  <td colSpan={6} className="text-center py-8 text-slate-500 px-4">
+                    <Loader2 className="h-5 w-5 animate-spin inline mr-2" />Loading...
+                  </td>
+                </TableRow>
+              ) : pendingExecutives.length === 0 ? (
+                <TableRow>
+                  <td colSpan={6} className="text-center py-8 text-slate-400 px-4">
+                    No pending imported executives. All imported executives have portal access.
+                  </td>
+                </TableRow>
+              ) : (
+                pendingExecutives.map((exec) => (
+                  <TableRow key={exec.executiveId}>
+                    <TableCell className="font-medium text-slate-900">{exec.firstName} {exec.lastName}</TableCell>
+                    <TableCell className="text-sm text-slate-500 font-mono">{exec.currentEmail}</TableCell>
+                    <TableCell className="text-sm">{exec.region || "—"}</TableCell>
+                    <TableCell className="text-right">
+                      <Badge variant={exec.linkedCorporatesCount > 0 ? "default" : "neutral"}>
+                        {exec.linkedCorporatesCount}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <Badge variant={exec.linkedAccountsCount > 0 ? "default" : "neutral"}>
+                        {exec.linkedAccountsCount}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <Button
+                        size="sm"
+                        onClick={() => openOnboardPendingExec(exec)}
+                      >
+                        <UserPlus className="h-4 w-4 mr-1" /> Complete Onboarding
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
+        </Card>
+      )}
+
 
 
 
@@ -947,6 +1219,155 @@ export default function SuperAdminProfile() {
  
 
       {/* customer_accounts tab removed for admin */}
+
+      {/* ── COMPLETE PENDING EXECUTIVE ONBOARDING MODAL ─────── */}
+      {selectedPendingExec && (
+        <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 backdrop-blur-sm overflow-y-auto py-8 px-4">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-xl animate-in fade-in slide-in-from-bottom-4">
+            <div className="flex items-start justify-between p-6 border-b border-slate-200">
+              <div>
+                <h2 className="text-xl font-bold text-slate-900 flex items-center gap-2">
+                  <UserCheck className="h-5 w-5 text-mtc-blue" />
+                  Complete Onboarding
+                </h2>
+                <p className="text-sm text-slate-500 mt-0.5">
+                  {selectedPendingExec.firstName} {selectedPendingExec.lastName} · {selectedPendingExec.linkedCorporatesCount} corporate{selectedPendingExec.linkedCorporatesCount === 1 ? "" : "s"}, {selectedPendingExec.linkedAccountsCount} account{selectedPendingExec.linkedAccountsCount === 1 ? "" : "s"} already linked
+                </p>
+              </div>
+              <button
+                onClick={closeOnboardPendingExec}
+                disabled={submittingOnboarding}
+                className="rounded-lg p-1.5 hover:bg-slate-100 text-slate-500 hover:text-slate-900 transition-colors disabled:opacity-50"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4">
+              <div className="rounded-lg border border-blue-100 bg-blue-50/40 p-3 text-xs text-slate-600">
+                {onboardingMode === "existing"
+                  ? "No credentials are generated in this mode. It only reassigns linked corporates and accounts to the selected already-onboarded executive."
+                  : "Generates a temporary password and emails it to the address you enter. The executive can then log in and immediately see all linked corporate accounts."}
+              </div>
+
+              <div className="space-y-2">
+                <Label>Onboarding Option</Label>
+                <Select
+                  value={onboardingMode}
+                  onChange={(e) => setOnboardingMode((e.target.value as "new" | "existing") || "new")}
+                >
+                  <option value="new">Create portal access for this imported executive</option>
+                  <option value="existing">Assign imported links to an existing executive</option>
+                </Select>
+              </div>
+
+              {onboardingMode === "existing" ? (
+                <div className="space-y-2">
+                  <Label>Existing Executive <span className="text-red-500">*</span></Label>
+                  <Select
+                    value={onboardingForm.existingExecutiveId?.toString() ?? ""}
+                    onChange={(e) =>
+                      setOnboardingForm((f) => ({
+                        ...f,
+                        existingExecutiveId: e.target.value ? Number(e.target.value) : undefined,
+                      }))
+                    }
+                  >
+                    <option value="">Select Executive...</option>
+                    {executiveList.filter((ex) => !!ex.userId).map((ex) => (
+                      <option key={ex.executiveId} value={ex.executiveId}>
+                        {ex.firstName} {ex.lastName} — {ex.email}
+                      </option>
+                    ))}
+                  </Select>
+                  <p className="text-xs text-slate-500">
+                    Only executives with completed onboarding and portal login are listed.
+                  </p>
+                </div>
+              ) : (
+                <>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                <div className="space-y-2">
+                  <Label>First Name <span className="text-red-500">*</span></Label>
+                  <Input
+                    placeholder="First name"
+                    value={onboardingForm.firstName}
+                    onChange={(e) => setOnboardingForm((f) => ({ ...f, firstName: e.target.value }))}
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label>Last Name <span className="text-red-500">*</span></Label>
+                  <Input
+                    placeholder="Last name"
+                    value={onboardingForm.lastName}
+                    onChange={(e) => setOnboardingForm((f) => ({ ...f, lastName: e.target.value }))}
+                  />
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Email <span className="text-red-500">*</span></Label>
+                <Input
+                  type="email"
+                  placeholder="name@mtc.com.na"
+                  value={onboardingForm.email}
+                  onChange={(e) => setOnboardingForm((f) => ({ ...f, email: e.target.value }))}
+                />
+                <p className="text-xs text-slate-500">Replaces the placeholder email <span className="font-mono">{selectedPendingExec.currentEmail}</span>.</p>
+              </div>
+
+              <div className="space-y-2">
+                <Label>Phone</Label>
+                <Input
+                  placeholder="+264 ..."
+                  value={onboardingForm.phone}
+                  onChange={(e) => setOnboardingForm((f) => ({ ...f, phone: e.target.value }))}
+                />
+              </div>
+
+              <div className="space-y-2">
+                <Label>Reports to Manager <span className="text-red-500">*</span></Label>
+                <Select
+                  value={onboardingForm.managerPersonId?.toString() ?? ""}
+                  onChange={(e) =>
+                    setOnboardingForm((f) => ({
+                      ...f,
+                      managerPersonId: e.target.value ? Number(e.target.value) : undefined,
+                    }))
+                  }
+                >
+                  <option value="">Select Manager...</option>
+                  {managerList.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.firstName} {m.lastName}{m.department ? ` — ${m.department}` : ""}
+                    </option>
+                  ))}
+                </Select>
+                <p className="text-xs text-slate-500">Only managers who already have portal access can be selected.</p>
+              </div>
+                </>
+              )}
+            </div>
+
+            <div className="flex justify-end gap-2 p-4 border-t border-slate-200 bg-slate-50 rounded-b-xl">
+              <Button variant="outline" onClick={closeOnboardPendingExec} disabled={submittingOnboarding}>
+                Cancel
+              </Button>
+              <Button onClick={handleCompletePendingExec} disabled={submittingOnboarding}>
+                {submittingOnboarding ? (
+                  <><Loader2 className="h-4 w-4 mr-1 animate-spin" /> Onboarding...</>
+                ) : (
+                  onboardingMode === "existing"
+                    ? <><UserCheck className="h-4 w-4 mr-1" /> Reassign Linked Accounts</>
+                    : <><Key className="h-4 w-4 mr-1" /> Generate Credentials & Send Email</>
+                )}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* ── ACCOUNT DETAIL MODAL ─────────────────────────────── */}
       {detailAccount && (
         <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 backdrop-blur-sm overflow-y-auto py-8 px-4">
@@ -984,8 +1405,24 @@ export default function SuperAdminProfile() {
                     <div><p className="text-xs text-slate-400">Account Type</p><p className="text-sm font-medium text-slate-900 mt-0.5">{detailAccount.accountType}</p></div>
                     <div><p className="text-xs text-slate-400">Industry</p><p className="text-sm font-medium text-slate-900 mt-0.5">{detailAccount.industry || "—"}</p></div>
                     <div><p className="text-xs text-slate-400">Created</p><p className="text-sm font-medium text-slate-900 mt-0.5">{new Date(detailAccount.created_at).toLocaleDateString()}</p></div>
-                    <div><p className="text-xs text-slate-400">Contact Name</p><p className="text-sm font-medium text-slate-900 mt-0.5">{detailAccount.contactFirstName} {detailAccount.contactLastName}</p></div>
-                    <div><p className="text-xs text-slate-400">Contact Email</p><p className="text-sm font-medium text-slate-900 mt-0.5">{detailAccount.contactEmail}</p></div>
+                    {(() => {
+                      const fn = (detailAccount.contactFirstName || "").trim();
+                      const ln = (detailAccount.contactLastName || "").trim();
+                      const em = (detailAccount.contactEmail || "").trim();
+                      const looksDummy =
+                        (fn === "Imported" && ln === "Contact") ||
+                        em.toLowerCase().endsWith("@placeholder.local");
+                      const missing = looksDummy || (!fn && !ln && !em);
+                      const nameDisplay = missing ? "Not assigned" : `${fn} ${ln}`.trim();
+                      const emailDisplay = missing ? "Not assigned" : em;
+                      const cls = missing ? "text-amber-700 italic" : "text-slate-900";
+                      return (
+                        <>
+                          <div><p className="text-xs text-slate-400">Contact Name</p><p className={`text-sm font-medium mt-0.5 ${cls}`}>{nameDisplay}</p></div>
+                          <div><p className="text-xs text-slate-400">Contact Email</p><p className={`text-sm font-medium mt-0.5 ${cls}`}>{emailDisplay}</p></div>
+                        </>
+                      );
+                    })()}
                     <div><p className="text-xs text-slate-400">Contact Phone</p><p className="text-sm font-medium text-slate-900 mt-0.5">{detailAccount.contactPhone || "—"}</p></div>
                     <div><p className="text-xs text-slate-400">Assigned Manager</p><p className="text-sm font-medium text-slate-900 mt-0.5">{(() => { const mgr = accountManagerList.find(m => m.id === detailAccount.managerId); return detailAccount.managerId ? (mgr ? `${mgr.firstName} ${mgr.lastName}` : `ID #${detailAccount.managerId}`) : "—"; })()}</p></div>
                     {detailAccount.parentAccountId && (

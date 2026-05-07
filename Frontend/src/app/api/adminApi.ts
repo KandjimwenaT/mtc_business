@@ -10,7 +10,6 @@ export interface PersonPayload {
   department?: string;
   gmId?: number;
   managerId?: number;
-  executiveIds?: number[];
   corporateId?: number;
 }
 
@@ -105,6 +104,7 @@ export interface AccountRecord {
   industry: string | null;
   isActive: boolean;
   approvalStatus: "pending" | "approved" | "rejected";
+  monthlySpending?: string;
   created_at: string;
   updated_at: string;
 }
@@ -132,8 +132,47 @@ export interface CorporateRecord {
   executiveLastName?: string;
   isActive: boolean;
   approvalStatus: "pending" | "waiting_approval" | "approved" | "rejected";
+  expiredAccountsCount?: number;
+  renewalCount?: number;
+  monthlySpending?: string;
   created_at: string;
   updated_at: string;
+}
+
+export interface InvoicePayload {
+  invoiceNumber: string;
+  amount: number;
+  currency?: string;
+  status?: "issued" | "paid" | "overdue" | "cancelled";
+  invoiceDate: string;
+  paidAt?: string;
+  notes?: string;
+}
+
+export interface InvoiceRecord {
+  invoiceId: number;
+  accountId: number;
+  corporateId: number | null;
+  invoiceNumber: string;
+  amount: string;
+  currency: string;
+  status: "issued" | "paid" | "overdue" | "cancelled";
+  invoiceDate: string;
+  paidAt: string | null;
+  created_at: string;
+}
+
+export interface SpendingSummaryRecord {
+  total: string;
+  currency: string;
+  byCorporate: Record<string, string>;
+  byAccount: Record<string, string>;
+}
+
+export interface SpendingTrendRecord {
+  month: string;
+  total: string;
+  currency: string;
 }
 
 export interface ContractPayload {
@@ -166,6 +205,17 @@ export interface ContractRecord {
   entitlement: string | null;
   notes: string | null;
   created_at: string;
+}
+
+export interface ExpiringContractRecord {
+  contractId: number;
+  accountId: number;
+  corporateId: number | null;
+  corporateName: string | null;
+  accountName: string;
+  contractType: string;
+  contractEndDate: string;
+  daysRemaining: number;
 }
 
 export interface ServicePayload {
@@ -328,6 +378,58 @@ export const demoteSupervisorToExecutive = async (
   if (!res.ok) { handleUnauthorized(res.status); throw new Error(data.message || "Failed to demote supervisor"); }
 };
 
+// ── Imported executive onboarding ─────────────────────────────────
+
+export interface PendingImportedExecutive {
+  executiveId: number;
+  firstName: string;
+  lastName: string;
+  currentEmail: string;
+  phone: string | null;
+  region: string | null;
+  linkedCorporatesCount: number;
+  linkedAccountsCount: number;
+}
+
+export interface CompleteImportedExecutivePayload {
+  email?: string;
+  phone?: string;
+  managerPersonId?: number;
+  firstName?: string;
+  lastName?: string;
+  existingExecutiveId?: number;
+}
+
+export const getPendingImportedExecutives = async (): Promise<PendingImportedExecutive[]> => {
+  const res = await fetch(`${API_BASE_URL}/admin/executives/pending-onboarding`, {
+    headers: authHeaders(),
+  });
+  const data = await res.json();
+  if (!res.ok) { handleUnauthorized(res.status); throw new Error(data.message || "Failed to fetch pending executives"); }
+  return data.executives ?? [];
+};
+
+export interface CompleteImportedExecutiveResponse {
+  status: string;
+  message?: string;
+  emailSent?: boolean;
+  user?: PortalUser & { password?: string };
+}
+
+export const completeImportedExecutive = async (
+  executiveId: number,
+  payload: CompleteImportedExecutivePayload
+): Promise<CompleteImportedExecutiveResponse> => {
+  const res = await fetch(`${API_BASE_URL}/admin/executives/${executiveId}/complete-onboarding`, {
+    method: "POST",
+    headers: authHeaders(),
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json();
+  if (!res.ok) { handleUnauthorized(res.status); throw new Error(data.message || "Failed to complete onboarding"); }
+  return data;
+};
+
 // ── Customer accounts ─────────────────────────────────────────────
 
 export const createAccount = async (
@@ -411,6 +513,58 @@ export const reassignCorporateExecutive = async (
   const data = await res.json();
   if (!res.ok) { handleUnauthorized(res.status); throw new Error(data.message || "Failed to reassign corporate executive"); }
   return data.corporate as CorporateRecord;
+};
+
+// ── Corporate contact persons (M:N AccountManager ↔ Corporate) ──
+
+export const getCorporateContactPersons = async (
+  corporateId: number
+): Promise<PersonRecord[]> => {
+  const res = await fetch(
+    `${API_BASE_URL}/admin/corporates/${corporateId}/contact-persons`,
+    { headers: authHeaders() }
+  );
+  const data = await res.json();
+  if (!res.ok) {
+    handleUnauthorized(res.status);
+    throw new Error(data.message || "Failed to load contact persons");
+  }
+  return (data.persons ?? []) as PersonRecord[];
+};
+
+export const assignContactPersonToCorporate = async (
+  corporateId: number,
+  accountManagerId: number
+): Promise<PersonRecord> => {
+  const res = await fetch(
+    `${API_BASE_URL}/admin/corporates/${corporateId}/contact-persons`,
+    {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({ accountManagerId }),
+    }
+  );
+  const data = await res.json();
+  if (!res.ok) {
+    handleUnauthorized(res.status);
+    throw new Error(data.message || "Failed to link contact person");
+  }
+  return data.person as PersonRecord;
+};
+
+export const removeContactPersonFromCorporate = async (
+  corporateId: number,
+  accountManagerId: number
+): Promise<void> => {
+  const res = await fetch(
+    `${API_BASE_URL}/admin/corporates/${corporateId}/contact-persons/${accountManagerId}`,
+    { method: "DELETE", headers: authHeaders() }
+  );
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    handleUnauthorized(res.status);
+    throw new Error(data.message || "Failed to remove contact person");
+  }
 };
 
 export const getAccounts = async (params?: {
@@ -500,6 +654,63 @@ export const getAccountContracts = async (accountId: number): Promise<ContractRe
   const data = await res.json();
   if (!res.ok) { handleUnauthorized(res.status); throw new Error(data.message || "Failed to fetch contracts"); }
   return data.contracts ?? [];
+};
+
+export const getExpiringContracts = async (withinMonths = 6): Promise<ExpiringContractRecord[]> => {
+  const res = await fetch(
+    `${API_BASE_URL}/admin/contracts/expiring?withinMonths=${encodeURIComponent(String(withinMonths))}`,
+    { headers: authHeaders() }
+  );
+  const data = await res.json();
+  if (!res.ok) { handleUnauthorized(res.status); throw new Error(data.message || "Failed to fetch expiring contracts"); }
+  return data.contracts ?? [];
+};
+
+export const createInvoice = async (accountId: number, payload: InvoicePayload): Promise<InvoiceRecord> => {
+  const res = await fetch(`${API_BASE_URL}/admin/accounts/${accountId}/invoices`, {
+    method: "POST",
+    headers: authHeaders(),
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json();
+  if (!res.ok) { handleUnauthorized(res.status); throw new Error(data.message || "Failed to create invoice"); }
+  return data.invoice as InvoiceRecord;
+};
+
+export const getInvoices = async (params?: {
+  accountId?: number;
+  corporateId?: number;
+  managerId?: number;
+  executiveId?: number;
+  status?: "issued" | "paid" | "overdue" | "cancelled";
+}): Promise<InvoiceRecord[]> => {
+  const sp = new URLSearchParams();
+  if (params?.accountId != null) sp.set("accountId", String(params.accountId));
+  if (params?.corporateId != null) sp.set("corporateId", String(params.corporateId));
+  if (params?.managerId != null) sp.set("managerId", String(params.managerId));
+  if (params?.executiveId != null) sp.set("executiveId", String(params.executiveId));
+  if (params?.status) sp.set("status", params.status);
+  const q = sp.toString();
+  const res = await fetch(`${API_BASE_URL}/admin/invoices${q ? `?${q}` : ""}`, { headers: authHeaders() });
+  const data = await res.json();
+  if (!res.ok) { handleUnauthorized(res.status); throw new Error(data.message || "Failed to fetch invoices"); }
+  return (data.invoices ?? []) as InvoiceRecord[];
+};
+
+export const getManagerMonthlySpendingSummary = async (): Promise<SpendingSummaryRecord> => {
+  const res = await fetch(`${API_BASE_URL}/admin/spending/monthly-summary`, { headers: authHeaders() });
+  const data = await res.json();
+  if (!res.ok) { handleUnauthorized(res.status); throw new Error(data.message || "Failed to fetch spending summary"); }
+  return data.summary as SpendingSummaryRecord;
+};
+
+export const getManagerMonthlySpendingTrend = async (months = 6): Promise<SpendingTrendRecord[]> => {
+  const res = await fetch(`${API_BASE_URL}/admin/spending/monthly-trend?months=${encodeURIComponent(String(months))}`, {
+    headers: authHeaders(),
+  });
+  const data = await res.json();
+  if (!res.ok) { handleUnauthorized(res.status); throw new Error(data.message || "Failed to fetch spending trend"); }
+  return (data.trend ?? []) as SpendingTrendRecord[];
 };
 
 export const approveAccount = async (

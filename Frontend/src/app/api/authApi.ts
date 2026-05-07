@@ -299,6 +299,8 @@ export interface CustomerService {
 export interface CustomerContract {
   contractId: number;
   accountId: number | null;
+  /** Present when the contract is tied to a specific line/service */
+  serviceId?: number | null;
   accountName: string | null;
   contractType: string;
   contractStartDate: string | null;
@@ -312,6 +314,10 @@ export interface CustomerContract {
 
 export interface CustomerAccountInfo {
   accountId: number;
+  /** Corporate this account belongs to (returned when the customer is linked
+   *  to multiple corporates via the contact-person junction table). */
+  corporateId?: number | null;
+  corporateName?: string | null;
   accountNumber: string;
   accountName: string;
   accountType: string;
@@ -323,6 +329,7 @@ export interface CustomerAccountInfo {
   isActive: boolean;
   approvalStatus: string;
   createdAt: string;
+  monthlySpending?: string;
 }
 
 export interface CustomerCorporateInfo {
@@ -344,12 +351,20 @@ export interface CustomerAccountManagerInfo {
 
 export interface CustomerAccountResponse {
   corporate?: CustomerCorporateInfo;
+  /** Every corporate the contact person is linked to (legacy primary +
+   *  any additional links via the corporate_contact_persons junction).
+   *  The first entry mirrors `corporate` for backwards compatibility. */
+  corporates?: CustomerCorporateInfo[];
   accountManager?: CustomerAccountManagerInfo;
   accounts?: CustomerAccountInfo[];
   account: CustomerAccountInfo;
   executive: CustomerAccountExecutive | null;
   services: CustomerService[];
   contracts: CustomerContract[];
+  spendingSummary?: {
+    corporateMonthlySpending: string;
+    currency: string;
+  };
 }
 
 // ── Executive's Assigned Accounts ─────────────────────────────────
@@ -369,8 +384,34 @@ export interface ExecutiveAccountRecord {
   isActive: boolean;
   approvalStatus: string;
   createdAt: string;
+  monthlySpending?: string;
+  corporateMonthlySpending?: string;
   services: CustomerService[];
   contracts: CustomerContract[];
+}
+
+export interface SpendingSummaryRecord {
+  total: string;
+  currency: string;
+  byCorporate: Record<string, string>;
+  byAccount: Record<string, string>;
+}
+
+export interface SpendingTrendRecord {
+  month: string;
+  total: string;
+  currency: string;
+}
+
+export interface ExpiringContractRecord {
+  contractId: number;
+  accountId: number;
+  corporateId: number | null;
+  corporateName: string | null;
+  accountName: string;
+  contractType: string;
+  contractEndDate: string;
+  daysRemaining: number;
 }
 
 export const getMyAccounts = async (): Promise<ExecutiveAccountRecord[]> => {
@@ -391,6 +432,62 @@ export const getMyAccounts = async (): Promise<ExecutiveAccountRecord[]> => {
   }
 
   return data.accounts as ExecutiveAccountRecord[];
+};
+
+export const getMySpendingSummary = async (): Promise<SpendingSummaryRecord> => {
+  const response = await fetch(`${API_BASE_URL}/auth/my-spending-summary`, {
+    method: "GET",
+    headers: authHeaders(),
+  });
+  if (response.status === 401) {
+    handleUnauthorized();
+    throw new Error("Session expired");
+  }
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.message || "Failed to fetch spending summary");
+  }
+  return data.summary as SpendingSummaryRecord;
+};
+
+export const getMySpendingTrend = async (months = 6): Promise<SpendingTrendRecord[]> => {
+  const response = await fetch(
+    `${API_BASE_URL}/auth/my-spending-trend?months=${encodeURIComponent(String(months))}`,
+    {
+      method: "GET",
+      headers: authHeaders(),
+    }
+  );
+  if (response.status === 401) {
+    handleUnauthorized();
+    throw new Error("Session expired");
+  }
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.message || "Failed to fetch spending trend");
+  }
+  return (data.trend ?? []) as SpendingTrendRecord[];
+};
+
+export const getMyExpiringContracts = async (withinMonths = 6): Promise<ExpiringContractRecord[]> => {
+  const response = await fetch(
+    `${API_BASE_URL}/auth/my-expiring-contracts?withinMonths=${encodeURIComponent(String(withinMonths))}`,
+    {
+      method: "GET",
+      headers: authHeaders(),
+    }
+  );
+
+  if (response.status === 401) {
+    handleUnauthorized();
+    throw new Error("Session expired");
+  }
+
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.message || "Failed to fetch expiring contracts");
+  }
+  return data.contracts as ExpiringContractRecord[];
 };
 
 export const getMyAccount = async (): Promise<CustomerAccountResponse> => {

@@ -8,10 +8,33 @@ const Manager = require("../models/Manager");
 const ExecutiveStaff = require("../models/ExecutiveStaff");
 const Corporate = require("../models/Corporate");
 const AccountManager = require("../models/AccountManager");
+const CorporateContactPerson = require("../models/CorporateContactPerson");
 const Account = require("../models/Account");
 const Contract = require("../models/Contract");
 const Service = require("../models/Service");
+const Invoice = require("../models/Invoice");
+const Notification = require("../models/Notification");
 const { createForUserIds } = require("../services/notificationService");
+const {
+  propagateContactPersonToCorporateAccounts,
+  enrichAccountsWithCorporateContact,
+} = require("../services/contactPersonService");
+const { Op } = require("sequelize");
+const { sequelize } = require("../config/database");
+
+// ── Helper: resolve a Manager profile id from a persons.id ──────────
+// persons.managerId stores persons.id values, but executive_staff.manager_id
+// references managers.manager_id, which only exists after the manager has
+// portal access. Returns null if any link in the chain is missing.
+async function resolveManagerProfileFromPerson(personId) {
+  if (!personId) return null;
+  const managerPerson = await Person.findByPk(personId);
+  if (!managerPerson) return null;
+  const managerUser = await User.findOne({ where: { email: managerPerson.email } });
+  if (!managerUser) return null;
+  const managerProfile = await Manager.findOne({ where: { userId: managerUser.id } });
+  return managerProfile ? managerProfile.managerId : null;
+}
 
 async function resolveExecutiveUserIdByExecutiveProfileId(executiveProfileId) {
   if (!executiveProfileId) return null;
@@ -24,9 +47,20 @@ async function resolveExecutiveUserIdByExecutiveProfileId(executiveProfileId) {
   return user ? user.id : null;
 }
 
+function isoMonth(dateValue) {
+  if (!dateValue) return "";
+  const d = new Date(dateValue);
+  if (Number.isNaN(d.getTime())) return "";
+  return d.toISOString().slice(0, 7);
+}
+
+function currencySummary(amount) {
+  return Number(amount || 0).toFixed(2);
+}
+
 // ── Create Person (database record, no portal access) ───────────
 exports.createPerson = async (req, res) => {
-  const { firstName, lastName, email, phone, type, region, department, gmId, managerId, executiveIds, corporateId } = req.body;
+  const { firstName, lastName, email, phone, type, region, department, gmId, managerId, corporateId } = req.body;
 
   const allowedTypes = ["executive_staff", "supervisor", "manager", "gm", "admin", "customer"];
 
@@ -59,23 +93,12 @@ exports.createPerson = async (req, res) => {
   if (type === "admin" && !managerId) {
     return res.status(400).json({ status: "Failed", message: "Manager is required when creating an Admin" });
   }
-  if (type === "admin" && (!Array.isArray(executiveIds) || executiveIds.length === 0)) {
-    return res.status(400).json({ status: "Failed", message: "At least one Executive must be linked when creating an Admin" });
-  }
-
-  const normalizedExecutiveIds =
-    type === "admin" && Array.isArray(executiveIds)
-      ? [...new Set(executiveIds.map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0))]
-      : [];
-
-  if (type === "admin" && normalizedExecutiveIds.length === 0) {
-    return res.status(400).json({ status: "Failed", message: "At least one valid Executive must be linked when creating an Admin" });
-  }
   if (type === "customer" && !corporateId) {
     return res.status(400).json({ status: "Failed", message: "Corporate is required when creating an Account Manager" });
   }
 
   try {
+    let resolvedDepartment = department || null;
     const existing =
       type === "customer"
         ? await AccountManager.findOne({ where: { email } })
@@ -92,20 +115,9 @@ exports.createPerson = async (req, res) => {
       if (!manager || manager.type !== "manager") {
         return res.status(400).json({ status: "Failed", message: "Selected manager is invalid" });
       }
-
-      const linkedExecutives = await Person.findAll({
-        where: {
-          id: normalizedExecutiveIds,
-          type: "executive_staff",
-          managerId: managerId,
-        },
-      });
-
-      if (linkedExecutives.length !== normalizedExecutiveIds.length) {
-        return res.status(400).json({
-          status: "Failed",
-          message: "One or more selected executives are invalid or not linked to the selected manager",
-        });
+      resolvedDepartment = resolvedDepartment || manager.department || null;
+      if (!resolvedDepartment) {
+        return res.status(400).json({ status: "Failed", message: "Selected manager has no department configured" });
       }
     }
 
@@ -115,16 +127,9 @@ exports.createPerson = async (req, res) => {
         return res.status(400).json({ status: "Failed", message: "Selected corporate is invalid" });
       }
 
-      const existingContact = await AccountManager.findOne({
-        where: { corporateId: selectedCorporate.corporateId },
-      });
-      if (existingContact) {
-        return res.status(400).json({
-          status: "Failed",
-          message: "This corporate already has an Account Manager contact person",
-        });
-      }
-
+      // A corporate can have multiple contact persons. The new contact's primary
+      // corporate link is stored on AccountManager.corporateId; secondary links
+      // can be added later via the corporate_contact_persons junction table.
       const accountManager = await AccountManager.create({
         firstName,
         lastName,
@@ -133,6 +138,18 @@ exports.createPerson = async (req, res) => {
         corporateId: selectedCorporate.corporateId,
         hasPortalAccess: false,
       });
+
+      // Fill in any child accounts whose own contact info is empty or still
+      // an import placeholder, so executive/manager dashboards that read
+      // per-account contact fields immediately reflect the new contact.
+      try {
+        await propagateContactPersonToCorporateAccounts(
+          selectedCorporate.corporateId,
+          accountManager
+        );
+      } catch (propagationError) {
+        console.error("Propagate contact to corporate accounts failed:", propagationError);
+      }
 
       return res.status(201).json({
         status: "Success",
@@ -147,8 +164,8 @@ exports.createPerson = async (req, res) => {
       email,
       phone: phone || null,
       type,
-      region: type === "admin" ? JSON.stringify(normalizedExecutiveIds) : (region || null),
-      department: department || null,
+      region: type === "admin" ? null : (region || null),
+      department: resolvedDepartment,
       gmId: type === "manager" ? (gmId || null) : null,
       managerId: (type === "executive_staff" || type === "admin") ? (managerId || null) : null,
     });
@@ -166,17 +183,25 @@ exports.createPerson = async (req, res) => {
   }
 };
 
-// ── Get corporates without account manager contact persons ────────
+// ── Get corporates without any linked contact persons ────────────
+// A corporate is considered "without contact persons" when there is
+// neither an AccountManager whose primary corporateId points at it nor
+// a row in the corporate_contact_persons junction table.
 exports.getCorporatesWithoutContactPersons = async (req, res) => {
   try {
     const corporates = await Corporate.findAll({ order: [["corporate_name", "ASC"]] });
-    const contacts = await AccountManager.findAll({ attributes: ["corporateId"] });
+    const [primaryContacts, junctionLinks] = await Promise.all([
+      AccountManager.findAll({ attributes: ["corporateId"] }),
+      CorporateContactPerson.findAll({ attributes: ["corporateId"] }),
+    ]);
 
-    const takenCorporateIds = new Set(
-      contacts
-        .map((am) => am.corporateId)
-        .filter((id) => Number.isInteger(id))
-    );
+    const takenCorporateIds = new Set();
+    for (const am of primaryContacts) {
+      if (Number.isInteger(am.corporateId)) takenCorporateIds.add(am.corporateId);
+    }
+    for (const link of junctionLinks) {
+      if (Number.isInteger(link.corporateId)) takenCorporateIds.add(link.corporateId);
+    }
 
     const available = corporates.filter((corporate) => !takenCorporateIds.has(corporate.corporateId));
     return res.status(200).json({ status: "Success", corporates: available });
@@ -485,17 +510,7 @@ exports.createPortalAccess = async (req, res) => {
       }
     }
 
-    let resolvedManagerProfileId = null;
-    if (person.managerId) {
-      const managerPerson = await Person.findByPk(person.managerId);
-      if (managerPerson) {
-        const managerUser = await User.findOne({ where: { email: managerPerson.email } });
-        if (managerUser) {
-          const managerProfile = await Manager.findOne({ where: { userId: managerUser.id } });
-          resolvedManagerProfileId = managerProfile ? managerProfile.managerId : null;
-        }
-      }
-    }
+    const resolvedManagerProfileId = await resolveManagerProfileFromPerson(person.managerId);
 
     // Create profile entry (skip if it already exists)
     if (person.type === "gm") {
@@ -834,11 +849,103 @@ exports.createCorporate = async (req, res) => {
 exports.getCorporates = async (req, res) => {
   const { managerId } = req.query;
   const where = {};
-  if (managerId) where.managerId = managerId;
 
   try {
+    if (managerId) {
+      const parsedManagerId = Number(managerId);
+      if (Number.isInteger(parsedManagerId) && parsedManagerId > 0) {
+        const managerIds = [parsedManagerId];
+
+        // Backward compatibility: some records store managers by persons.id.
+        const managerProfile = await Manager.findByPk(parsedManagerId);
+        if (managerProfile) {
+          const managerPerson = await Person.findOne({ where: { email: managerProfile.email } });
+          if (managerPerson?.id) managerIds.push(managerPerson.id);
+        }
+
+        where.managerId = { [Op.in]: [...new Set(managerIds)] };
+      }
+    }
+
     const corporates = await Corporate.findAll({ where, order: [["created_at", "DESC"]] });
     const plain = corporates.map((c) => c.toJSON());
+    const corporateIds = plain.map((c) => c.corporateId);
+
+    if (corporateIds.length > 0) {
+      const corporateAccounts = await Account.findAll({
+        where: { corporateId: corporateIds },
+        attributes: ["accountId", "corporateId", "isActive"],
+      });
+
+      const accountIds = corporateAccounts.map((acc) => acc.accountId);
+      const contracts = accountIds.length
+        ? await Contract.findAll({
+            where: { accountId: accountIds },
+            attributes: ["contractId", "accountId"],
+          })
+        : [];
+
+      const accountById = new Map(corporateAccounts.map((acc) => [acc.accountId, acc]));
+      const expiredByCorporateId = new Map();
+      const contractCountByAccountId = new Map();
+      const renewalByCorporateId = new Map();
+
+      for (const account of corporateAccounts) {
+        if (account.isActive === false) {
+          expiredByCorporateId.set(
+            account.corporateId,
+            (expiredByCorporateId.get(account.corporateId) || 0) + 1
+          );
+        }
+      }
+
+      for (const contract of contracts) {
+        contractCountByAccountId.set(
+          contract.accountId,
+          (contractCountByAccountId.get(contract.accountId) || 0) + 1
+        );
+      }
+
+      for (const [accountId, contractCount] of contractCountByAccountId.entries()) {
+        const renewalsForAccount = Math.max(contractCount - 1, 0);
+        if (renewalsForAccount === 0) continue;
+        const account = accountById.get(accountId);
+        if (!account?.corporateId) continue;
+        renewalByCorporateId.set(
+          account.corporateId,
+          (renewalByCorporateId.get(account.corporateId) || 0) + renewalsForAccount
+        );
+      }
+
+      for (const corp of plain) {
+        corp.expiredAccountsCount = expiredByCorporateId.get(corp.corporateId) || 0;
+        corp.renewalCount = renewalByCorporateId.get(corp.corporateId) || 0;
+      }
+
+      if (accountIds.length > 0) {
+        const monthKey = new Date().toISOString().slice(0, 7);
+        const paidInvoices = await Invoice.findAll({
+          where: {
+            accountId: { [Op.in]: accountIds },
+            status: "paid",
+          },
+          attributes: ["corporateId", "amount", "paidAt"],
+        });
+        const spendingByCorporate = new Map();
+        for (const invoice of paidInvoices) {
+          if (isoMonth(invoice.paidAt) !== monthKey) continue;
+          if (!invoice.corporateId) continue;
+          spendingByCorporate.set(
+            invoice.corporateId,
+            Number((spendingByCorporate.get(invoice.corporateId) || 0) + Number(invoice.amount || 0))
+          );
+        }
+        for (const corp of plain) {
+          corp.monthlySpending = currencySummary(spendingByCorporate.get(corp.corporateId) || 0);
+        }
+      }
+    }
+
     const execIds = [...new Set(plain.filter((c) => c.executiveId).map((c) => c.executiveId))];
     if (execIds.length) {
       const execs = await ExecutiveStaff.findAll({ where: { executiveId: execIds } });
@@ -851,6 +958,13 @@ exports.getCorporates = async (req, res) => {
         }
       }
     }
+
+    for (const corp of plain) {
+      if (typeof corp.expiredAccountsCount !== "number") corp.expiredAccountsCount = 0;
+      if (typeof corp.renewalCount !== "number") corp.renewalCount = 0;
+      if (!corp.monthlySpending) corp.monthlySpending = "0.00";
+    }
+
     return res.status(200).json({ status: "Success", corporates: plain });
   } catch (error) {
     console.error("Get corporates error:", error);
@@ -1110,6 +1224,16 @@ exports.reassignCorporateExecutive = async (req, res) => {
       });
     }
 
+    try {
+      await emailService.sendExecutiveReassignmentEmail(
+        executivePerson.email,
+        `${executivePerson.firstName} ${executivePerson.lastName}`,
+        corporate.corporateName,
+      );
+    } catch (emailErr) {
+      console.error("Failed to send reassignment email:", emailErr);
+    }
+
     return res.status(200).json({
       status: "Success",
       message: "Corporate executive reassigned successfully",
@@ -1117,6 +1241,208 @@ exports.reassignCorporateExecutive = async (req, res) => {
     });
   } catch (error) {
     console.error("Reassign corporate executive error:", error);
+    return res.status(500).json({ status: "Failed", message: "Internal server error" });
+  }
+};
+
+// ── Corporate contact persons (M:N AccountManager ↔ Corporate) ───
+//
+// A contact person can serve multiple corporates. The legacy
+// AccountManager.corporateId column still represents the contact's
+// "primary" corporate; additional links live in
+// corporate_contact_persons (corporateId, accountManagerId).
+async function listContactPersonsForCorporate(corporateId) {
+  const numericId = Number(corporateId);
+  if (!Number.isInteger(numericId)) return [];
+
+  const [primary, junction] = await Promise.all([
+    AccountManager.findAll({ where: { corporateId: numericId } }),
+    CorporateContactPerson.findAll({ where: { corporateId: numericId } }),
+  ]);
+
+  const junctionAmIds = junction
+    .map((j) => j.accountManagerId)
+    .filter((id) => Number.isInteger(id));
+
+  const junctionAms = junctionAmIds.length
+    ? await AccountManager.findAll({ where: { accountManagerId: junctionAmIds } })
+    : [];
+
+  const seen = new Set();
+  const all = [];
+  for (const am of [...primary, ...junctionAms]) {
+    if (!am || seen.has(am.accountManagerId)) continue;
+    seen.add(am.accountManagerId);
+    all.push(am);
+  }
+  return all;
+}
+
+function serializeAccountManagerAsPerson(am, corporateName = null) {
+  return {
+    id: am.accountManagerId,
+    firstName: am.firstName,
+    lastName: am.lastName,
+    email: am.email,
+    phone: am.phone,
+    type: "customer",
+    region: null,
+    department: corporateName,
+    gmId: null,
+    managerId: null,
+    corporateId: am.corporateId,
+    hasPortalAccess: am.hasPortalAccess,
+    created_at: am.createdAt,
+  };
+}
+
+// GET /admin/corporates/:corporateId/contact-persons
+exports.getCorporateContactPersons = async (req, res) => {
+  const { corporateId } = req.params;
+  if (!corporateId) {
+    return res.status(400).json({ status: "Failed", message: "Corporate ID is required" });
+  }
+  try {
+    const corporate = await Corporate.findByPk(corporateId);
+    if (!corporate) {
+      return res.status(404).json({ status: "Failed", message: "Corporate not found" });
+    }
+    const ams = await listContactPersonsForCorporate(corporate.corporateId);
+    const persons = ams.map((am) => serializeAccountManagerAsPerson(am, corporate.corporateName));
+    return res.status(200).json({ status: "Success", persons });
+  } catch (error) {
+    console.error("Get corporate contact persons error:", error);
+    return res.status(500).json({ status: "Failed", message: "Internal server error" });
+  }
+};
+
+// POST /admin/corporates/:corporateId/contact-persons   body: { accountManagerId }
+exports.assignContactPersonToCorporate = async (req, res) => {
+  const { corporateId } = req.params;
+  const { accountManagerId } = req.body || {};
+
+  if (!corporateId) {
+    return res.status(400).json({ status: "Failed", message: "Corporate ID is required" });
+  }
+  if (!accountManagerId) {
+    return res.status(400).json({ status: "Failed", message: "Contact person ID is required" });
+  }
+
+  try {
+    const corporate = await Corporate.findByPk(corporateId);
+    if (!corporate) {
+      return res.status(404).json({ status: "Failed", message: "Corporate not found" });
+    }
+    const accountManager = await AccountManager.findByPk(accountManagerId);
+    if (!accountManager) {
+      return res.status(404).json({ status: "Failed", message: "Contact person not found" });
+    }
+
+    // Already linked as the primary corporate? Nothing to do.
+    if (accountManager.corporateId === corporate.corporateId) {
+      return res.status(200).json({
+        status: "Success",
+        message: "Contact person is already linked to this corporate",
+        person: serializeAccountManagerAsPerson(accountManager, corporate.corporateName),
+      });
+    }
+
+    const [, created] = await CorporateContactPerson.findOrCreate({
+      where: {
+        corporateId: corporate.corporateId,
+        accountManagerId: accountManager.accountManagerId,
+      },
+      defaults: {
+        corporateId: corporate.corporateId,
+        accountManagerId: accountManager.accountManagerId,
+      },
+    });
+
+    // Mirror the chosen contact onto every child account whose own contact
+    // info is empty or a known import-placeholder. Real, manually-entered
+    // contacts on individual accounts are left untouched.
+    try {
+      await propagateContactPersonToCorporateAccounts(corporate.corporateId, accountManager);
+    } catch (propagationError) {
+      console.error("Propagate contact to corporate accounts failed:", propagationError);
+    }
+
+    return res.status(created ? 201 : 200).json({
+      status: "Success",
+      message: created
+        ? "Contact person linked to corporate"
+        : "Contact person is already linked to this corporate",
+      person: serializeAccountManagerAsPerson(accountManager, corporate.corporateName),
+    });
+  } catch (error) {
+    console.error("Assign contact person to corporate error:", error);
+    return res.status(500).json({ status: "Failed", message: "Internal server error" });
+  }
+};
+
+// DELETE /admin/corporates/:corporateId/contact-persons/:accountManagerId
+exports.removeContactPersonFromCorporate = async (req, res) => {
+  const { corporateId, accountManagerId } = req.params;
+
+  if (!corporateId || !accountManagerId) {
+    return res
+      .status(400)
+      .json({ status: "Failed", message: "Corporate ID and contact person ID are required" });
+  }
+
+  try {
+    const corporate = await Corporate.findByPk(corporateId);
+    if (!corporate) {
+      return res.status(404).json({ status: "Failed", message: "Corporate not found" });
+    }
+    const accountManager = await AccountManager.findByPk(accountManagerId);
+    if (!accountManager) {
+      return res.status(404).json({ status: "Failed", message: "Contact person not found" });
+    }
+
+    // Remove the junction link if present.
+    const removed = await CorporateContactPerson.destroy({
+      where: {
+        corporateId: corporate.corporateId,
+        accountManagerId: accountManager.accountManagerId,
+      },
+    });
+
+    // If the contact's primary corporate is the one we're unlinking, move
+    // it to one of the remaining junction links (if any) so the AM record
+    // never ends up orphaned (corporateId is NOT NULL in the model).
+    if (accountManager.corporateId === corporate.corporateId) {
+      const remaining = await CorporateContactPerson.findOne({
+        where: { accountManagerId: accountManager.accountManagerId },
+      });
+      if (remaining) {
+        await accountManager.update({ corporateId: remaining.corporateId });
+        await CorporateContactPerson.destroy({
+          where: {
+            corporateId: remaining.corporateId,
+            accountManagerId: accountManager.accountManagerId,
+          },
+        });
+      } else {
+        return res.status(400).json({
+          status: "Failed",
+          message:
+            "This is the contact person's only corporate. Link them to another corporate before removing.",
+        });
+      }
+    } else if (!removed) {
+      return res.status(404).json({
+        status: "Failed",
+        message: "Contact person is not linked to this corporate",
+      });
+    }
+
+    return res.status(200).json({
+      status: "Success",
+      message: "Contact person removed from corporate",
+    });
+  } catch (error) {
+    console.error("Remove contact person from corporate error:", error);
     return res.status(500).json({ status: "Failed", message: "Internal server error" });
   }
 };
@@ -1202,9 +1528,216 @@ exports.getAccounts = async (req, res) => {
       }
     }
 
+    const monthKey = new Date().toISOString().slice(0, 7);
+    const accountIds = plain.map((a) => a.accountId);
+    if (accountIds.length) {
+      const paidInvoices = await Invoice.findAll({
+        where: {
+          accountId: { [Op.in]: accountIds },
+          status: "paid",
+        },
+        attributes: ["accountId", "amount", "paidAt"],
+      });
+      const spendingByAccount = new Map();
+      for (const invoice of paidInvoices) {
+        if (isoMonth(invoice.paidAt) !== monthKey) continue;
+        spendingByAccount.set(
+          invoice.accountId,
+          Number((spendingByAccount.get(invoice.accountId) || 0) + Number(invoice.amount || 0))
+        );
+      }
+      for (const acc of plain) {
+        acc.monthlySpending = currencySummary(spendingByAccount.get(acc.accountId) || 0);
+      }
+    }
+
+    // Lazy fallback: any account whose own contact fields are still empty or
+    // an import-placeholder gets enriched from the corporate's contact person
+    // (legacy AccountManager.corporateId or corporate_contact_persons junction).
+    await enrichAccountsWithCorporateContact(plain);
+
     return res.status(200).json({ status: "Success", accounts: plain });
   } catch (error) {
     console.error("Get accounts error:", error);
+    return res.status(500).json({ status: "Failed", message: "Internal server error" });
+  }
+};
+
+exports.createInvoice = async (req, res) => {
+  const { accountId } = req.params;
+  const {
+    invoiceNumber,
+    amount,
+    currency,
+    status,
+    invoiceDate,
+    paidAt,
+    notes,
+  } = req.body;
+
+  if (!invoiceNumber || amount == null || !invoiceDate) {
+    return res.status(400).json({
+      status: "Failed",
+      message: "invoiceNumber, amount and invoiceDate are required",
+    });
+  }
+
+  const allowedStatuses = ["issued", "paid", "overdue", "cancelled"];
+  if (status && !allowedStatuses.includes(status)) {
+    return res.status(400).json({ status: "Failed", message: "Invalid invoice status" });
+  }
+
+  try {
+    const account = await Account.findByPk(accountId);
+    if (!account) {
+      return res.status(404).json({ status: "Failed", message: "Account not found" });
+    }
+
+    const invoice = await Invoice.create({
+      accountId: Number(accountId),
+      corporateId: account.corporateId || null,
+      invoiceNumber,
+      amount,
+      currency: currency || "NAD",
+      status: status || "issued",
+      invoiceDate,
+      paidAt: (status || "issued") === "paid" ? (paidAt || new Date()) : (paidAt || null),
+      notes: notes || null,
+    });
+
+    return res.status(201).json({ status: "Success", message: "Invoice created", invoice });
+  } catch (error) {
+    console.error("Create invoice error:", error);
+    return res.status(500).json({ status: "Failed", message: "Internal server error" });
+  }
+};
+
+exports.getInvoices = async (req, res) => {
+  const { accountId, corporateId, managerId, executiveId, status } = req.query;
+  try {
+    const invoiceWhere = {};
+    if (accountId) invoiceWhere.accountId = Number(accountId);
+    if (corporateId) invoiceWhere.corporateId = Number(corporateId);
+    if (status) invoiceWhere.status = status;
+
+    if (managerId || executiveId) {
+      const accountWhere = {};
+      if (managerId) accountWhere.managerId = Number(managerId);
+      if (executiveId) accountWhere.executiveId = Number(executiveId);
+      const scopeAccounts = await Account.findAll({ where: accountWhere, attributes: ["accountId"] });
+      const scopedIds = scopeAccounts.map((a) => a.accountId);
+      if (!scopedIds.length) return res.status(200).json({ status: "Success", invoices: [] });
+      invoiceWhere.accountId = { [Op.in]: scopedIds };
+    }
+
+    const invoices = await Invoice.findAll({ where: invoiceWhere, order: [["created_at", "DESC"]] });
+    return res.status(200).json({ status: "Success", invoices });
+  } catch (error) {
+    console.error("Get invoices error:", error);
+    return res.status(500).json({ status: "Failed", message: "Internal server error" });
+  }
+};
+
+exports.getManagerMonthlySpendingSummary = async (req, res) => {
+  if (!["manager", "supervisor"].includes(req.user?.role)) {
+    return res.status(403).json({ status: "Failed", message: "Only managers can access spending summary" });
+  }
+
+  try {
+    const managerProfile = await Manager.findOne({ where: { userId: req.user.id } });
+    if (!managerProfile) {
+      return res.status(404).json({ status: "Failed", message: "Manager profile not found" });
+    }
+
+    const managerPerson = await Person.findOne({
+      where: { email: managerProfile.email, type: { [Op.in]: ["manager", "supervisor"] } },
+    });
+    const managerIds = [managerProfile.managerId, managerPerson?.id].filter((id) => Number.isInteger(id) && id > 0);
+    if (!managerIds.length) return res.status(200).json({ status: "Success", summary: { total: "0.00", currency: "NAD" } });
+
+    const accounts = await Account.findAll({
+      where: { managerId: { [Op.in]: managerIds } },
+      attributes: ["accountId", "corporateId"],
+    });
+    const accountIds = accounts.map((a) => a.accountId);
+    if (!accountIds.length) return res.status(200).json({ status: "Success", summary: { total: "0.00", currency: "NAD" } });
+
+    const nowMonth = new Date().toISOString().slice(0, 7);
+    const paidInvoices = await Invoice.findAll({
+      where: { accountId: { [Op.in]: accountIds }, status: "paid" },
+      attributes: ["accountId", "corporateId", "amount", "currency", "paidAt"],
+    });
+
+    const byCorporate = {};
+    const byAccount = {};
+    let total = 0;
+    for (const invoice of paidInvoices) {
+      if (isoMonth(invoice.paidAt) !== nowMonth) continue;
+      const amount = Number(invoice.amount || 0);
+      total += amount;
+      const corporateId = invoice.corporateId || null;
+      if (corporateId != null) byCorporate[corporateId] = Number((byCorporate[corporateId] || 0) + amount);
+      byAccount[invoice.accountId] = Number((byAccount[invoice.accountId] || 0) + amount);
+    }
+
+    return res.status(200).json({
+      status: "Success",
+      summary: {
+        total: currencySummary(total),
+        currency: "NAD",
+        byCorporate: Object.fromEntries(Object.entries(byCorporate).map(([k, v]) => [k, currencySummary(v)])),
+        byAccount: Object.fromEntries(Object.entries(byAccount).map(([k, v]) => [k, currencySummary(v)])),
+      },
+    });
+  } catch (error) {
+    console.error("Manager spending summary error:", error);
+    return res.status(500).json({ status: "Failed", message: "Internal server error" });
+  }
+};
+
+exports.getManagerMonthlySpendingTrend = async (req, res) => {
+  if (!["manager", "supervisor"].includes(req.user?.role)) {
+    return res.status(403).json({ status: "Failed", message: "Only managers can access spending trend" });
+  }
+
+  const requestedMonths = Number(req.query.months || 6);
+  const months = Number.isFinite(requestedMonths) ? Math.min(Math.max(Math.trunc(requestedMonths), 3), 24) : 6;
+  try {
+    const managerProfile = await Manager.findOne({ where: { userId: req.user.id } });
+    if (!managerProfile) {
+      return res.status(404).json({ status: "Failed", message: "Manager profile not found" });
+    }
+    const managerPerson = await Person.findOne({
+      where: { email: managerProfile.email, type: { [Op.in]: ["manager", "supervisor"] } },
+    });
+    const managerIds = [managerProfile.managerId, managerPerson?.id].filter((id) => Number.isInteger(id) && id > 0);
+    if (!managerIds.length) return res.status(200).json({ status: "Success", trend: [] });
+
+    const accounts = await Account.findAll({ where: { managerId: { [Op.in]: managerIds } }, attributes: ["accountId"] });
+    const accountIds = accounts.map((a) => a.accountId);
+    if (!accountIds.length) return res.status(200).json({ status: "Success", trend: [] });
+
+    const paidInvoices = await Invoice.findAll({
+      where: { accountId: { [Op.in]: accountIds }, status: "paid" },
+      attributes: ["amount", "paidAt"],
+    });
+    const monthTotals = {};
+    for (const inv of paidInvoices) {
+      const m = isoMonth(inv.paidAt);
+      if (!m) continue;
+      monthTotals[m] = Number((monthTotals[m] || 0) + Number(inv.amount || 0));
+    }
+
+    const trend = [];
+    const pivot = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
+    for (let i = months - 1; i >= 0; i -= 1) {
+      const d = new Date(pivot.getFullYear(), pivot.getMonth() - i, 1);
+      const m = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+      trend.push({ month: m, total: currencySummary(monthTotals[m] || 0), currency: "NAD" });
+    }
+    return res.status(200).json({ status: "Success", trend });
+  } catch (error) {
+    console.error("Manager spending trend error:", error);
     return res.status(500).json({ status: "Failed", message: "Internal server error" });
   }
 };
@@ -1358,6 +1891,140 @@ exports.getAccountContracts = async (req, res) => {
   }
 };
 
+// ── Get contracts expiring within N months (manager scope) ────────
+exports.getExpiringContracts = async (req, res) => {
+  if (!["manager", "supervisor"].includes(req.user?.role)) {
+    return res.status(403).json({ status: "Failed", message: "Only managers can access expiring contracts" });
+  }
+
+  const requestedMonths = Number(req.query.withinMonths || 6);
+  const withinMonths = Number.isFinite(requestedMonths)
+    ? Math.min(Math.max(Math.trunc(requestedMonths), 1), 24)
+    : 6;
+
+  try {
+    const managerProfile = await Manager.findOne({ where: { userId: req.user.id } });
+    if (!managerProfile) {
+      return res.status(404).json({ status: "Failed", message: "Manager profile not found" });
+    }
+
+    const managerPerson = await Person.findOne({
+      where: { email: managerProfile.email, type: { [Op.in]: ["manager", "supervisor"] } },
+    });
+
+    const managerIds = [managerProfile.managerId, managerPerson?.id].filter(
+      (id) => Number.isInteger(id) && id > 0
+    );
+    if (!managerIds.length) {
+      return res.status(200).json({ status: "Success", contracts: [] });
+    }
+
+    const accounts = await Account.findAll({
+      where: { managerId: { [Op.in]: managerIds } },
+      attributes: ["accountId", "accountName", "corporateId"],
+    });
+    if (!accounts.length) {
+      return res.status(200).json({ status: "Success", contracts: [] });
+    }
+
+    const accountIds = accounts.map((account) => account.accountId);
+    const accountById = new Map(accounts.map((account) => [account.accountId, account]));
+    const corporateIds = [...new Set(accounts.map((a) => a.corporateId).filter((id) => Number.isInteger(id) && id > 0))];
+    const corporates = corporateIds.length
+      ? await Corporate.findAll({
+          where: { corporateId: { [Op.in]: corporateIds } },
+          attributes: ["corporateId", "corporateName"],
+        })
+      : [];
+    const corporateNameById = new Map(corporates.map((corp) => [corp.corporateId, corp.corporateName]));
+
+    const now = new Date();
+    const startDate = now.toISOString().slice(0, 10);
+    const cutoffDate = new Date(now);
+    cutoffDate.setMonth(cutoffDate.getMonth() + withinMonths);
+    const cutoffDateString = cutoffDate.toISOString().slice(0, 10);
+
+    const contracts = await Contract.findAll({
+      where: {
+        accountId: { [Op.in]: accountIds },
+        contractEndDate: {
+          [Op.not]: null,
+          [Op.gte]: startDate,
+          [Op.lte]: cutoffDateString,
+        },
+      },
+      order: [["contract_end_date", "ASC"]],
+    });
+
+    const managerDisplayName = `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim() || req.user.email;
+
+    for (const contract of contracts) {
+      const account = accountById.get(contract.accountId);
+      if (!account) continue;
+      const corporateName = account.corporateId ? corporateNameById.get(account.corporateId) || null : null;
+      const endDate = new Date(contract.contractEndDate);
+      const daysRemaining = Math.max(0, Math.ceil((endDate.getTime() - now.getTime()) / (24 * 60 * 60 * 1000)));
+      const notificationTitle = `Contract Expiring Soon - ${account.accountName} (${contract.contractEndDate})`;
+
+      const existing = await Notification.findOne({
+        where: { userId: req.user.id, type: "sla", title: notificationTitle },
+      });
+      if (existing) continue;
+
+      await createForUserIds([req.user.id], {
+        type: "sla",
+        title: notificationTitle,
+        message: `${corporateName || account.accountName} contract (${contract.contractType}) expires in ${daysRemaining} day(s).`,
+        priority: daysRemaining <= 30 ? "high" : "normal",
+        metadata: {
+          kind: "contract_expiring",
+          contractId: contract.contractId,
+          accountId: account.accountId,
+          corporateId: account.corporateId || null,
+          contractEndDate: contract.contractEndDate,
+          daysRemaining,
+        },
+      });
+
+      try {
+        await emailService.sendContractExpiryAlertEmail(
+          req.user.email,
+          managerDisplayName,
+          corporateName || account.accountName,
+          account.accountName,
+          contract.contractType,
+          contract.contractEndDate,
+          daysRemaining,
+        );
+      } catch (emailErr) {
+        console.error("Failed to send contract expiry email:", emailErr);
+      }
+    }
+
+    const mappedContracts = contracts.map((contract) => {
+      const account = accountById.get(contract.accountId);
+      const corporateName = account?.corporateId ? corporateNameById.get(account.corporateId) || null : null;
+      const endDate = new Date(contract.contractEndDate);
+      const daysRemaining = Math.max(0, Math.ceil((endDate.getTime() - now.getTime()) / (24 * 60 * 60 * 1000)));
+      return {
+        contractId: contract.contractId,
+        accountId: contract.accountId,
+        corporateId: account?.corporateId || null,
+        corporateName,
+        accountName: account?.accountName || "Unknown Account",
+        contractType: contract.contractType,
+        contractEndDate: contract.contractEndDate,
+        daysRemaining,
+      };
+    });
+
+    return res.status(200).json({ status: "Success", contracts: mappedContracts });
+  } catch (error) {
+    console.error("Get expiring contracts error:", error);
+    return res.status(500).json({ status: "Failed", message: "Internal server error" });
+  }
+};
+
 // ── Get Services for an Account ──────────────────────────────────
 exports.getAccountServices = async (req, res) => {
   const { accountId } = req.params;
@@ -1504,6 +2171,291 @@ exports.revokePortalAccess = async (req, res) => {
   } catch (error) {
     console.error("Revoke portal access error:", error);
     return res.status(500).json({ status: "Failed", message: "Internal server error" });
+  }
+};
+
+// ── List placeholder executives created by the import script ──────
+// Returns ExecutiveStaff rows with no linked portal user. Each row also
+// reports how many corporates and accounts already point at it, so the
+// admin UI can prioritize who to onboard first.
+exports.getPendingImportedExecutives = async (req, res) => {
+  try {
+    const executives = await ExecutiveStaff.findAll({
+      where: { userId: null },
+      order: [["firstName", "ASC"], ["lastName", "ASC"]],
+    });
+
+    if (executives.length === 0) {
+      return res.status(200).json({ status: "Success", executives: [] });
+    }
+
+    const executiveIds = executives.map((e) => e.executiveId);
+
+    const [corporateCounts, accountCounts] = await Promise.all([
+      Corporate.count({
+        where: { executiveId: { [Op.in]: executiveIds } },
+        group: ["executiveId"],
+      }),
+      Account.count({
+        where: { executiveId: { [Op.in]: executiveIds } },
+        group: ["executiveId"],
+      }),
+    ]);
+
+    const corporateMap = new Map(
+      corporateCounts.map((row) => [row.executiveId, Number(row.count) || 0])
+    );
+    const accountMap = new Map(
+      accountCounts.map((row) => [row.executiveId, Number(row.count) || 0])
+    );
+
+    const result = executives.map((exec) => ({
+      executiveId: exec.executiveId,
+      firstName: exec.firstName,
+      lastName: exec.lastName,
+      currentEmail: exec.email,
+      phone: exec.phone,
+      region: exec.region,
+      linkedCorporatesCount: corporateMap.get(exec.executiveId) || 0,
+      linkedAccountsCount: accountMap.get(exec.executiveId) || 0,
+    }));
+
+    return res.status(200).json({ status: "Success", executives: result });
+  } catch (error) {
+    console.error("Get pending imported executives error:", error);
+    return res
+      .status(500)
+      .json({ status: "Failed", message: "Internal server error" });
+  }
+};
+
+// ── Complete onboarding for an imported placeholder executive ─────
+// Takes an existing ExecutiveStaff row (created by the Excel import) and:
+//   1. Updates its email/phone and links it to a real Manager profile.
+//   2. Creates a Person row so the executive shows up in admin tooling.
+//   3. Creates a User row with an auto-generated temporary password.
+//   4. Links the User back to the ExecutiveStaff via userId.
+//   5. Emails the temp password using the existing portal credentials template.
+// All DB writes happen in a single transaction so a failure mid-way leaves
+// no half-onboarded state. Email delivery is best-effort and reported back
+// in the response.
+exports.completeImportedExecutiveOnboarding = async (req, res) => {
+  const { executiveId } = req.params;
+  const { email, phone, managerPersonId, firstName, lastName, existingExecutiveId } = req.body || {};
+
+  try {
+    const executive = await ExecutiveStaff.findByPk(executiveId);
+    if (!executive) {
+      return res
+        .status(404)
+        .json({ status: "Failed", message: "Executive not found" });
+    }
+    if (executive.userId) {
+      return res.status(409).json({
+        status: "Failed",
+        message: "This executive already has portal access",
+      });
+    }
+
+    // Option B: map imported records to an already-onboarded executive.
+    if (existingExecutiveId) {
+      const selectedExecutiveId = Number(existingExecutiveId);
+      if (!Number.isInteger(selectedExecutiveId) || selectedExecutiveId <= 0) {
+        return res.status(400).json({
+          status: "Failed",
+          message: "Invalid selected executive",
+        });
+      }
+      if (selectedExecutiveId === Number(executiveId)) {
+        return res.status(400).json({
+          status: "Failed",
+          message: "Selected executive must be different from imported executive",
+        });
+      }
+
+      const targetExecutive = await ExecutiveStaff.findByPk(selectedExecutiveId);
+      if (!targetExecutive) {
+        return res.status(404).json({
+          status: "Failed",
+          message: "Selected executive not found",
+        });
+      }
+      if (!targetExecutive.userId) {
+        return res.status(400).json({
+          status: "Failed",
+          message: "Selected executive has no portal access yet",
+        });
+      }
+
+      const [corporateCount, accountCount] = await sequelize.transaction(async (t) => {
+        const [corpAffected] = await Corporate.update(
+          { executiveId: targetExecutive.executiveId },
+          { where: { executiveId: executive.executiveId }, transaction: t }
+        );
+        const [accountAffected] = await Account.update(
+          { executiveId: targetExecutive.executiveId },
+          { where: { executiveId: executive.executiveId }, transaction: t }
+        );
+        return [Number(corpAffected) || 0, Number(accountAffected) || 0];
+      });
+
+      return res.status(200).json({
+        status: "Success",
+        message: "Imported executive links reassigned successfully",
+        reassignedToExecutiveId: targetExecutive.executiveId,
+        corporatesReassigned: corporateCount,
+        accountsReassigned: accountCount,
+      });
+    }
+
+    if (!email || !managerPersonId) {
+      return res
+        .status(400)
+        .json({ status: "Failed", message: "Email and manager are required" });
+    }
+    if (!securityService.validateEmail(email)) {
+      return res
+        .status(400)
+        .json({ status: "Failed", message: "Invalid email format" });
+    }
+
+    const managerPerson = await Person.findByPk(managerPersonId);
+    if (!managerPerson || managerPerson.type !== "manager") {
+      return res
+        .status(400)
+        .json({ status: "Failed", message: "Selected manager is invalid" });
+    }
+    const resolvedManagerProfileId = await resolveManagerProfileFromPerson(
+      managerPersonId
+    );
+    if (!resolvedManagerProfileId) {
+      return res.status(400).json({
+        status: "Failed",
+        message:
+          "Selected manager has no portal access yet. Grant the manager portal access first.",
+      });
+    }
+
+    const normalizedEmail = String(email).trim().toLowerCase();
+    const [existingUser, existingExec, existingPerson, existingAccountManager] =
+      await Promise.all([
+        User.findOne({ where: { email: normalizedEmail } }),
+        ExecutiveStaff.findOne({
+          where: {
+            email: normalizedEmail,
+            executiveId: { [Op.ne]: executive.executiveId },
+          },
+        }),
+        Person.findOne({ where: { email: normalizedEmail } }),
+        AccountManager.findOne({ where: { email: normalizedEmail } }),
+      ]);
+    if (
+      existingUser ||
+      existingExec ||
+      existingPerson ||
+      existingAccountManager
+    ) {
+      return res
+        .status(400)
+        .json({ status: "Failed", message: "Email is already in use" });
+    }
+
+    const tempPassword = generateSecurePassword();
+    const hashedPassword = await securityService.hashData(tempPassword);
+    const phoneValue = phone ? String(phone).trim() : executive.phone || null;
+    const firstNameValue = firstName
+      ? String(firstName).trim()
+      : String(executive.firstName || "").trim();
+    const lastNameValue = lastName
+      ? String(lastName).trim()
+      : String(executive.lastName || "").trim();
+
+    if (!firstNameValue || !lastNameValue) {
+      return res.status(400).json({
+        status: "Failed",
+        message: "First name and last name are required",
+      });
+    }
+
+    let userRecord;
+    await sequelize.transaction(async (t) => {
+      await executive.update(
+        {
+          firstName: firstNameValue,
+          lastName: lastNameValue,
+          email: normalizedEmail,
+          phone: phoneValue,
+          managerId: resolvedManagerProfileId,
+        },
+        { transaction: t }
+      );
+
+      await Person.create(
+        {
+          firstName: firstNameValue,
+          lastName: lastNameValue,
+          email: normalizedEmail,
+          phone: phoneValue,
+          type: "executive_staff",
+          region: executive.region || null,
+          managerId: managerPerson.id,
+          hasPortalAccess: true,
+        },
+        { transaction: t }
+      );
+
+      userRecord = await User.create(
+        {
+          firstName: firstNameValue,
+          lastName: lastNameValue,
+          email: normalizedEmail,
+          phone: phoneValue,
+          password: hashedPassword,
+          role: "executive_staff",
+        },
+        { transaction: t }
+      );
+
+      await executive.update({ userId: userRecord.id }, { transaction: t });
+    });
+
+    let emailSent = true;
+    try {
+      await emailService.sendPortalCredentialsEmail(
+        normalizedEmail,
+        firstNameValue,
+        tempPassword
+      );
+      if (process.env.NODE_ENV !== "production") {
+        console.log(
+          `[DEV] Portal temp password for ${normalizedEmail}: ${tempPassword}`
+        );
+      }
+    } catch (emailErr) {
+      console.error("Failed to send credentials email:", emailErr);
+      emailSent = false;
+    }
+
+    return res.status(201).json({
+      status: "Success",
+      message: emailSent
+        ? "Executive onboarded successfully. Credentials sent via email."
+        : "Executive onboarded but credentials email failed to send. Share the temporary password manually.",
+      emailSent,
+      user: {
+        id: userRecord.id,
+        firstName: userRecord.firstName,
+        lastName: userRecord.lastName,
+        email: userRecord.email,
+        role: userRecord.role,
+        password: tempPassword,
+      },
+    });
+  } catch (error) {
+    console.error("Complete imported executive onboarding error:", error);
+    return res
+      .status(500)
+      .json({ status: "Failed", message: "Internal server error" });
   }
 };
 

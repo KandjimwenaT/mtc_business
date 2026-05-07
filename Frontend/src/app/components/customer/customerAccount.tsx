@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Link } from 'react-router';
+import { Link, useNavigate } from 'react-router';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../ui/card';
 import { Button } from '../ui/button';
 import { Badge } from '../ui/badge';
@@ -12,17 +12,18 @@ import {
   Phone, 
   PhoneCall,
   Mail, 
-  MapPin, 
   Star,
   TrendingUp,
-  Send,
   CheckCircle,
   Calendar,
   User,
   Smartphone,
   FileText,
-  Loader2
+  Loader2,
+  ChevronDown,
+  Layers,
 } from 'lucide-react';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '../ui/collapsible';
 import { format } from 'date-fns';
 import { getMyAccount } from '../../api/authApi';
 import type { CustomerAccountResponse } from '../../api/authApi';
@@ -30,6 +31,7 @@ import { getCustomerVisits, type VisitRecord } from '../../api/visitApi';
 import { getMyTickets, type TicketRecord } from '../../api/ticketApi';
 
 export function CustomerAccount() {
+  const navigate = useNavigate();
   const [data, setData] = useState<CustomerAccountResponse | null>(null);
   const [visits, setVisits] = useState<VisitRecord[]>([]);
   const [tickets, setTickets] = useState<TicketRecord[]>([]);
@@ -68,8 +70,20 @@ export function CustomerAccount() {
     );
   }
 
-  const { account, accounts, corporate, accountManager, executive, services, contracts } = data;
-  const activeServices = services.filter(s => s.status === 'active');
+  const { account, accounts, corporate, corporates, accountManager, executive, services, contracts } = data;
+  const subAccounts = accounts ?? [account];
+  const linkedCorporates = corporates && corporates.length > 0
+    ? corporates
+    : corporate
+      ? [corporate]
+      : [];
+  const distinctCorporateIds = new Set(
+    subAccounts
+      .map((a) => a.corporateId)
+      .filter((id): id is number => typeof id === "number")
+  );
+  const isMultiCorporate = linkedCorporates.length > 1 || distinctCorporateIds.size > 1;
+  const activeServices = services.filter((s) => s.status === 'active');
   const openTickets = tickets.filter((t) => !['resolved', 'closed', 'rejected'].includes(t.status));
   const recentTickets = [...tickets]
     .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
@@ -83,12 +97,29 @@ export function CustomerAccount() {
     bucket.push(service);
     servicesByAccount.set(service.accountId, bucket);
   }
+  const contractsByAccount = new Map<number, typeof contracts>();
+  for (const c of contracts) {
+    if (c.accountId == null) continue;
+    const bucket = contractsByAccount.get(c.accountId) || [];
+    bucket.push(c);
+    contractsByAccount.set(c.accountId, bucket);
+  }
+  const accountContactFullName = `${account.contactFirstName || ""} ${account.contactLastName || ""}`.trim();
+  const accountContactEmailLooksDummy = (account.contactEmail || "").toLowerCase().endsWith("@placeholder.local");
+  const accountContactLooksImported =
+    (account.contactFirstName || "").trim() === "Imported" && (account.contactLastName || "").trim() === "Contact";
   const contactName = accountManager
     ? `${accountManager.firstName} ${accountManager.lastName}`
-    : `${account.contactFirstName} ${account.contactLastName}`;
+    : !accountContactFullName || accountContactLooksImported
+      ? "Not assigned"
+      : accountContactFullName;
+  const contactEmailDisplay = accountManager?.email
+    || (accountContactEmailLooksDummy || !account.contactEmail ? "Not assigned" : account.contactEmail);
   const executiveName = executive ? `${executive.firstName} ${executive.lastName}` : null;
   const executiveInitials = executive ? `${executive.firstName[0]}${executive.lastName[0]}` : '';
-  const linkedAccountsCount = accounts?.length ?? 1;
+  const subAccountCount = subAccounts.length;
+  const formatNad = (value: string | number | null | undefined) =>
+    `N$ ${Number(value || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 
   const getStatusBadge = (status: string) => {
@@ -121,7 +152,7 @@ export function CustomerAccount() {
             <p className="text-slate-500">Name</p>
             <p className="font-medium">{contactName}</p>
             <p className="text-slate-500 pt-1">Email</p>
-            <p className="font-medium">{accountManager?.email || account.contactEmail}</p>
+            <p className="font-medium">{contactEmailDisplay}</p>
             <p className="text-slate-500 pt-1">Phone</p>
             <p className="font-medium">{accountManager?.phone || account.contactPhone || '—'}</p>
           </CardContent>
@@ -129,30 +160,78 @@ export function CustomerAccount() {
 
         <Card>
           <CardHeader>
-            <CardTitle className="text-lg">Corporate Account</CardTitle>
+            <CardTitle className="text-lg">
+              {isMultiCorporate ? 'Corporate Accounts' : 'Corporate Account'}
+            </CardTitle>
+            <CardDescription>
+              {subAccountCount} sub-account{subAccountCount === 1 ? '' : 's'} across{' '}
+              {linkedCorporates.length} corporate{linkedCorporates.length === 1 ? '' : 's'}. Each
+              sub-account can hold multiple services and lines, with its own contract(s).
+            </CardDescription>
           </CardHeader>
           <CardContent className="space-y-2 text-sm">
-            <p className="text-slate-500">Company Name</p>
-            <p className="font-medium">{corporate?.corporateName || account.accountName}</p>
-            <p className="text-slate-500 pt-1">Main Number</p>
-            <p className="font-medium">{corporate?.corporateNumber || '—'}</p>
-            <p className="text-slate-500 pt-1">Status</p>
-            <Badge className={getStatusBadge(account.approvalStatus)}>
-              {account.approvalStatus.toUpperCase()}
-            </Badge>
+            {isMultiCorporate ? (
+              <ul className="space-y-2">
+                {linkedCorporates.map((corp) => (
+                  <li
+                    key={corp.corporateId}
+                    className="rounded-md border border-slate-200 px-3 py-2 flex items-center justify-between gap-3"
+                  >
+                    <div className="min-w-0">
+                      <div className="font-medium truncate">{corp.corporateName}</div>
+                      <div className="text-xs text-slate-500 tabular-nums">
+                        {corp.corporateNumber || '—'}
+                      </div>
+                    </div>
+                    {corp.industry ? (
+                      <Badge className="bg-slate-100 text-slate-700 shrink-0">{corp.industry}</Badge>
+                    ) : null}
+                  </li>
+                ))}
+              </ul>
+            ) : (
+              <>
+                <p className="text-slate-500">Company Name</p>
+                <p className="font-medium">{corporate?.corporateName || account.accountName}</p>
+                <p className="text-slate-500 pt-1">Main Number</p>
+                <p className="font-medium">{corporate?.corporateNumber || '—'}</p>
+                <p className="text-slate-500 pt-1">Status</p>
+                <Badge className={getStatusBadge(account.approvalStatus)}>
+                  {account.approvalStatus.toUpperCase()}
+                </Badge>
+              </>
+            )}
           </CardContent>
         </Card>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-6 mb-8">
+      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-5 gap-6 mb-8">
         <Card>
           <CardHeader className="flex flex-row items-center justify-between pb-2">
-            <CardTitle className="text-sm">Active Lines</CardTitle>
+            <CardTitle className="text-sm">Services &amp; lines</CardTitle>
             <Smartphone className="size-4 text-gray-500" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl">{services.length}</div>
-            <p className="text-xs text-gray-500 mt-1">{linkedAccountsCount} sub-accounts under corporate</p>
+            <div className="text-2xl">
+              {activeServices.length}
+              <span className="text-base font-normal text-slate-500"> / {services.length}</span>
+            </div>
+            <p className="text-xs text-gray-500 mt-1">
+              Active / total across {subAccountCount} sub-account{subAccountCount === 1 ? '' : 's'}
+            </p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="flex flex-row items-center justify-between pb-2">
+            <CardTitle className="text-sm">Sub-accounts</CardTitle>
+            <Layers className="size-4 text-gray-500" />
+          </CardHeader>
+          <CardContent>
+            <div className="text-2xl">{subAccountCount}</div>
+            <p className="text-xs text-gray-500 mt-1">
+              {contracts.length} contract{contracts.length === 1 ? '' : 's'} total (per sub-account below)
+            </p>
           </CardContent>
         </Card>
 
@@ -162,8 +241,8 @@ export function CustomerAccount() {
             <FileText className="size-4 text-gray-500" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl text-mtc-blue">N$ --</div>
-            <p className="text-xs text-gray-500 mt-1">From {contracts.length} contract(s)</p>
+            <div className="text-2xl text-mtc-blue">{formatNad(data.spendingSummary?.corporateMonthlySpending || 0)}</div>
+            <p className="text-xs text-gray-500 mt-1">Paid invoices this month (corporate total)</p>
           </CardContent>
         </Card>
 
@@ -194,36 +273,62 @@ export function CustomerAccount() {
 
       <Card className="mb-6">
         <CardHeader>
-          <CardTitle>Sub-Accounts / Lines</CardTitle>
+          <CardTitle>Sub-accounts</CardTitle>
+          <CardDescription>
+            Each row is a billing / contract entity under your corporate. Lines and services are listed under that sub-account in the tabs below.
+          </CardDescription>
         </CardHeader>
         <CardContent>
-          <table className="w-full text-sm">
-            <thead className="text-slate-500">
-              <tr className="border-b">
-                <th className="text-left py-2">Account Number</th>
-                <th className="text-left py-2">Location/Branch</th>
-                <th className="text-left py-2">Service Type</th>
-                <th className="text-left py-2">Status</th>
-                <th className="text-right py-2">Monthly Spending</th>
-              </tr>
-            </thead>
-            <tbody>
-              {(accounts || [account]).map((acc) => {
-                const accServices = servicesByAccount.get(acc.accountId) || [];
-                const primaryServiceType = accServices[0]?.serviceType || '—';
-                const status = acc.isActive ? 'active' : 'inactive';
-                return (
-                  <tr key={acc.accountId} className="border-b last:border-0">
-                    <td className="py-3">{acc.accountNumber}</td>
-                    <td className="py-3">—</td>
-                    <td className="py-3 capitalize">{primaryServiceType}</td>
-                    <td className="py-3"><Badge className={getStatusBadge(status)}>{status}</Badge></td>
-                    <td className="py-3 text-right">—</td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm min-w-[640px]">
+              <thead className="text-slate-500">
+                <tr className="border-b">
+                  <th className="text-left py-2">Sub-account</th>
+                  {isMultiCorporate && <th className="text-left py-2">Corporate</th>}
+                  <th className="text-left py-2">Account no.</th>
+                  <th className="text-left py-2">Type</th>
+                  <th className="text-left py-2">Lines</th>
+                  <th className="text-left py-2">Contracts</th>
+                  <th className="text-left py-2">Monthly Spending</th>
+                  <th className="text-left py-2">Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {subAccounts.map((acc) => {
+                  const accServices = servicesByAccount.get(acc.accountId) || [];
+                  const accContracts = contractsByAccount.get(acc.accountId) || [];
+                  const activeCount = accServices.filter((s) => s.status === 'active').length;
+                  const lineLabel =
+                    accServices.length === 0
+                      ? '—'
+                      : `${accServices.length} line${accServices.length === 1 ? '' : 's'} (${activeCount} active)`;
+                  const contractSummary =
+                    accContracts.length === 0
+                      ? '—'
+                      : `${accContracts.length} · ${accContracts.map((c) => c.contractType).slice(0, 2).join(', ')}${
+                          accContracts.length > 2 ? '…' : ''
+                        }`;
+                  const status = acc.isActive ? 'active' : 'inactive';
+                  return (
+                    <tr key={acc.accountId} className="border-b last:border-0">
+                      <td className="py-3 font-medium text-slate-900">{acc.accountName}</td>
+                      {isMultiCorporate && (
+                        <td className="py-3 text-slate-700">{acc.corporateName || '—'}</td>
+                      )}
+                      <td className="py-3 tabular-nums">{acc.accountNumber}</td>
+                      <td className="py-3 capitalize">{acc.accountType}</td>
+                      <td className="py-3">{lineLabel}</td>
+                      <td className="py-3 capitalize">{contractSummary}</td>
+                      <td className="py-3">{formatNad(acc.monthlySpending)}</td>
+                      <td className="py-3">
+                        <Badge className={getStatusBadge(status)}>{status}</Badge>
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         </CardContent>
       </Card>
 
@@ -380,7 +485,7 @@ export function CustomerAccount() {
                   <Mail className="size-5 text-gray-400 mt-0.5" />
                   <div>
                     <p className="text-sm text-gray-500">Email</p>
-                    <p>{accountManager?.email || account.contactEmail}</p>
+                    <p>{contactEmailDisplay}</p>
                   </div>
                 </div>
 
@@ -435,12 +540,19 @@ export function CustomerAccount() {
         </TabsContent>
 
         <TabsContent value="services" className="space-y-4">
-          <div className="flex justify-between items-center mb-4">
+          <div className="flex flex-col gap-2 sm:flex-row sm:justify-between sm:items-start mb-4">
             <div>
-              <h2 className="text-xl font-semibold">MTC Lines Under Your Account</h2>
-                <p className="text-sm text-gray-500">Manage and view all mobile lines under {corporate?.corporateName || account.accountName}</p>
+              <h2 className="text-xl font-semibold">Services &amp; lines by sub-account</h2>
+              <p className="text-sm text-gray-500">
+                Each sub-account can include multiple MTC lines and service types under {corporate?.corporateName || account.accountName}.
+                Monthly billing is shown at sub-account level, not per line.
+              </p>
             </div>
-            <Button className="bg-blue-600 hover:bg-blue-700 text-white">
+            <Button
+              type="button"
+              className="bg-blue-600 hover:bg-blue-700 text-white shrink-0"
+              onClick={() => navigate('/customerTickets?newRequest=new_line')}
+            >
               <PhoneCall className="size-4 mr-2" />
               Request New Line
             </Button>
@@ -449,139 +561,191 @@ export function CustomerAccount() {
           {services.length === 0 ? (
             <Card>
               <CardContent className="pt-6">
-                <p className="text-center text-gray-600 py-8">No services have been added to this account yet.</p>
+                <p className="text-center text-gray-600 py-8">No services have been added under your sub-accounts yet.</p>
               </CardContent>
             </Card>
           ) : (
-            <div className="grid grid-cols-1 gap-4">
-              {services.map((service) => (
-                <Card key={service.serviceId} className="hover:shadow-md transition-shadow">
-                  <CardContent className="p-6">
-                    {/* Top section: MSISDN, badge, plan, and price */}
-                    <div className="flex items-start justify-between">
-                      <div>
-                        <div className="flex items-center gap-3 mb-1">
-                          <Phone className="size-5 text-gray-600" />
-                          <span className="text-lg font-medium">{service.msisdn || `Service #${service.serviceId}`}</span>
-                          <Badge className={getStatusBadge(service.status)}>
-                            {service.status}
-                          </Badge>
+            <div className="space-y-3">
+              {subAccounts.map((acc, idx) => {
+                const accServices = servicesByAccount.get(acc.accountId) || [];
+                return (
+                  <Collapsible key={acc.accountId} defaultOpen={idx === 0}>
+                    <Card className="overflow-hidden border-slate-200">
+                      <CollapsibleTrigger className="flex w-full items-center justify-between gap-3 p-4 text-left hover:bg-slate-50/80 transition-colors [&[data-state=open]_svg]:rotate-180">
+                        <div className="min-w-0 flex-1">
+                          <p className="font-semibold text-slate-900 truncate">{acc.accountName}</p>
+                          <p className="text-xs text-slate-500 tabular-nums">
+                            {acc.accountNumber} · {accServices.length} line{accServices.length === 1 ? '' : 's'}
+                          </p>
                         </div>
-                        <p className="text-sm text-gray-500 ml-8 capitalize">
-                          {service.serviceType}
-                          {service.accountName ? ` - ${service.accountName}` : ''}
-                        </p>
-                      </div>
-                      <div className="text-right">
-                        <span className="text-2xl font-semibold">N$899</span>
-                        <p className="text-sm text-gray-500">per month</p>
-                      </div>
-                    </div>
-
-                    {/* Details grid */}
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mt-5 pt-5 border-t">
-                      <div>
-                        <p className="text-sm text-gray-500">Assigned To</p>
-                        <p className="text-sm font-medium">—</p>
-                      </div>
-                      <div>
-                        <p className="text-sm text-gray-500">Department</p>
-                        <p className="text-sm font-medium">—</p>
-                      </div>
-                      <div>
-                        <p className="text-sm text-gray-500">Data Usage</p>
-                        <p className="text-sm font-medium">—</p>
-                      </div>
-                      <div>
-                        <p className="text-sm text-gray-500">Voice Usage</p>
-                        <p className="text-sm font-medium">—</p>
-                      </div>
-                    </div>
-
-                    {/* Action buttons */}
-                    <div className="flex gap-3 mt-5">
-                      <Button variant="outline" size="sm">View Details</Button>
-                      <Button variant="outline" size="sm">Change Plan</Button>
-                      <Button variant="outline" size="sm">Manage</Button>
-                    </div>
-                  </CardContent>
-                </Card>
-              ))}
+                        <div className="text-right shrink-0 pr-1">
+                          <p className="text-[10px] uppercase tracking-wide text-slate-500">Monthly (sub-account)</p>
+                          <p className="text-base font-semibold text-slate-900 tabular-nums">{formatNad(acc.monthlySpending)}</p>
+                        </div>
+                        <ChevronDown className="size-5 shrink-0 text-slate-500 transition-transform duration-200" />
+                      </CollapsibleTrigger>
+                      <CollapsibleContent>
+                        <CardContent className="pt-0 pb-4 px-4 space-y-3 border-t bg-slate-50/50">
+                          {accServices.length === 0 ? (
+                            <p className="text-sm text-slate-600 py-4">No lines registered under this sub-account yet.</p>
+                          ) : (
+                            accServices.map((service) => (
+                              <Card key={service.serviceId} className="shadow-sm border-slate-200 bg-white">
+                                <CardContent className="p-4">
+                                  <div className="min-w-0">
+                                    <div className="flex flex-wrap items-center gap-2 mb-1">
+                                      <Phone className="size-4 text-gray-600 shrink-0" />
+                                      <span className="text-base font-medium truncate">
+                                        {service.msisdn || `Service #${service.serviceId}`}
+                                      </span>
+                                      <Badge className={getStatusBadge(service.status)}>{service.status}</Badge>
+                                    </div>
+                                    <p className="text-sm text-gray-500 capitalize">{service.serviceType}</p>
+                                  </div>
+                                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mt-4 pt-4 border-t text-sm">
+                                    <div>
+                                      <p className="text-gray-500">Assigned To</p>
+                                      <p className="font-medium">—</p>
+                                    </div>
+                                    <div>
+                                      <p className="text-gray-500">Department</p>
+                                      <p className="font-medium">—</p>
+                                    </div>
+                                    <div>
+                                      <p className="text-gray-500">Data Usage</p>
+                                      <p className="font-medium">—</p>
+                                    </div>
+                                    <div>
+                                      <p className="text-gray-500">Voice Usage</p>
+                                      <p className="font-medium">—</p>
+                                    </div>
+                                  </div>
+                                  <div className="flex flex-wrap gap-2 mt-4">
+                                    <Button variant="outline" size="sm">
+                                      View Details
+                                    </Button>
+                                    <Button variant="outline" size="sm">
+                                      Change Plan
+                                    </Button>
+                                    <Button variant="outline" size="sm">
+                                      Manage
+                                    </Button>
+                                  </div>
+                                </CardContent>
+                              </Card>
+                            ))
+                          )}
+                        </CardContent>
+                      </CollapsibleContent>
+                    </Card>
+                  </Collapsible>
+                );
+              })}
             </div>
           )}
         </TabsContent>
 
         <TabsContent value="contracts" className="space-y-4">
           <div className="mb-4">
-            <h2 className="text-xl">Contracts</h2>
-            <p className="text-sm text-gray-600">Contract details for {corporate?.corporateName || account.accountName}</p>
+            <h2 className="text-xl">Contracts by sub-account</h2>
+            <p className="text-sm text-gray-600">
+              Contracts are stored per sub-account (and may also apply to individual lines where applicable).
+            </p>
           </div>
 
           {contracts.length === 0 ? (
             <Card>
               <CardContent className="pt-6">
-                <p className="text-center text-gray-600 py-8">No contracts have been created for this account yet.</p>
+                <p className="text-center text-gray-600 py-8">No contracts have been linked to your sub-accounts yet.</p>
               </CardContent>
             </Card>
           ) : (
-            <div className="grid grid-cols-1 gap-4">
-              {contracts.map((contract) => (
-                <Card key={contract.contractId} className="hover:shadow-md transition-shadow">
-                  <CardContent className="p-6">
-                    <div className="flex items-start justify-between mb-4">
-                      <div>
-                        <h3 className="text-lg font-medium capitalize">{contract.contractType}</h3>
-                        {contract.srNumber && (
-                          <p className="text-sm text-gray-500">
-                            SR: {contract.srNumber}
-                            {contract.accountName ? ` - ${contract.accountName}` : ''}
+            <div className="space-y-3">
+              {subAccounts.map((acc, idx) => {
+                const accContracts = contractsByAccount.get(acc.accountId) || [];
+                return (
+                  <Collapsible key={`c-${acc.accountId}`} defaultOpen={idx === 0}>
+                    <Card className="overflow-hidden border-slate-200">
+                      <CollapsibleTrigger className="flex w-full items-center justify-between gap-3 p-4 text-left hover:bg-slate-50/80 transition-colors [&[data-state=open]_svg]:rotate-180">
+                        <div className="min-w-0">
+                          <p className="font-semibold text-slate-900 truncate">{acc.accountName}</p>
+                          <p className="text-xs text-slate-500">
+                            {accContracts.length} contract{accContracts.length === 1 ? '' : 's'} · {acc.accountNumber}
                           </p>
-                        )}
-                      </div>
-                    </div>
+                        </div>
+                        <ChevronDown className="size-5 shrink-0 text-slate-500 transition-transform duration-200" />
+                      </CollapsibleTrigger>
+                      <CollapsibleContent>
+                        <CardContent className="pt-0 pb-4 px-4 space-y-3 border-t bg-slate-50/50">
+                          {accContracts.length === 0 ? (
+                            <p className="text-sm text-slate-600 py-4">No contracts on file for this sub-account.</p>
+                          ) : (
+                            accContracts.map((contract) => (
+                              <Card key={contract.contractId} className="shadow-sm border-slate-200 bg-white">
+                                <CardContent className="p-6">
+                                  <div className="flex items-start justify-between mb-4 gap-3">
+                                    <div>
+                                      <h3 className="text-lg font-medium capitalize">{contract.contractType}</h3>
+                                      {contract.srNumber && (
+                                        <p className="text-sm text-gray-500">SR: {contract.srNumber}</p>
+                                      )}
+                                      {contract.serviceId != null && (
+                                        <p className="text-xs text-slate-500 mt-1">
+                                          Linked to service / line ID {contract.serviceId}
+                                        </p>
+                                      )}
+                                    </div>
+                                  </div>
 
-                    <div className="grid grid-cols-2 md:grid-cols-3 gap-4 pt-4 border-t">
-                      {contract.contractStartDate && (
-                        <div>
-                          <p className="text-sm text-gray-500">Start Date</p>
-                          <p className="text-sm">{format(new Date(contract.contractStartDate), 'MMM dd, yyyy')}</p>
-                        </div>
-                      )}
-                      {contract.contractEndDate && (
-                        <div>
-                          <p className="text-sm text-gray-500">End Date</p>
-                          <p className="text-sm">{format(new Date(contract.contractEndDate), 'MMM dd, yyyy')}</p>
-                        </div>
-                      )}
-                      {contract.contractEffectiveDate && (
-                        <div>
-                          <p className="text-sm text-gray-500">Effective Date</p>
-                          <p className="text-sm">{format(new Date(contract.contractEffectiveDate), 'MMM dd, yyyy')}</p>
-                        </div>
-                      )}
-                      {contract.usageLimit && (
-                        <div>
-                          <p className="text-sm text-gray-500">Usage Limit</p>
-                          <p className="text-sm">{contract.usageLimit}</p>
-                        </div>
-                      )}
-                      {contract.entitlement && (
-                        <div className="col-span-2">
-                          <p className="text-sm text-gray-500">Entitlement</p>
-                          <p className="text-sm">{contract.entitlement}</p>
-                        </div>
-                      )}
-                    </div>
+                                  <div className="grid grid-cols-2 md:grid-cols-3 gap-4 pt-4 border-t">
+                                    {contract.contractStartDate && (
+                                      <div>
+                                        <p className="text-sm text-gray-500">Start Date</p>
+                                        <p className="text-sm">{format(new Date(contract.contractStartDate), 'MMM dd, yyyy')}</p>
+                                      </div>
+                                    )}
+                                    {contract.contractEndDate && (
+                                      <div>
+                                        <p className="text-sm text-gray-500">End Date</p>
+                                        <p className="text-sm">{format(new Date(contract.contractEndDate), 'MMM dd, yyyy')}</p>
+                                      </div>
+                                    )}
+                                    {contract.contractEffectiveDate && (
+                                      <div>
+                                        <p className="text-sm text-gray-500">Effective Date</p>
+                                        <p className="text-sm">{format(new Date(contract.contractEffectiveDate), 'MMM dd, yyyy')}</p>
+                                      </div>
+                                    )}
+                                    {contract.usageLimit && (
+                                      <div>
+                                        <p className="text-sm text-gray-500">Usage Limit</p>
+                                        <p className="text-sm">{contract.usageLimit}</p>
+                                      </div>
+                                    )}
+                                    {contract.entitlement && (
+                                      <div className="col-span-2">
+                                        <p className="text-sm text-gray-500">Entitlement</p>
+                                        <p className="text-sm">{contract.entitlement}</p>
+                                      </div>
+                                    )}
+                                  </div>
 
-                    {contract.notes && (
-                      <div className="mt-4 pt-4 border-t">
-                        <p className="text-sm text-gray-500">Notes</p>
-                        <p className="text-sm text-gray-700">{contract.notes}</p>
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
-              ))}
+                                  {contract.notes && (
+                                    <div className="mt-4 pt-4 border-t">
+                                      <p className="text-sm text-gray-500">Notes</p>
+                                      <p className="text-sm text-gray-700">{contract.notes}</p>
+                                    </div>
+                                  )}
+                                </CardContent>
+                              </Card>
+                            ))
+                          )}
+                        </CardContent>
+                      </CollapsibleContent>
+                    </Card>
+                  </Collapsible>
+                );
+              })}
             </div>
           )}
         </TabsContent>

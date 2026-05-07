@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { Card, CardContent } from "../ui/card";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
@@ -7,8 +7,10 @@ import { Badge } from "../ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table";
 import { Search, Filter, X, Loader2, ChevronDown, ChevronUp, Clock } from "lucide-react";
-import { getAssignedTickets, type TicketRecord } from "../../api/ticketApi";
+import { type TicketRecord } from "../../api/ticketApi";
 import { format } from "date-fns";
+import StaffTicketCreate from "../staff/StaffTicketCreate";
+import { useExecutiveData } from "../../hooks/useExecutiveData";
 
 const STATUS_CONFIG: Record<string, { label: string; className: string }> = {
   new: { label: "New", className: "bg-blue-100 text-blue-800" },
@@ -55,30 +57,17 @@ const SLA_BADGE_CLASSES: Record<string, string> = {
 export default function ExecutiveTickets() {
   const [searchQuery, setSearchQuery] = useState("");
   const [showFilterPanel, setShowFilterPanel] = useState(false);
+  const [showCreateForm, setShowCreateForm] = useState(false);
   const [statusFilter, setStatusFilter] = useState("all");
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [slaFilter, setSlaFilter] = useState<"all" | "breached" | "danger" | "warning">("all");
   const [expandedTicketId, setExpandedTicketId] = useState<number | null>(null);
 
-  const [tickets, setTickets] = useState<TicketRecord[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+  const { tickets, initialLoading: loading, error, refreshTickets } = useExecutiveData();
 
   const fetchTickets = async () => {
-    try {
-      setLoading(true);
-      const data = await getAssignedTickets();
-      setTickets(data);
-    } catch (err: any) {
-      setError(err.message || "Failed to load tickets");
-    } finally {
-      setLoading(false);
-    }
+    await refreshTickets();
   };
-
-  useEffect(() => {
-    fetchTickets();
-  }, []);
 
   const toggleExpand = (ticket: TicketRecord) => {
     if (expandedTicketId === ticket.ticketId) {
@@ -125,14 +114,33 @@ export default function ExecutiveTickets() {
           <h2 className="text-2xl font-bold tracking-tight text-slate-900">Assigned Tickets</h2>
           <p className="text-sm text-slate-500">View tickets from your linked customer accounts (handled by assigned admins)</p>
         </div>
-        <Button
-          variant={showFilterPanel ? "default" : "outline"}
-          onClick={() => setShowFilterPanel(!showFilterPanel)}
-          className="flex items-center gap-2"
-        >
-          <Filter className="h-4 w-4" /> Filter
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="default"
+            className="bg-blue-600 text-white hover:bg-blue-700"
+            onClick={() => setShowCreateForm((prev) => !prev)}
+          >
+            {showCreateForm ? "Hide Create Ticket" : "Create Ticket"}
+          </Button>
+          <Button
+            variant={showFilterPanel ? "default" : "outline"}
+            onClick={() => setShowFilterPanel(!showFilterPanel)}
+            className="flex items-center gap-2"
+          >
+            <Filter className="h-4 w-4" /> Filter
+          </Button>
+        </div>
       </div>
+      {showCreateForm && (
+        <StaffTicketCreate
+          showHeading={false}
+          onCreated={() => {
+            setShowCreateForm(false);
+            void fetchTickets();
+          }}
+          onCancel={() => setShowCreateForm(false)}
+        />
+      )}
 
       {/* Summary cards */}
       <div className="grid gap-4 md:grid-cols-5">

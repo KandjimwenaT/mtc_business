@@ -9,6 +9,109 @@ const Corporate = require("../models/Corporate");
 const User = require("../models/User");
 const Notification = require("../models/Notification");
 const { createForUserIds, resolveManagerTeamNotificationUserIds } = require("../services/notificationService");
+const emailService = require("../services/emailService");
+const {
+  getAccountsForCustomerUser,
+  getAccountManagerIdsForCorporate,
+} = require("../services/contactPersonService");
+const { sequelize } = require("../config/database");
+const {
+  createVisitActionItemTicket,
+  sendTicketCreationNotifications,
+} = require("./ticketController");
+
+const VISIT_ACTION_REQUEST_TYPES = new Set([
+  "request_meeting", "new_product_request", "new_line", "plan_change", "line_suspension", "line_activation",
+  "plan_upgrade", "number_change", "renewal", "termination",
+  "upgrade", "downgrade", "change_ownership", "new_connection", "other",
+]);
+const VISIT_ACTION_COMPLAINT_TYPES = new Set([
+  "billing", "service", "network", "support", "technical", "provisioning", "qos", "other",
+]);
+
+/** Build ticket payload from an AVR action-item row; returns null if the row should not create a ticket. */
+function ticketDetailsFromVisitActionItem(actionItem, visit) {
+  const item = String(actionItem.item || actionItem.action || "").trim();
+  if (!item) return null;
+
+  const qty = String(actionItem.quantity ?? "").trim();
+  const due = String(actionItem.dueDate || "").trim();
+  const owner = String(actionItem.owner || "").trim();
+  const notes = String(actionItem.notes || "").trim();
+  const category = actionItem.category === "complaint" ? "complaint" : "request";
+
+  let type = String(actionItem.requestType || "").trim();
+  if (!type) {
+    type = category === "complaint" ? "other" : "new_product_request";
+  }
+  if (category === "request" && !VISIT_ACTION_REQUEST_TYPES.has(type)) type = "other";
+  if (category === "complaint" && !VISIT_ACTION_COMPLAINT_TYPES.has(type)) type = "other";
+
+  const title = [item, qty ? `Qty ${qty}` : null].filter(Boolean).join(" · ").slice(0, 200);
+  const description = [
+    `Request / issue: ${item}`,
+    qty && `Quantity: ${qty}`,
+    due && `Target due date: ${due}`,
+    owner && `Internal owner / follow-up: ${owner}`,
+    notes && `Notes: ${notes}`,
+    "",
+    `Raised from Account Visit Report — visit ${visit.visitNumber} (${visit.visitDate}).`,
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  const sourceContextNote = `AVR action item · Visit ${visit.visitNumber}`;
+  return { category, type, title, description, sourceContextNote };
+}
+
+/**
+ * For each attendee name selected on the schedule-visit form, look up the matching
+ * teammate (Manager or ExecutiveStaff) under the organizer's line manager and
+ * return their email + portal user-id (if any). Names that don't match a real
+ * teammate are skipped — keeps notifications/emails from going to wrong people.
+ */
+async function resolveAttendeeRecipients(organizerExec, attendeeNames) {
+  if (!organizerExec?.managerId || !Array.isArray(attendeeNames) || attendeeNames.length === 0) {
+    return [];
+  }
+
+  const normalize = (s) => String(s || "").trim().replace(/\s+/g, " ").toLowerCase();
+  const requested = new Set(attendeeNames.map(normalize).filter(Boolean));
+  if (requested.size === 0) return [];
+
+  const recipients = new Map();
+
+  const manager = await Manager.findByPk(organizerExec.managerId);
+  if (manager) {
+    const managerName = `${manager.firstName || ""} ${manager.lastName || ""}`.trim();
+    if (managerName && requested.has(normalize(managerName))) {
+      recipients.set(`manager_${manager.managerId}`, {
+        userId: manager.userId || null,
+        email: manager.email || null,
+        fullName: managerName,
+      });
+    }
+  }
+
+  const peers = await ExecutiveStaff.findAll({
+    where: { managerId: organizerExec.managerId },
+    attributes: ["executiveId", "userId", "firstName", "lastName", "email"],
+  });
+
+  for (const peer of peers) {
+    if (peer.executiveId === organizerExec.executiveId) continue;
+    const peerName = `${peer.firstName || ""} ${peer.lastName || ""}`.trim();
+    if (peerName && requested.has(normalize(peerName))) {
+      recipients.set(`exec_${peer.executiveId}`, {
+        userId: peer.userId || null,
+        email: peer.email || null,
+        fullName: peerName,
+      });
+    }
+  }
+
+  return Array.from(recipients.values());
+}
 
 const hasExecutiveScope = (role) => ["executive_staff", "supervisor"].includes(role);
 
@@ -24,23 +127,29 @@ async function generateVisitNumber() {
 }
 
 async function getCustomerCorporateAccounts(userEmail) {
-  const accountManager = await AccountManager.findOne({ where: { email: userEmail } });
-  if (!accountManager) return [];
-  return Account.findAll({
-    where: { corporateId: accountManager.corporateId },
-    order: [["created_at", "DESC"]],
-  });
+  // Spans every corporate the customer is linked to (legacy primary
+  // AccountManager.corporateId + corporate_contact_persons junction table).
+  return getAccountsForCustomerUser(userEmail);
 }
 
-async function resolveCustomerUserIdByCorporateId(corporateId) {
-  if (!corporateId) return null;
-  const accountManager = await AccountManager.findOne({ where: { corporateId } });
-  if (!accountManager) return null;
+async function resolveCustomerUserIdsByCorporateId(corporateId) {
+  // Returns the user-ids of every contact person (with portal access)
+  // currently linked to this corporate (legacy + junction).
+  if (!corporateId) return [];
+  const amIds = await getAccountManagerIdsForCorporate(corporateId);
+  if (amIds.length === 0) return [];
 
-  const customerUser = await User.findOne({
-    where: { role: "customer", email: accountManager.email },
+  const accountManagers = await AccountManager.findAll({
+    where: { accountManagerId: amIds },
   });
-  return customerUser ? customerUser.id : null;
+  const emails = accountManagers.map((am) => am.email).filter(Boolean);
+  if (emails.length === 0) return [];
+
+  const customerUsers = await User.findAll({
+    where: { role: "customer", email: { [Op.in]: emails } },
+    attributes: ["id"],
+  });
+  return customerUsers.map((u) => u.id);
 }
 
 function combineVisitDateTime(visitDate, startTime) {
@@ -86,8 +195,8 @@ async function sendVisitReminderAndOverdueAlerts(visits) {
   const customerByCorporateId = new Map();
   await Promise.all(
     corporateIds.map(async (corpId) => {
-      const customerUserId = await resolveCustomerUserIdByCorporateId(corpId);
-      customerByCorporateId.set(corpId, customerUserId);
+      const customerUserIds = await resolveCustomerUserIdsByCorporateId(corpId);
+      customerByCorporateId.set(corpId, customerUserIds);
     })
   );
 
@@ -103,10 +212,10 @@ async function sendVisitReminderAndOverdueAlerts(visits) {
     if (!isReminderWindow && !isOverdue) continue;
 
     const corporateId = accountToCorporateId.get(visit.accountId);
-    const customerUserId = customerByCorporateId.get(corporateId) || null;
+    const customerUserIds = customerByCorporateId.get(corporateId) || [];
     const executiveUserId = executiveToUserId.get(visit.executiveId) || null;
     const managerTeamIds = await resolveManagerTeamNotificationUserIds(visit.executiveId);
-    const targets = [customerUserId, executiveUserId, ...managerTeamIds].filter(Boolean);
+    const targets = [...customerUserIds, executiveUserId, ...managerTeamIds].filter(Boolean);
     if (!targets.length) continue;
 
     if (isReminderWindow) {
@@ -209,9 +318,21 @@ exports.createVisit = async (req, res) => {
       status: "pending",
     });
 
-    const customerUserId = await resolveCustomerUserIdByCorporateId(account.corporateId);
+    const customerUserIds = await resolveCustomerUserIdsByCorporateId(account.corporateId);
     const managerTeamIds = await resolveManagerTeamNotificationUserIds(visit.executiveId);
-    await createForUserIds([customerUserId, ...managerTeamIds], {
+
+    const attendeeRecipients = await resolveAttendeeRecipients(exec, visit.attendees);
+    const attendeeUserIdSet = new Set(
+      attendeeRecipients.map((r) => r.userId).filter(Boolean)
+    );
+
+    // General "Visit Scheduled" notification: customer contacts + manager team
+    // (excluding anyone who is being notified separately as a selected attendee
+    // so they don't receive two notifications for the same visit).
+    const generalRecipientIds = [...customerUserIds, ...managerTeamIds].filter(
+      (id) => !attendeeUserIdSet.has(id)
+    );
+    await createForUserIds(generalRecipientIds, {
       type: "visit",
       title: `Visit Scheduled - ${visit.visitNumber}`,
       message: `${visit.accountName}: ${visit.purpose} on ${visit.visitDate} at ${visit.startTime}.`,
@@ -222,6 +343,43 @@ exports.createVisit = async (req, res) => {
         accountId: visit.accountId,
       },
     });
+
+    // Attendee-specific "You've been invited" notification + email.
+    if (attendeeRecipients.length > 0) {
+      const organizerName = `${exec.firstName || ""} ${exec.lastName || ""}`.trim() || "A teammate";
+
+      await createForUserIds(
+        attendeeRecipients.map((r) => r.userId).filter(Boolean),
+        {
+          type: "visit",
+          title: `Meeting Invitation - ${visit.visitNumber}`,
+          message: `${organizerName} added you as an attendee for ${visit.accountName} on ${visit.visitDate} at ${visit.startTime}.`,
+          priority: "normal",
+          metadata: {
+            visitId: visit.visitId,
+            visitNumber: visit.visitNumber,
+            accountId: visit.accountId,
+            kind: "attendee_invitation",
+          },
+        },
+      );
+
+      // Best-effort emails: failures are logged but never break visit creation.
+      await Promise.all(
+        attendeeRecipients
+          .filter((r) => r.email)
+          .map((r) =>
+            emailService
+              .sendVisitInvitationEmail(r.email, r.fullName, visit, organizerName)
+              .catch((err) => {
+                console.error(
+                  `Failed to send visit invitation email to ${r.email} for ${visit.visitNumber}:`,
+                  err?.message || err,
+                );
+              }),
+          ),
+      );
+    }
 
     return res.status(201).json({ status: "Success", visit });
   } catch (error) {
@@ -397,7 +555,7 @@ exports.requestReschedule = async (req, res) => {
       return res.status(404).json({ status: "Failed", message: "Visit not found or not assigned to you" });
     }
 
-    if (["completed", "cancelled", "declined"].includes(visit.status)) {
+    if (["completed", "follow_up_pending", "cancelled", "declined"].includes(visit.status)) {
       return res.status(400).json({ status: "Failed", message: "Cannot reschedule a visit that is " + visit.status });
     }
 
@@ -611,52 +769,193 @@ exports.submitControlCard = async (req, res) => {
       return res.status(400).json({ status: "Failed", message: "A control card has already been submitted for this visit" });
     }
 
-    const controlCard = await ControlCard.create({
-      visitId: visit.visitId,
-      executiveId: exec.executiveId,
-      accountId: visit.accountId,
-      accountName: visit.accountName,
-      visitDate: visit.visitDate,
-      csrManager: controlCardData.csrManager || null,
-      customerParticipants: controlCardData.customerParticipants || null,
-      visitObjective: controlCardData.visitObjective || null,
-      slaCompliance: controlCardData.slaCompliance || null,
-      openTickets: controlCardData.openTickets || null,
-      criticalIncidents: controlCardData.criticalIncidents || null,
-      risksOperational: controlCardData.risksOperational || null,
-      risksCommercial: controlCardData.risksCommercial || null,
-      risksCompetitive: controlCardData.risksCompetitive || null,
-      opportunitiesUpsell: controlCardData.opportunitiesUpsell || null,
-      opportunitiesProcess: controlCardData.opportunitiesProcess || null,
-      actionItems: controlCardData.actionItems || [],
-      geoLatitude: controlCardData.geoLatitude || null,
-      geoLongitude: controlCardData.geoLongitude || null,
+    const accountRow = await Account.findByPk(visit.accountId);
+    if (!accountRow) {
+      return res.status(404).json({ status: "Failed", message: "Account not found for this visit" });
+    }
+
+    const createdTickets = [];
+
+    await sequelize.transaction(async (transaction) => {
+      const controlCard = await ControlCard.create(
+        {
+          visitId: visit.visitId,
+          executiveId: exec.executiveId,
+          accountId: visit.accountId,
+          accountName: visit.accountName,
+          visitDate: visit.visitDate,
+          csrManager: controlCardData.csrManager || null,
+          customerParticipants: controlCardData.customerParticipants || null,
+          visitObjective: controlCardData.visitObjective || null,
+          slaCompliance: controlCardData.slaCompliance || null,
+          openTickets: controlCardData.openTickets || null,
+          criticalIncidents: controlCardData.criticalIncidents || null,
+          risksOperational: controlCardData.risksOperational || null,
+          risksCommercial: controlCardData.risksCommercial || null,
+          risksCompetitive: controlCardData.risksCompetitive || null,
+          opportunitiesUpsell: controlCardData.opportunitiesUpsell || null,
+          opportunitiesProcess: controlCardData.opportunitiesProcess || null,
+          actionItems: controlCardData.actionItems || [],
+          geoLatitude: controlCardData.geoLatitude || null,
+          geoLongitude: controlCardData.geoLongitude || null,
+        },
+        { transaction }
+      );
+
+      await visit.update({ status: "follow_up_pending" }, { transaction });
+
+      for (const raw of controlCardData.actionItems || []) {
+        const details = ticketDetailsFromVisitActionItem(raw, visit);
+        if (!details) continue;
+        const ticket = await createVisitActionItemTicket(user, accountRow, details, {
+          transaction,
+          skipNotifications: true,
+        });
+        createdTickets.push(ticket);
+      }
     });
 
-    // Mark visit as completed
-    await visit.update({ status: "completed" });
     await visit.reload();
 
-    return res.status(201).json({ status: "Success", controlCard, visit });
+    for (const tkt of createdTickets) {
+      await sendTicketCreationNotifications(tkt, user, false);
+    }
+
+    const controlCard = await ControlCard.findOne({ where: { visitId } });
+
+    return res.status(201).json({
+      status: "Success",
+      controlCard,
+      visit,
+      ticketsCreated: createdTickets.length,
+      ticketNumbers: createdTickets.map((t) => t.ticketNumber),
+    });
   } catch (error) {
     console.error("Submit control card error:", error);
     return res.status(500).json({ status: "Failed", message: "Internal server error" });
   }
 };
 
+/**
+ * Who may load a visit control card via GET /visits/:visitId/control-card.
+ */
+async function userMayAccessVisitControlCard(user, visit) {
+  if (!visit) return false;
+
+  if (user.role === "customer") {
+    const accounts = await getCustomerCorporateAccounts(user.email);
+    const accountIds = accounts.map((a) => a.accountId);
+    return accountIds.includes(visit.accountId);
+  }
+
+  if (hasExecutiveScope(user.role)) {
+    const exec = await ExecutiveStaff.findOne({ where: { userId: user.id } });
+    return !!(exec && visit.executiveId === exec.executiveId);
+  }
+
+  if (user.role === "admin") return true;
+
+  if (user.role === "supervisor") {
+    const execIds = await getSupervisorManagedExecutiveIds(user);
+    return execIds.includes(visit.executiveId);
+  }
+
+  if (user.role === "manager") {
+    const execIds = await getManagerExecIds(user.id);
+    if (execIds === null) return false;
+    return execIds.includes(visit.executiveId);
+  }
+
+  return false;
+}
+
 // Get control card for a visit
 exports.getControlCard = async (req, res) => {
   try {
+    const user = req.user;
     const { visitId } = req.params;
+
+    const visit = await Visit.findByPk(visitId);
+    if (!visit) {
+      return res.status(404).json({ status: "Failed", message: "Visit not found" });
+    }
+
+    const allowed = await userMayAccessVisitControlCard(user, visit);
+    if (!allowed) {
+      return res.status(403).json({ status: "Failed", message: "Unauthorized" });
+    }
 
     const controlCard = await ControlCard.findOne({ where: { visitId } });
     if (!controlCard) {
       return res.status(404).json({ status: "Failed", message: "No control card found for this visit" });
     }
 
-    return res.status(200).json({ status: "Success", controlCard });
+    const plain = controlCard.get({ plain: true });
+    if (user.role === "customer") {
+      delete plain.geoLatitude;
+      delete plain.geoLongitude;
+      delete plain.customerFeedback;
+    }
+
+    return res.status(200).json({ status: "Success", controlCard: plain });
   } catch (error) {
     console.error("Get control card error:", error);
+    return res.status(500).json({ status: "Failed", message: "Internal server error" });
+  }
+};
+
+// Executive records meeting start (GPS when opening “Start visit”) — first capture is kept
+exports.recordMeetingStart = async (req, res) => {
+  try {
+    const user = req.user;
+
+    if (!hasExecutiveScope(user.role)) {
+      return res.status(403).json({ status: "Failed", message: "Only executive or supervisor users can record meeting start" });
+    }
+
+    const exec = await ExecutiveStaff.findOne({ where: { userId: user.id } });
+    if (!exec) {
+      return res.status(404).json({ status: "Failed", message: "Executive profile not found" });
+    }
+
+    const { visitId } = req.params;
+    const lat = Number(req.body?.latitude ?? req.body?.lat);
+    const lng = Number(req.body?.longitude ?? req.body?.lng);
+
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+      return res.status(400).json({ status: "Failed", message: "latitude and longitude must be valid numbers" });
+    }
+    if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+      return res.status(400).json({ status: "Failed", message: "coordinates are out of valid range" });
+    }
+
+    const visit = await Visit.findOne({ where: { visitId, executiveId: exec.executiveId } });
+    if (!visit) {
+      return res.status(404).json({ status: "Failed", message: "Visit not found or not assigned to you" });
+    }
+
+    if (!["approved", "confirmed"].includes(visit.status)) {
+      return res.status(400).json({
+        status: "Failed",
+        message: "Meeting start can only be recorded for approved or confirmed visits",
+      });
+    }
+
+    if (visit.meetingStartedAt) {
+      await visit.reload();
+      return res.status(200).json({ status: "Success", visit, alreadyRecorded: true });
+    }
+
+    await visit.update({
+      meetingStartedAt: new Date(),
+      startGeoLatitude: lat,
+      startGeoLongitude: lng,
+    });
+    await visit.reload();
+
+    return res.status(200).json({ status: "Success", visit, alreadyRecorded: false });
+  } catch (error) {
+    console.error("Record meeting start error:", error);
     return res.status(500).json({ status: "Failed", message: "Internal server error" });
   }
 };
@@ -695,7 +994,19 @@ exports.updateControlCard = async (req, res) => {
     await controlCard.update(updates);
     await controlCard.reload();
 
-    return res.status(200).json({ status: "Success", controlCard });
+    const visitRow = await Visit.findByPk(visitId);
+    if (visitRow && visitRow.status === "follow_up_pending") {
+      const hasFeedback =
+        controlCard.customerFeedback && String(controlCard.customerFeedback).trim().length > 0;
+      const hasHealth =
+        controlCard.accountHealth && ["green", "amber", "red"].includes(controlCard.accountHealth);
+      if (hasFeedback && hasHealth) {
+        await visitRow.update({ status: "completed" });
+      }
+    }
+    if (visitRow) await visitRow.reload();
+
+    return res.status(200).json({ status: "Success", controlCard, visit: visitRow });
   } catch (error) {
     console.error("Update control card error:", error);
     return res.status(500).json({ status: "Failed", message: "Internal server error" });
@@ -729,8 +1040,11 @@ exports.submitRating = async (req, res) => {
       return res.status(404).json({ status: "Failed", message: "Visit not found" });
     }
 
-    if (visit.status !== "completed") {
-      return res.status(400).json({ status: "Failed", message: "Can only rate completed visits" });
+    if (!["completed", "follow_up_pending"].includes(visit.status)) {
+      return res.status(400).json({
+        status: "Failed",
+        message: "You can rate this visit after your meeting report has been submitted",
+      });
     }
 
     // Verify control card exists
@@ -829,6 +1143,94 @@ exports.getManagerVisits = async (req, res) => {
     return res.status(200).json({ status: "Success", visits });
   } catch (error) {
     console.error("Get manager visits error:", error);
+    return res.status(500).json({ status: "Failed", message: "Internal server error" });
+  }
+};
+
+/**
+ * GET /visits/department-team
+ *
+ * Returns the executives + line manager that share the requesting user's
+ * department, suitable for populating an "Attendees" picker when scheduling
+ * a visit. The current user is excluded from the result.
+ *
+ * Department is resolved via the line manager (Manager.department):
+ *   - executive_staff / supervisor → ExecutiveStaff.managerId → Manager
+ *   - manager → Manager (own row)
+ */
+exports.getDepartmentTeam = async (req, res) => {
+  try {
+    const user = req.user;
+    if (!["executive_staff", "supervisor", "manager", "admin"].includes(user.role)) {
+      return res.status(403).json({ status: "Failed", message: "Unauthorized" });
+    }
+
+    let manager = null;
+
+    if (user.role === "manager") {
+      manager = await Manager.findOne({ where: { userId: user.id } });
+    } else {
+      const exec = await ExecutiveStaff.findOne({
+        where: { userId: user.id },
+        attributes: ["executiveId", "managerId"],
+      });
+      if (exec?.managerId) {
+        manager = await Manager.findByPk(exec.managerId);
+      }
+    }
+
+    if (!manager) {
+      return res.status(200).json({
+        status: "Success",
+        department: null,
+        members: [],
+      });
+    }
+
+    const peerExecs = await ExecutiveStaff.findAll({
+      where: { managerId: manager.managerId },
+      order: [["first_name", "ASC"], ["last_name", "ASC"]],
+    });
+
+    const execUserIds = peerExecs.map((e) => e.userId).filter(Boolean);
+    const userRows = execUserIds.length
+      ? await User.findAll({ where: { id: { [Op.in]: execUserIds } }, attributes: ["id", "role"] })
+      : [];
+    const roleByUserId = new Map(userRows.map((u) => [u.id, u.role]));
+
+    const members = [];
+
+    if (manager.userId !== user.id) {
+      members.push({
+        id: `manager_${manager.managerId}`,
+        firstName: manager.firstName,
+        lastName: manager.lastName,
+        fullName: `${manager.firstName || ""} ${manager.lastName || ""}`.trim(),
+        email: manager.email,
+        role: "manager",
+      });
+    }
+
+    for (const exec of peerExecs) {
+      if (exec.userId && exec.userId === user.id) continue;
+      const resolvedRole = (exec.userId && roleByUserId.get(exec.userId)) || "executive_staff";
+      members.push({
+        id: `exec_${exec.executiveId}`,
+        firstName: exec.firstName,
+        lastName: exec.lastName,
+        fullName: `${exec.firstName || ""} ${exec.lastName || ""}`.trim(),
+        email: exec.email,
+        role: resolvedRole,
+      });
+    }
+
+    return res.status(200).json({
+      status: "Success",
+      department: manager.department || null,
+      members,
+    });
+  } catch (error) {
+    console.error("Get department team error:", error);
     return res.status(500).json({ status: "Failed", message: "Internal server error" });
   }
 };

@@ -65,6 +65,47 @@ const Ticket = sequelize.define(
       allowNull: false,
       field: "submitted_by",
     },
+    createdByUserId: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      field: "created_by_user_id",
+    },
+    createdByRole: {
+      type: DataTypes.STRING,
+      allowNull: true,
+      field: "created_by_role",
+    },
+    createdByName: {
+      type: DataTypes.STRING,
+      allowNull: true,
+      field: "created_by_name",
+    },
+    createdForAccountId: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      field: "created_for_account_id",
+    },
+    createdForCustomerUserId: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      field: "created_for_customer_user_id",
+    },
+    sourceChannel: {
+      type: DataTypes.ENUM("portal", "email", "phone"),
+      allowNull: false,
+      defaultValue: "portal",
+      field: "source_channel",
+    },
+    sourceContextNote: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+      field: "source_context_note",
+    },
+    attachmentUrl: {
+      type: DataTypes.STRING,
+      allowNull: true,
+      field: "attachment_url",
+    },
     assignedTo: {
       type: DataTypes.STRING,
       allowNull: true,

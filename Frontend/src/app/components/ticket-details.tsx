@@ -18,7 +18,8 @@ import {
   MessageSquare, 
   History,
 } from "lucide-react";
-import { getTicketById, updateTicket, type TicketRecord } from "../api/ticketApi";
+import { addInternalTicketNote, getTicketById, updateTicket, type TicketRecord } from "../api/ticketApi";
+import { getCurrentUser } from "../api/authApi";
 import { format } from "date-fns";
 
 export default function TicketDetails() {
@@ -35,6 +36,9 @@ export default function TicketDetails() {
   const [internalNote, setInternalNote] = useState("");
   const [resolution, setResolution] = useState("");
   const [saving, setSaving] = useState(false);
+  const [addingNote, setAddingNote] = useState(false);
+  const currentUser = getCurrentUser();
+  const canAddInternalNote = ["manager", "supervisor", "admin"].includes(currentUser?.role || "");
 
   useEffect(() => {
     const run = async () => {
@@ -48,7 +52,7 @@ export default function TicketDetails() {
         const data = await getTicketById(ticketId);
         setTicket(data);
         setTicketStatus(data.status);
-        setInternalNote(data.notes || "");
+        setInternalNote("");
         setResolution(data.resolution || "");
       } catch (err: any) {
         setError(err.message || "Failed to load ticket");
@@ -87,7 +91,6 @@ export default function TicketDetails() {
       setSaving(true);
       const updated = await updateTicket(ticket.ticketId, {
         status: ticketStatus,
-        notes: internalNote,
         resolution,
       });
       setTicket({ ...ticket, ...updated, status: updated.status, notes: updated.notes, resolution: updated.resolution });
@@ -114,9 +117,35 @@ export default function TicketDetails() {
 
   const timeline = [
     { id: 1, type: "created", title: "Ticket Created", date: format(new Date(ticket.createdAt), "MMM dd, HH:mm"), user: ticket.submittedBy },
+    ...((ticket.internalNotes || []).map((note) => ({
+      id: `note-${note.noteId}`,
+      type: "comment",
+      title: `${note.authorRole === "manager" ? "Manager" : note.authorRole === "supervisor" ? "Supervisor" : "Admin"} Comment`,
+      date: format(new Date(note.createdAt), "MMM dd, HH:mm"),
+      user: note.authorName,
+      body: note.note,
+    }))),
     ...(ticket.notes ? [{ id: 2, type: "comment", title: "Admin Note Added", date: format(new Date(ticket.updatedAt), "MMM dd, HH:mm"), user: ticket.assignedTo || "Admin" }] : []),
     ...(ticket.resolution ? [{ id: 3, type: "closed", title: "Resolution Added", date: format(new Date(ticket.updatedAt), "MMM dd, HH:mm"), user: ticket.assignedTo || "Admin" }] : []),
   ];
+
+  const handleAddInternalNote = async () => {
+    if (!ticket || !internalNote.trim()) return;
+    try {
+      setAddingNote(true);
+      const createdNote = await addInternalTicketNote(ticket.ticketId, internalNote.trim());
+      setTicket({
+        ...ticket,
+        internalNotes: [...(ticket.internalNotes || []), createdNote],
+      });
+      setInternalNote("");
+      toast.success("Internal note added and notifications sent.");
+    } catch (err: any) {
+      toast.error(err.message || "Failed to add internal note");
+    } finally {
+      setAddingNote(false);
+    }
+  };
 
   return (
     <div className="space-y-6 animate-in fade-in duration-500 slide-in-from-right-4">
@@ -219,7 +248,7 @@ export default function TicketDetails() {
                       <span className="text-sm text-slate-600">by {event.user}</span>
                       {event.type === 'comment' && (
                         <div className="mt-2 text-sm bg-slate-50 p-3 rounded border border-slate-200 text-slate-700">
-                          "I have verified the billing records. There is a discrepancy. Investigating further with the network team."
+                          {event.body || "Internal comment added."}
                         </div>
                       )}
                     </div>
@@ -302,11 +331,17 @@ export default function TicketDetails() {
                 <Label>Internal Note (Optional)</Label>
                 <textarea 
                   className="flex min-h-[80px] w-full rounded-md border border-slate-300 bg-transparent px-3 py-2 text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-mtc-blue disabled:opacity-50"
-                  placeholder="Only add details if necessary..."
+                  placeholder={canAddInternalNote ? "Add internal note for executive, supervisor and admin visibility..." : "Only manager/supervisor/admin can add internal notes"}
                   value={internalNote}
                   onChange={(e) => setInternalNote(e.target.value)}
+                  disabled={!canAddInternalNote || addingNote}
                 />
               </div>
+              {canAddInternalNote && (
+                <Button variant="outline" className="w-full" onClick={handleAddInternalNote} disabled={addingNote || !internalNote.trim()}>
+                  {addingNote ? "Adding Note..." : "Add Internal Note"}
+                </Button>
+              )}
               <Button variant="secondary" className="w-full" onClick={handleSave} disabled={saving}>
                 {saving ? "Saving..." : "Save Update"}
               </Button>

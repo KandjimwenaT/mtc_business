@@ -2,6 +2,7 @@ const AccountRequest = require("../models/AccountRequest");
 const Account = require("../models/Account");
 const ExecutiveStaff = require("../models/ExecutiveStaff");
 const AccountManager = require("../models/AccountManager");
+const { getCorporateIdsForCustomerUser } = require("../services/contactPersonService");
 
 // Customer submits a new account request
 exports.createRequest = async (req, res) => {
@@ -13,13 +14,14 @@ exports.createRequest = async (req, res) => {
     }
 
     // Primary lookup: contactEmail matches the logged-in customer's email.
-    // Fallback: Account Manager maps to corporateId.
+    // Fallback: account belongs to any corporate the contact person is linked
+    // to (legacy primary AccountManager.corporateId + junction table).
     let account = await Account.findOne({ where: { contactEmail: user.email } });
     if (!account) {
-      const accountManager = await AccountManager.findOne({ where: { email: user.email } });
-      if (accountManager) {
+      const corporateIds = await getCorporateIdsForCustomerUser(user.email);
+      if (corporateIds.length > 0) {
         account = await Account.findOne({
-          where: { corporateId: accountManager.corporateId },
+          where: { corporateId: corporateIds },
           order: [["created_at", "DESC"]],
         });
       }
@@ -75,22 +77,31 @@ exports.getMyRequests = async (req, res) => {
       return res.status(403).json({ status: "Failed", message: "Only customers can access this endpoint" });
     }
 
-    let account = await Account.findOne({ where: { contactEmail: user.email } });
-    if (!account) {
-      const accountManager = await AccountManager.findOne({ where: { email: user.email } });
-      if (accountManager) {
-        account = await Account.findOne({
-          where: { corporateId: accountManager.corporateId },
-          order: [["created_at", "DESC"]],
-        });
-      }
+    // Surface requests for every account belonging to any corporate the
+    // contact person is linked to (M:N junction included), plus accounts
+    // where the contact email matches the logged-in user directly.
+    const accountIds = new Set();
+    const directAccounts = await Account.findAll({
+      where: { contactEmail: user.email },
+      attributes: ["accountId"],
+    });
+    for (const acc of directAccounts) accountIds.add(acc.accountId);
+
+    const corporateIds = await getCorporateIdsForCustomerUser(user.email);
+    if (corporateIds.length > 0) {
+      const corporateAccounts = await Account.findAll({
+        where: { corporateId: corporateIds },
+        attributes: ["accountId"],
+      });
+      for (const acc of corporateAccounts) accountIds.add(acc.accountId);
     }
-    if (!account) {
+
+    if (accountIds.size === 0) {
       return res.status(404).json({ status: "Failed", message: "No account linked to your access" });
     }
 
     const requests = await AccountRequest.findAll({
-      where: { accountId: account.accountId },
+      where: { accountId: [...accountIds] },
       order: [["created_at", "DESC"]],
     });
 

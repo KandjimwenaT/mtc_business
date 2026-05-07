@@ -24,6 +24,11 @@ const Service = sequelize.define(
       allowNull: false,
       field: "service_type",
     },
+    currentServiceOwner: {
+      type: DataTypes.STRING,
+      allowNull: true,
+      field: "current_service_owner",
+    },
     status: {
       type: DataTypes.ENUM("active", "suspended", "inactive"),
       allowNull: false,

@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useMemo } from "react";
 import { toast } from "sonner";
 import { 
   Button, 
@@ -17,10 +17,10 @@ import {
   TableRow,
   Badge
 } from "../ui-components";
-import { Plus, Calendar, MapPin, CheckCircle, Search, Star, MessageSquare, X, Video, Building2, ChevronLeft, ChevronRight, Clock, User, Send, AlertTriangle, FileText, Trash2, Navigation } from "lucide-react";
+import { Plus, Calendar, MapPin, CheckCircle, Search, Star, MessageSquare, X, Video, Building2, ChevronLeft, ChevronRight, ChevronDown, Clock, User, Send, AlertTriangle, FileText, Trash2, Navigation, Check } from "lucide-react";
 import { getCurrentUser } from "../../api/authApi";
-import { getMyAccounts, type ExecutiveAccountRecord } from "../../api/authApi";
-import { createVisit, getMyVisits, updateVisit, requestReschedule, submitControlCard, getControlCard, updateControlCard, type VisitRecord, type VisitPayload, type ControlCardRecord } from "../../api/visitApi";
+import { createVisit, updateVisit, requestReschedule, submitControlCard, getControlCard, updateControlCard, getDepartmentTeam, recordVisitMeetingStart, openStreetMapMeetingStartLink, type VisitRecord, type VisitPayload, type ControlCardRecord, type DepartmentTeamMember } from "../../api/visitApi";
+import { useExecutiveData } from "../../hooks/useExecutiveData";
 import { format, addDays, startOfWeek, endOfWeek, eachDayOfInterval, isSameDay, addMonths, startOfMonth, endOfMonth } from "date-fns";
 
 interface VisitHistoryItem {
@@ -29,6 +29,18 @@ interface VisitHistoryItem {
   type: string;
   exec: string;
   rating: number;
+}
+
+interface AvrActionItemRow {
+  /** What the customer needs (creates ticket title / description) */
+  item: string;
+  quantity: string;
+  dueDate: string;
+  owner: string;
+  notes: string;
+  category: "request" | "complaint";
+  /** Ticket type slug — must match backend ticketController lists */
+  requestType: string;
 }
 
 interface AVRData {
@@ -45,8 +57,51 @@ interface AVRData {
   risksCompetitive: string;
   opportunitiesUpsell: string;
   opportunitiesProcess: string;
-  actionItems: { action: string; owner: string; dueDate: string }[];
+  actionItems: AvrActionItemRow[];
 }
+
+const emptyActionItem = (): AvrActionItemRow => ({
+  item: "",
+  quantity: "",
+  dueDate: "",
+  owner: "",
+  notes: "",
+  category: "request",
+  requestType: "new_product_request",
+});
+
+function normalizeActionItem(raw: Partial<AvrActionItemRow> & { action?: string; deadline?: string }): AvrActionItemRow {
+  const category = raw.category === "complaint" ? "complaint" : "request";
+  const fallbackType = category === "complaint" ? "other" : "new_product_request";
+  return {
+    item: String(raw.item ?? raw.action ?? "").trim(),
+    quantity: String(raw.quantity ?? "").trim(),
+    dueDate: String(raw.dueDate ?? raw.deadline ?? "").trim(),
+    owner: String(raw.owner ?? "").trim(),
+    notes: String(raw.notes ?? "").trim(),
+    category,
+    requestType: String(raw.requestType ?? "").trim() || fallbackType,
+  };
+}
+
+const AVR_TICKET_REQUEST_TYPE_OPTIONS: { value: string; label: string }[] = [
+  { value: "new_product_request", label: "New product / equipment" },
+  { value: "new_line", label: "New line" },
+  { value: "plan_change", label: "Plan change" },
+  { value: "line_activation", label: "Line activation" },
+  { value: "upgrade", label: "Upgrade" },
+  { value: "request_meeting", label: "Request meeting" },
+  { value: "other", label: "Other" },
+];
+
+const AVR_TICKET_COMPLAINT_TYPE_OPTIONS: { value: string; label: string }[] = [
+  { value: "service", label: "Service" },
+  { value: "network", label: "Network" },
+  { value: "technical", label: "Technical" },
+  { value: "billing", label: "Billing" },
+  { value: "support", label: "Support" },
+  { value: "other", label: "Other" },
+];
 
 const defaultAVR = (): AVRData => ({
   accountName: "",
@@ -62,7 +117,7 @@ const defaultAVR = (): AVRData => ({
   risksCompetitive: "",
   opportunitiesUpsell: "",
   opportunitiesProcess: "",
-  actionItems: [{ action: "", owner: "", dueDate: "" }],
+  actionItems: [emptyActionItem()],
 });
 
 function AVRSection({ number, title, children }: { number: number; title: string; children: React.ReactNode }) {
@@ -77,10 +132,145 @@ function AVRSection({ number, title, children }: { number: number; title: string
   );
 }
 
+/** Suggestions for SLA fields — HTML datalist: pick from list or type freely. */
+const AVR_SLA_COMPLIANCE_SUGGESTIONS = [
+  "≥ 99%",
+  "95–98%",
+  "90–94%",
+  "80–89%",
+  "< 80%",
+  "Not measured this period",
+  "Under review",
+] as const;
+
+const AVR_OPEN_TICKETS_SUGGESTIONS = [
+  "None (0)",
+  "1",
+  "2",
+  "3–5",
+  "6–10",
+  "10+",
+] as const;
+
+const AVR_CRITICAL_INCIDENTS_SUGGESTIONS = ["None (0)", "1", "2", "3+"] as const;
+
+/** Longer presets for risks / opportunities — applied via quick-select; user can still edit the textarea. */
+const AVR_RISK_OPERATIONAL_PRESETS = [
+  "No material operational risks identified.",
+  "Network performance or latency concerns.",
+  "Service delivery or provisioning delays.",
+  "SLA breaches in the review period.",
+  "Equipment or infrastructure constraints.",
+  "Capacity or scalability concerns.",
+  "Security or compliance gaps.",
+] as const;
+
+const AVR_RISK_COMMERCIAL_PRESETS = [
+  "No significant commercial risks identified.",
+  "Contract renewal or term pressure.",
+  "Budget or cost sensitivity.",
+  "Billing or payment disputes.",
+  "Churn or retention risk.",
+  "Pricing or discount pressure.",
+] as const;
+
+const AVR_RISK_COMPETITIVE_PRESETS = [
+  "No significant competitive pressure.",
+  "Active competitor engagement at this account.",
+  "Customer evaluating alternative providers.",
+  "Price undercutting in the market.",
+  "New market entrant threat.",
+] as const;
+
+const AVR_OPPORTUNITY_UPSELL_PRESETS = [
+  "Fiber or bandwidth upgrade.",
+  "Additional lines or seats.",
+  "Cloud or managed services expansion.",
+  "Security or backup add-ons.",
+  "IoT or mobility solutions.",
+  "No upsell opportunity identified.",
+] as const;
+
+const AVR_OPPORTUNITY_PROCESS_PRESETS = [
+  "Billing or invoicing process improvements.",
+  "Ticketing and support workflow.",
+  "Reporting and stakeholder communication.",
+  "Onboarding and provisioning speed.",
+  "Escalation and SLA governance.",
+  "No process improvement noted.",
+] as const;
+
+function AvrDatalistField({
+  id,
+  value,
+  onChange,
+  placeholder,
+  suggestions,
+}: {
+  id: string;
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+  suggestions: readonly string[];
+}) {
+  return (
+    <>
+      <Input
+        id={id}
+        list={`${id}-datalist`}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        autoComplete="off"
+      />
+      <datalist id={`${id}-datalist`}>
+        {suggestions.map((s) => (
+          <option key={s} value={s} />
+        ))}
+      </datalist>
+    </>
+  );
+}
+
+function AvrPresetSelect({
+  ariaLabel,
+  options,
+  onSelect,
+}: {
+  ariaLabel: string;
+  options: readonly string[];
+  onSelect: (value: string) => void;
+}) {
+  return (
+    <select
+      className="flex h-8 w-full rounded-md border border-slate-200 bg-white px-2 text-xs text-slate-600"
+      defaultValue=""
+      aria-label={ariaLabel}
+      onChange={(e) => {
+        const v = e.target.value;
+        if (v) onSelect(v);
+        e.target.selectedIndex = 0;
+      }}
+    >
+      <option value="">Quick options…</option>
+      {options.map((o) => (
+        <option key={o} value={o}>
+          {o}
+        </option>
+      ))}
+    </select>
+  );
+}
+
 const statusConfig: Record<string, { label: string; color: string; bg: string }> = {
   pending: { label: "Pending", color: "text-amber-600", bg: "bg-amber-100 border-l-2 border-amber-500" },
   approved: { label: "Approved", color: "text-blue-600", bg: "bg-blue-100 border-l-2 border-blue-500" },
   confirmed: { label: "Confirmed", color: "text-green-600", bg: "bg-green-100 border-l-2 border-green-500" },
+  follow_up_pending: {
+    label: "Awaiting AVR closure",
+    color: "text-amber-700",
+    bg: "bg-amber-100 border-l-2 border-amber-500",
+  },
   declined: { label: "Declined", color: "text-red-600", bg: "bg-red-100 border-l-2 border-red-500" },
   completed: { label: "Completed", color: "text-gray-600", bg: "bg-gray-100 border-l-2 border-gray-500" },
   cancelled: { label: "Cancelled", color: "text-gray-400", bg: "bg-gray-50 border-l-2 border-gray-400" },
@@ -103,6 +293,8 @@ export default function ExecutiveVisits() {
   const [geoAddress, setGeoAddress] = useState<string>("");
   const [geoLoading, setGeoLoading] = useState(false);
   const [geoError, setGeoError] = useState<string>("");
+  /** True when coordinates were loaded from the visit record (already persisted at meeting start). */
+  const [geoFromPersistedMeetingStart, setGeoFromPersistedMeetingStart] = useState(false);
 
   // AVR Control card form state
   const [avrData, setAvrData] = useState<AVRData>(defaultAVR());
@@ -111,8 +303,8 @@ export default function ExecutiveVisits() {
     setAvrData(prev => ({ ...prev, [key]: value }));
   };
 
-  const updateActionItem = (idx: number, field: keyof AVRData["actionItems"][0], value: string) => {
-    setAvrData(prev => {
+  const updateActionItem = (idx: number, field: keyof AvrActionItemRow, value: string) => {
+    setAvrData((prev) => {
       const items = [...prev.actionItems];
       items[idx] = { ...items[idx], [field]: value };
       return { ...prev, actionItems: items };
@@ -120,17 +312,30 @@ export default function ExecutiveVisits() {
   };
 
   const addActionItem = () => {
-    setAvrData(prev => ({ ...prev, actionItems: [...prev.actionItems, { action: "", owner: "", dueDate: "" }] }));
+    setAvrData((prev) => ({ ...prev, actionItems: [...prev.actionItems, emptyActionItem()] }));
   };
 
   const removeActionItem = (idx: number) => {
     setAvrData(prev => ({ ...prev, actionItems: prev.actionItems.filter((_, i) => i !== idx) }));
   };
 
-  // Real data
-  const [visits, setVisits] = useState<VisitRecord[]>([]);
-  const [accounts, setAccounts] = useState<ExecutiveAccountRecord[]>([]);
-  const [loading, setLoading] = useState(true);
+  /** Latest AVR for flush handlers (tab close / visibility) without stale closures */
+  const avrDataRef = useRef(avrData);
+  avrDataRef.current = avrData;
+
+  // Real data — backed by ExecutiveDataProvider so navigating away and back
+  // does not refetch.
+  const {
+    visits,
+    accounts,
+    initialLoading: loading,
+    refreshVisits,
+    refreshAccounts,
+    refreshTickets,
+  } = useExecutiveData();
+  const fetchData = async () => {
+    await Promise.all([refreshVisits(), refreshAccounts()]);
+  };
 
   // Schedule form state
   const [formCorporateId, setFormCorporateId] = useState("");
@@ -142,8 +347,21 @@ export default function ExecutiveVisits() {
   const [formEndTime, setFormEndTime] = useState("");
   const [formLocation, setFormLocation] = useState("");
   const [formOnlineLink, setFormOnlineLink] = useState("");
-  const [formAttendees, setFormAttendees] = useState("");
+  const [formAttendees, setFormAttendees] = useState<string[]>([]);
   const [submitting, setSubmitting] = useState(false);
+
+  // Department team (for the Attendees multi-select)
+  const [departmentTeam, setDepartmentTeam] = useState<DepartmentTeamMember[]>([]);
+  const [departmentName, setDepartmentName] = useState<string | null>(null);
+  const [departmentTeamLoading, setDepartmentTeamLoading] = useState(false);
+  const [attendeesOpen, setAttendeesOpen] = useState(false);
+  const attendeesRef = useRef<HTMLDivElement | null>(null);
+
+  // Searchable corporate customer picker (schedule visit)
+  const [corporatePickerOpen, setCorporatePickerOpen] = useState(false);
+  const [corporateSearch, setCorporateSearch] = useState("");
+  const corporatePickerRef = useRef<HTMLDivElement | null>(null);
+  const corporateSearchInputRef = useRef<HTMLInputElement | null>(null);
 
   // Calendar state
   const [calendarDate, setCalendarDate] = useState(new Date());
@@ -159,21 +377,6 @@ export default function ExecutiveVisits() {
   const [rescheduleSubmitting, setRescheduleSubmitting] = useState(false);
 
   const currentUser = getCurrentUser();
-
-  const fetchData = async () => {
-    try {
-      setLoading(true);
-      const [visitData, accountData] = await Promise.all([getMyVisits(), getMyAccounts()]);
-      setVisits(visitData);
-      setAccounts(accountData);
-    } catch (err: unknown) {
-      toast.error("Failed to load data", { description: err instanceof Error ? err.message : "Unknown error" });
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  useEffect(() => { fetchData(); }, []);
 
   // Calendar helpers
   const weekStart = startOfWeek(calendarDate, { weekStartsOn: 1 });
@@ -199,7 +402,14 @@ export default function ExecutiveVisits() {
     (v.location || "").toLowerCase().includes(searchQuery.toLowerCase())
   );
 
-  const completedVisits = visits.filter(v => v.status === "completed");
+  const { visitReportsSorted, followUpPendingCount } = useMemo(() => {
+    const pending = visits.filter((v) => v.status === "follow_up_pending");
+    const closed = visits.filter((v) => v.status === "completed");
+    return {
+      visitReportsSorted: [...pending, ...closed],
+      followUpPendingCount: pending.length,
+    };
+  }, [visits]);
   const isOverdueVisit = (visit: VisitRecord) => {
     const visitStart = new Date(`${visit.visitDate}T${visit.startTime}`);
     const now = new Date();
@@ -227,8 +437,8 @@ export default function ExecutiveVisits() {
   };
 
   useEffect(() => {
-    if (activeTab === "completed" && completedVisits.length > 0) {
-      fetchControlCards(completedVisits);
+    if (activeTab === "completed" && visitReportsSorted.length > 0) {
+      fetchControlCards(visitReportsSorted);
     }
   }, [activeTab, visits]);
 
@@ -265,16 +475,93 @@ export default function ExecutiveVisits() {
   const resetForm = () => {
     setFormCorporateId(""); setFormMeetingType("in_person"); setFormPurpose(""); setFormAgenda("");
     setFormDate(""); setFormStartTime(""); setFormEndTime(""); setFormLocation("");
-    setFormOnlineLink(""); setFormAttendees("");
+    setFormOnlineLink(""); setFormAttendees([]); setAttendeesOpen(false);
+    setCorporatePickerOpen(false);
+    setCorporateSearch("");
   };
 
-  const corporateOptions = Array.from(
-    new Map(
-      accounts
-        .filter((acc) => acc.corporateId != null)
-        .map((acc) => [acc.corporateId as number, { corporateId: acc.corporateId as number, corporateName: acc.corporateName || acc.accountName }])
-    ).values()
-  );
+  // Fetch the department team once when the visit form is opened.
+  useEffect(() => {
+    if (!showSchedule) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        setDepartmentTeamLoading(true);
+        const data = await getDepartmentTeam();
+        if (cancelled) return;
+        setDepartmentTeam(data.members);
+        setDepartmentName(data.department);
+      } catch (err: unknown) {
+        if (!cancelled) {
+          toast.error("Failed to load team", {
+            description: err instanceof Error ? err.message : "Unable to load department teammates",
+          });
+        }
+      } finally {
+        if (!cancelled) setDepartmentTeamLoading(false);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [showSchedule]);
+
+  // Close the attendees dropdown when clicking outside.
+  useEffect(() => {
+    if (!attendeesOpen) return;
+    const onDocClick = (e: MouseEvent) => {
+      if (attendeesRef.current && !attendeesRef.current.contains(e.target as Node)) {
+        setAttendeesOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [attendeesOpen]);
+
+  // Close corporate picker on outside click; focus search when opened.
+  useEffect(() => {
+    if (!corporatePickerOpen) return;
+    corporateSearchInputRef.current?.focus();
+    const onDocClick = (e: MouseEvent) => {
+      if (corporatePickerRef.current && !corporatePickerRef.current.contains(e.target as Node)) {
+        setCorporatePickerOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [corporatePickerOpen]);
+
+  const toggleAttendee = (fullName: string) => {
+    setFormAttendees((prev) =>
+      prev.includes(fullName) ? prev.filter((n) => n !== fullName) : [...prev, fullName]
+    );
+  };
+
+  const corporateOptions = useMemo(() => {
+    const rows = Array.from(
+      new Map(
+        accounts
+          .filter((acc) => acc.corporateId != null)
+          .map((acc) => [
+            acc.corporateId as number,
+            { corporateId: acc.corporateId as number, corporateName: acc.corporateName || acc.accountName },
+          ])
+      ).values()
+    );
+    return rows.sort((a, b) =>
+      a.corporateName.localeCompare(b.corporateName, undefined, { sensitivity: "base" })
+    );
+  }, [accounts]);
+
+  const filteredCorporateOptions = useMemo(() => {
+    const q = corporateSearch.trim().toLowerCase();
+    if (!q) return corporateOptions;
+    return corporateOptions.filter((c) => c.corporateName.toLowerCase().includes(q));
+  }, [corporateOptions, corporateSearch]);
+
+  const selectedCorporateName = useMemo(() => {
+    if (!formCorporateId) return "";
+    const id = Number(formCorporateId);
+    return corporateOptions.find((c) => c.corporateId === id)?.corporateName ?? "";
+  }, [corporateOptions, formCorporateId]);
 
   // Control card draft helpers
   const CC_DRAFT_PREFIX = "cc_draft_";
@@ -284,9 +571,13 @@ export default function ExecutiveVisits() {
     setAvrData(defaultAVR());
   };
 
-  const saveDraft = (visitId: number) => {
-    const draft = { ...avrData, savedAt: new Date().toISOString() };
-    localStorage.setItem(getDraftKey(visitId), JSON.stringify(draft));
+  const persistDraftToStorage = (visitId: number, data: AVRData) => {
+    try {
+      const draft = { ...data, savedAt: new Date().toISOString() };
+      localStorage.setItem(getDraftKey(visitId), JSON.stringify(draft));
+    } catch {
+      /* quota exceeded or private mode */
+    }
   };
 
   const loadDraft = (visitId: number): boolean => {
@@ -294,8 +585,14 @@ export default function ExecutiveVisits() {
     if (!raw) return false;
     try {
       const draft = JSON.parse(raw);
-      const { savedAt: _, ...rest } = draft;
-      setAvrData({ ...defaultAVR(), ...rest });
+      const { savedAt: _, actionItems: rawItems, ...rest } = draft;
+      const merged = { ...defaultAVR(), ...rest } as AVRData;
+      if (rawItems && Array.isArray(rawItems)) {
+        merged.actionItems = rawItems.map((row: Partial<AvrActionItemRow> & { action?: string; deadline?: string }) =>
+          normalizeActionItem(row)
+        );
+      }
+      setAvrData(merged);
       return true;
     } catch {
       return false;
@@ -307,6 +604,36 @@ export default function ExecutiveVisits() {
   };
 
   const hasDraft = (visitId: number) => localStorage.getItem(getDraftKey(visitId)) !== null;
+
+  /** Keep localStorage aligned while typing so refresh / tab close does not lose the AVR */
+  useEffect(() => {
+    if (!showControlCard || controlCardVisitId == null) return;
+    const visitId = controlCardVisitId;
+    const t = window.setTimeout(() => {
+      persistDraftToStorage(visitId, avrDataRef.current);
+    }, 650);
+    return () => window.clearTimeout(t);
+  }, [avrData, showControlCard, controlCardVisitId]);
+
+  useEffect(() => {
+    if (!showControlCard || controlCardVisitId == null) return;
+    const visitId = controlCardVisitId;
+    const flush = () => persistDraftToStorage(visitId, avrDataRef.current);
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") flush();
+    };
+    window.addEventListener("pagehide", flush);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("pagehide", flush);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [showControlCard, controlCardVisitId]);
+
+  const closeControlCardModal = () => {
+    if (controlCardVisitId != null) persistDraftToStorage(controlCardVisitId, avrData);
+    setShowControlCard(false);
+  };
 
   const openControlCard = (visit: VisitRecord) => {
     setControlCardVisit(visit.accountName);
@@ -325,28 +652,45 @@ export default function ExecutiveVisits() {
     if (resumed) {
       toast.info("Draft restored", { description: "Your previously saved draft has been loaded." });
     }
-    // Fetch geolocation
+    // GPS from server if meeting was already started; otherwise capture once and PATCH /meeting-start
     setGeoLocation(null);
     setGeoAddress("");
     setGeoError("");
-    setGeoLoading(true);
-    if (navigator.geolocation) {
-      navigator.geolocation.getCurrentPosition(
-        (position) => {
-          const { latitude, longitude } = position.coords;
-          setGeoLocation({ lat: latitude, lng: longitude });
-          setGeoAddress(`${latitude.toFixed(6)}, ${longitude.toFixed(6)}`);
-          setGeoLoading(false);
-        },
-        (err) => {
-          setGeoError(err.code === 1 ? "Location permission denied" : "Unable to retrieve location");
-          setGeoLoading(false);
-        },
-        { enableHighAccuracy: true, timeout: 10000 }
-      );
-    } else {
-      setGeoError("Geolocation not supported by this browser");
+    const lat0 = visit.startGeoLatitude != null ? Number(visit.startGeoLatitude) : NaN;
+    const lng0 = visit.startGeoLongitude != null ? Number(visit.startGeoLongitude) : NaN;
+    if (Number.isFinite(lat0) && Number.isFinite(lng0)) {
+      setGeoFromPersistedMeetingStart(true);
+      setGeoLocation({ lat: lat0, lng: lng0 });
+      setGeoAddress(`${lat0.toFixed(6)}, ${lng0.toFixed(6)}`);
       setGeoLoading(false);
+      setGeoError("");
+    } else {
+      setGeoFromPersistedMeetingStart(false);
+      setGeoLoading(true);
+      if (navigator.geolocation) {
+        navigator.geolocation.getCurrentPosition(
+          async (position) => {
+            const { latitude, longitude } = position.coords;
+            setGeoLocation({ lat: latitude, lng: longitude });
+            setGeoAddress(`${latitude.toFixed(6)}, ${longitude.toFixed(6)}`);
+            setGeoLoading(false);
+            try {
+              await recordVisitMeetingStart(visit.visitId, { latitude, longitude });
+              await refreshVisits();
+            } catch {
+              /* Keep working on the AVR if the save fails */
+            }
+          },
+          (err) => {
+            setGeoError(err.code === 1 ? "Location permission denied" : "Unable to retrieve location");
+            setGeoLoading(false);
+          },
+          { enableHighAccuracy: true, timeout: 10000 },
+        );
+      } else {
+        setGeoError("Geolocation not supported by this browser");
+        setGeoLoading(false);
+      }
     }
   };
 
@@ -367,7 +711,7 @@ export default function ExecutiveVisits() {
         endTime: formEndTime,
         location: formMeetingType === "in_person" ? formLocation || undefined : undefined,
         onlineLink: formMeetingType === "online" ? formOnlineLink || undefined : undefined,
-        attendees: formAttendees ? formAttendees.split(",").map(a => a.trim()) : [],
+        attendees: formAttendees,
       };
       await createVisit(payload);
       toast.success("Visit scheduled", { description: "The customer will be notified and can approve or reschedule." });
@@ -463,13 +807,21 @@ export default function ExecutiveVisits() {
         geoLatitude: geoLocation?.lat ?? null,
         geoLongitude: geoLocation?.lng ?? null,
       };
-      await submitControlCard(controlCardVisitId, payload as unknown as Record<string, unknown>);
+      const result = await submitControlCard(controlCardVisitId, payload as unknown as Record<string, unknown>);
       clearDraft(controlCardVisitId);
       setShowControlCard(false);
+      const n = result.ticketsCreated ?? 0;
+      const nums = result.ticketNumbers?.filter(Boolean) ?? [];
+      const ticketLine =
+        n > 0 && nums.length > 0
+          ? `${n} ticket${n === 1 ? "" : "s"}: ${nums.join(", ")}. `
+          : n > 0
+            ? `${n} ticket${n === 1 ? "" : "s"} created from action items. `
+            : "";
       toast.success("Control Card submitted", {
-        description: "The customer will be notified and can now rate the visit.",
+        description: `${ticketLine}The customer can rate this visit. Finish sections 6 & 7 under Visit reports to fully close it on your side.`,
       });
-      await fetchData();
+      await Promise.all([refreshVisits(), refreshAccounts(), refreshTickets()]);
     } catch (err: unknown) {
       toast.error("Failed to submit", { description: err instanceof Error ? err.message : "Unknown error" });
     } finally {
@@ -489,9 +841,10 @@ export default function ExecutiveVisits() {
       const payload: { customerFeedback?: string; accountHealth?: "green" | "amber" | "red" } = {};
       if (feedback) payload.customerFeedback = feedback;
       if (health) payload.accountHealth = health;
-      const updated = await updateControlCard(visitId, payload);
+      const { controlCard: updated, visit: updatedVisit } = await updateControlCard(visitId, payload);
       setControlCards(prev => ({ ...prev, [visitId]: updated }));
-      toast.success("Control card updated", { description: "Post-completion fields saved successfully." });
+      if (updatedVisit) await refreshVisits();
+      toast.success("Control card updated", { description: updatedVisit?.status === "completed" ? "Visit is now fully closed on your side." : "Post-completion fields saved." });
     } catch (err: unknown) {
       toast.error("Failed to update", { description: err instanceof Error ? err.message : "Unknown error" });
     } finally {
@@ -506,6 +859,7 @@ export default function ExecutiveVisits() {
       case "confirmed": return "success" as const;
       case "declined": return "danger" as const;
       case "rescheduled": return "neutral" as const;
+      case "follow_up_pending": return "warning" as const;
       case "completed": return "neutral" as const;
       case "cancelled": return "neutral" as const;
       default: return "default" as const;
@@ -534,14 +888,74 @@ export default function ExecutiveVisits() {
           </CardHeader>
           <CardContent>
             <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-              <div className="space-y-2">
+              <div className="space-y-2 lg:col-span-1">
                 <Label>Corporate Customer <span className="text-red-500">*</span></Label>
-                <Select value={formCorporateId} onChange={(e) => setFormCorporateId(e.target.value)}>
-                  <option value="">Select Corporate...</option>
-                  {corporateOptions.map((corp) => (
-                    <option key={corp.corporateId} value={corp.corporateId}>{corp.corporateName}</option>
-                  ))}
-                </Select>
+                <div ref={corporatePickerRef} className="relative">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCorporatePickerOpen((o) => {
+                        const next = !o;
+                        if (next) setCorporateSearch("");
+                        return next;
+                      });
+                    }}
+                    className="flex h-10 w-full items-center justify-between gap-2 rounded-md border border-slate-300 bg-white px-3 py-2 text-left text-sm text-slate-900 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-mtc-blue"
+                  >
+                    <span className={`flex min-w-0 flex-1 items-center gap-2 truncate ${selectedCorporateName ? "text-slate-900" : "text-slate-500"}`}>
+                      <Building2 className="h-4 w-4 shrink-0 text-slate-400" />
+                      {selectedCorporateName || "Select corporate customer…"}
+                    </span>
+                    <ChevronDown className={`h-4 w-4 shrink-0 text-slate-400 transition-transform ${corporatePickerOpen ? "rotate-180" : ""}`} />
+                  </button>
+                  {corporatePickerOpen && (
+                    <div className="absolute z-30 mt-1 w-full rounded-md border border-slate-200 bg-white shadow-lg">
+                      <div className="flex items-center gap-2 border-b border-slate-100 px-2 py-1.5">
+                        <Search className="h-4 w-4 shrink-0 text-slate-400" aria-hidden />
+                        <Input
+                          ref={corporateSearchInputRef}
+                          type="text"
+                          value={corporateSearch}
+                          onChange={(e) => setCorporateSearch(e.target.value)}
+                          placeholder="Type to search…"
+                          className="h-9 border-0 bg-transparent px-0 py-0 shadow-none ring-0 focus-visible:ring-0"
+                          autoComplete="off"
+                          aria-label="Search corporate customers"
+                        />
+                      </div>
+                      <div className="max-h-56 overflow-y-auto py-1">
+                        {corporateOptions.length === 0 ? (
+                          <p className="px-3 py-2 text-sm text-slate-500">No assigned corporates found.</p>
+                        ) : filteredCorporateOptions.length === 0 ? (
+                          <p className="px-3 py-2 text-sm text-slate-500">No matches for &quot;{corporateSearch.trim()}&quot;</p>
+                        ) : (
+                          filteredCorporateOptions.map((corp) => {
+                            const isSelected = formCorporateId === String(corp.corporateId);
+                            return (
+                              <button
+                                key={corp.corporateId}
+                                type="button"
+                                onClick={() => {
+                                  setFormCorporateId(String(corp.corporateId));
+                                  setCorporatePickerOpen(false);
+                                  setCorporateSearch("");
+                                }}
+                                className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm hover:bg-mtc-blue-50 ${
+                                  isSelected ? "bg-mtc-blue-50 font-medium text-mtc-blue" : "text-slate-800"
+                                }`}
+                              >
+                                <span className="flex h-5 w-5 shrink-0 items-center justify-center" aria-hidden>
+                                  {isSelected ? <Check className="h-4 w-4 text-mtc-blue" /> : null}
+                                </span>
+                                <span className="truncate">{corp.corporateName}</span>
+                              </button>
+                            );
+                          })
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
               <div className="space-y-2">
                 <Label>Meeting Type <span className="text-red-500">*</span></Label>
@@ -598,9 +1012,87 @@ export default function ExecutiveVisits() {
                   <Input placeholder="e.g. https://teams.microsoft.com/..." value={formOnlineLink} onChange={(e) => setFormOnlineLink(e.target.value)} />
                 </div>
               )}
-              <div className="space-y-2">
-                <Label>Attendees</Label>
-                <Input placeholder="Comma-separated, e.g. John Smith, Jane Doe" value={formAttendees} onChange={(e) => setFormAttendees(e.target.value)} />
+              <div className="space-y-2" ref={attendeesRef}>
+                <Label>
+                  Attendees
+                  {departmentName && (
+                    <span className="ml-2 text-xs font-normal text-slate-500">— {departmentName}</span>
+                  )}
+                </Label>
+                <div className="relative">
+                  <button
+                    type="button"
+                    onClick={() => setAttendeesOpen((o) => !o)}
+                    disabled={departmentTeamLoading}
+                    className="flex h-9 w-full items-center justify-between rounded-md border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700 hover:bg-slate-50 focus:outline-none focus:ring-2 focus:ring-mtc-blue disabled:cursor-not-allowed disabled:opacity-60"
+                  >
+                    <span className="truncate text-left">
+                      {departmentTeamLoading
+                        ? "Loading team..."
+                        : formAttendees.length === 0
+                          ? "Select attendees..."
+                          : `${formAttendees.length} selected`}
+                    </span>
+                    <ChevronDown className={`h-4 w-4 text-slate-400 transition-transform ${attendeesOpen ? "rotate-180" : ""}`} />
+                  </button>
+                  {attendeesOpen && (
+                    <div className="absolute z-20 mt-1 max-h-60 w-full overflow-y-auto rounded-md border border-slate-200 bg-white shadow-lg">
+                      {departmentTeam.length === 0 ? (
+                        <div className="px-3 py-2 text-sm text-slate-500">
+                          {departmentTeamLoading ? "Loading..." : "No teammates found in your department."}
+                        </div>
+                      ) : (
+                        departmentTeam.map((m) => {
+                          const checked = formAttendees.includes(m.fullName);
+                          const roleLabel = m.role === "manager"
+                            ? "Manager"
+                            : m.role === "supervisor"
+                              ? "Supervisor"
+                              : "Executive";
+                          return (
+                            <button
+                              type="button"
+                              key={m.id}
+                              onClick={() => toggleAttendee(m.fullName)}
+                              className={`flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-sm hover:bg-slate-50 ${checked ? "bg-mtc-blue-50/40" : ""}`}
+                            >
+                              <span className="flex items-center gap-2 min-w-0">
+                                <span className={`flex h-4 w-4 items-center justify-center rounded border ${checked ? "border-mtc-blue bg-mtc-blue text-white" : "border-slate-300 bg-white"}`}>
+                                  {checked && <Check className="h-3 w-3" />}
+                                </span>
+                                <span className="truncate">
+                                  <span className="font-medium text-slate-800">{m.fullName}</span>
+                                  <span className="ml-2 text-xs text-slate-500">{roleLabel}</span>
+                                </span>
+                              </span>
+                            </button>
+                          );
+                        })
+                      )}
+                    </div>
+                  )}
+                </div>
+                {formAttendees.length > 0 && (
+                  <div className="flex flex-wrap gap-1.5">
+                    {formAttendees.map((name) => (
+                      <Badge
+                        key={name}
+                        variant="default"
+                        className="flex items-center gap-1 pr-1.5"
+                      >
+                        <span>{name}</span>
+                        <button
+                          type="button"
+                          onClick={() => toggleAttendee(name)}
+                          className="ml-0.5 rounded-full p-0.5 hover:bg-white/20"
+                          aria-label={`Remove ${name}`}
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </Badge>
+                    ))}
+                  </div>
+                )}
               </div>
               <div className="space-y-2 lg:col-span-1">
                 <Label>Agenda</Label>
@@ -820,6 +1312,38 @@ export default function ExecutiveVisits() {
                   </div>
                 </div>
               </div>
+              {(() => {
+                const sl = selectedVisit.startGeoLatitude != null ? Number(selectedVisit.startGeoLatitude) : NaN;
+                const sg = selectedVisit.startGeoLongitude != null ? Number(selectedVisit.startGeoLongitude) : NaN;
+                if (!Number.isFinite(sl) || !Number.isFinite(sg)) return null;
+                return (
+                  <div className="rounded-lg border border-mtc-blue-100 bg-mtc-blue-50/50 p-3">
+                    <p className="text-sm font-medium text-mtc-blue-dark mb-1 flex items-center gap-2">
+                      <Navigation className="h-4 w-4 shrink-0" aria-hidden />
+                      Meeting started (GPS)
+                    </p>
+                    {selectedVisit.meetingStartedAt && (
+                      <p className="text-xs text-slate-600 mb-2">
+                        {new Date(selectedVisit.meetingStartedAt).toLocaleString(undefined, {
+                          dateStyle: "medium",
+                          timeStyle: "short",
+                        })}
+                      </p>
+                    )}
+                    <p className="text-xs font-mono text-slate-700 mb-2">
+                      {sl.toFixed(6)}, {sg.toFixed(6)}
+                    </p>
+                    <a
+                      href={openStreetMapMeetingStartLink(sl, sg)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-xs font-medium text-mtc-blue hover:underline"
+                    >
+                      Open in map →
+                    </a>
+                  </div>
+                );
+              })()}
               {selectedVisit.agenda && (
                 <div className="rounded-lg bg-slate-50 p-3">
                   <p className="text-sm font-medium text-slate-700 mb-1">Agenda</p>
@@ -868,7 +1392,8 @@ export default function ExecutiveVisits() {
         <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-blue-500" /> Approved</span>
         <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-green-500" /> Confirmed</span>
         <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-purple-500" /> Rescheduled</span>
-        <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-gray-500" /> Completed</span>
+        <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-amber-500" /> Awaiting AVR closure</span>
+        <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-gray-500" /> Visit closed</span>
         <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-red-500" /> Declined</span>
       </div>
 
@@ -883,7 +1408,12 @@ export default function ExecutiveVisits() {
           onClick={() => setActiveTab("completed")}
           className={`py-3 px-6 text-sm font-medium border-b-2 transition-colors ${activeTab === "completed" ? "border-mtc-blue text-mtc-blue" : "border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300"}`}
         >
-          Completed Visits
+          Visit reports
+          {(followUpPendingCount > 0) && (
+            <span className="ml-1.5 rounded-full bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-900">
+              {followUpPendingCount} open
+            </span>
+          )}
         </button>
         <button
           onClick={() => setActiveTab("previous")}
@@ -1006,11 +1536,17 @@ export default function ExecutiveVisits() {
                     <TableHead>Time</TableHead>
                     <TableHead>Status</TableHead>
                     <TableHead>Meeting Type</TableHead>
+                    <TableHead className="whitespace-nowrap">Meeting start</TableHead>
+                    <TableHead className="whitespace-nowrap">Start GPS</TableHead>
                     <TableHead>Reminder</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {previousVisits.map((visit) => (
+                  {previousVisits.map((visit) => {
+                    const sl = visit.startGeoLatitude != null ? Number(visit.startGeoLatitude) : NaN;
+                    const sg = visit.startGeoLongitude != null ? Number(visit.startGeoLongitude) : NaN;
+                    const hasStartGps = Number.isFinite(sl) && Number.isFinite(sg);
+                    return (
                     <TableRow key={visit.visitId}>
                       <TableCell className="font-medium text-slate-900">{visit.accountName}</TableCell>
                       <TableCell>{visit.visitDate}</TableCell>
@@ -1025,13 +1561,36 @@ export default function ExecutiveVisits() {
                         )}
                       </TableCell>
                       <TableCell className="capitalize">{visit.meetingType.replace("_", " ")}</TableCell>
+                      <TableCell className="text-xs text-slate-600 whitespace-nowrap">
+                        {visit.meetingStartedAt
+                          ? new Date(visit.meetingStartedAt).toLocaleString(undefined, {
+                              dateStyle: "short",
+                              timeStyle: "short",
+                            })
+                          : "—"}
+                      </TableCell>
+                      <TableCell className="text-xs">
+                        {hasStartGps ? (
+                          <a
+                            href={openStreetMapMeetingStartLink(sl, sg)}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-mtc-blue font-medium hover:underline"
+                          >
+                            Map
+                          </a>
+                        ) : (
+                          "—"
+                        )}
+                      </TableCell>
                       <TableCell className="text-xs text-slate-500">
                         {isOverdueVisit(visit)
                           ? "Escalate / notify customer"
                           : "Completed or closed"}
                       </TableCell>
                     </TableRow>
-                  ))}
+                    );
+                  })}
                 </TableBody>
               </Table>
             </Card>
@@ -1042,15 +1601,50 @@ export default function ExecutiveVisits() {
       {/* ============ COMPLETED VISITS TAB ============ */}
       {activeTab === "completed" && (
         <div className="space-y-4">
-          <h3 className="text-lg font-medium">Completed Visits ({completedVisits.length})</h3>
-          {completedVisits.length === 0 ? (
-            <div className="py-12 text-center text-slate-500">No completed visits yet.</div>
+          <h3 className="text-lg font-medium">
+            Visit reports ({visitReportsSorted.length})
+            {followUpPendingCount > 0 && (
+              <span className="ml-2 text-sm font-normal text-amber-700">
+                · {followUpPendingCount} awaiting sections 6–7
+              </span>
+            )}
+          </h3>
+          {visitReportsSorted.length === 0 ? (
+            <div className="py-12 text-center text-slate-500">No submitted visit reports yet.</div>
           ) : (
             <div className="space-y-4">
-              {completedVisits.map((visit) => {
+              {visitReportsSorted.flatMap((visit, idx) => {
+                const prev = idx > 0 ? visitReportsSorted[idx - 1] : null;
+                const showAwaitingHeader =
+                  visit.status === "follow_up_pending" &&
+                  (!prev || prev.status !== "follow_up_pending");
+                const showClosedHeader =
+                  visit.status === "completed" && (!prev || prev.status !== "completed");
                 const card = controlCards[visit.visitId];
                 const isExpanded = expandedCard === visit.visitId;
-                return (
+                const awaitingClosure = visit.status === "follow_up_pending";
+
+                const out: JSX.Element[] = [];
+                if (showAwaitingHeader) {
+                  out.push(
+                    <div key={`hdr-awaiting-${visit.visitId}`} className="rounded-md border border-amber-200 bg-amber-50/80 px-3 py-2">
+                      <p className="text-sm font-semibold text-amber-900">Awaiting AVR closure</p>
+                      <p className="text-xs text-amber-900/80 mt-0.5">
+                        Report submitted — finish section 6 (customer feedback) and section 7 (account health). The customer can still rate this visit.
+                      </p>
+                    </div>,
+                  );
+                }
+                if (showClosedHeader) {
+                  out.push(
+                    <div key={`hdr-closed-${visit.visitId}`} className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 mt-4 first:mt-0">
+                      <p className="text-sm font-semibold text-slate-800">Closed visits</p>
+                      <p className="text-xs text-slate-500 mt-0.5">All sections of the AVR are complete.</p>
+                    </div>,
+                  );
+                }
+
+                out.push(
                   <Card key={visit.visitId} className="overflow-hidden">
                     {/* Summary row */}
                     <div
@@ -1058,12 +1652,20 @@ export default function ExecutiveVisits() {
                       onClick={() => setExpandedCard(isExpanded ? null : visit.visitId)}
                     >
                       <div className="flex items-center gap-4">
-                        <div className="flex items-center justify-center h-10 w-10 rounded-full bg-green-100">
-                          <CheckCircle className="h-5 w-5 text-green-600" />
+                        <div
+                          className={`flex items-center justify-center h-10 w-10 rounded-full shrink-0 ${
+                            awaitingClosure ? "bg-amber-100" : "bg-green-100"
+                          }`}
+                        >
+                          {awaitingClosure ? (
+                            <AlertTriangle className="h-5 w-5 text-amber-700" aria-hidden />
+                          ) : (
+                            <CheckCircle className="h-5 w-5 text-green-600" aria-hidden />
+                          )}
                         </div>
                         <div>
                           <p className="font-semibold text-slate-900">{visit.accountName}</p>
-                          <p className="text-sm text-slate-500 flex items-center gap-2">
+                          <p className="text-sm text-slate-500 flex items-center gap-2 flex-wrap">
                             <Calendar className="h-3 w-3" /> {visit.visitDate}
                             <span className="mx-1">·</span>
                             <Clock className="h-3 w-3" /> {visit.startTime} - {visit.endTime}
@@ -1072,6 +1674,25 @@ export default function ExecutiveVisits() {
                             ) : (
                               <><span className="mx-1">·</span><MapPin className="h-3 w-3" /> {visit.location || "In Person"}</>
                             )}
+                            {(() => {
+                              const sl = visit.startGeoLatitude != null ? Number(visit.startGeoLatitude) : NaN;
+                              const sg = visit.startGeoLongitude != null ? Number(visit.startGeoLongitude) : NaN;
+                              if (!Number.isFinite(sl) || !Number.isFinite(sg)) return null;
+                              return (
+                                <>
+                                  <span className="mx-1">·</span>
+                                  <a
+                                    href={openStreetMapMeetingStartLink(sl, sg)}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-mtc-blue text-xs font-medium hover:underline"
+                                    onClick={(e) => e.stopPropagation()}
+                                  >
+                                    Meeting start GPS
+                                  </a>
+                                </>
+                              );
+                            })()}
                           </p>
                         </div>
                       </div>
@@ -1087,7 +1708,9 @@ export default function ExecutiveVisits() {
                             {card.accountHealth.charAt(0).toUpperCase() + card.accountHealth.slice(1)}
                           </Badge>
                         )}
-                        <Badge variant="neutral">Completed</Badge>
+                        <Badge variant={awaitingClosure ? "warning" : "neutral"}>
+                          {awaitingClosure ? "Awaiting AVR closure" : "Visit closed"}
+                        </Badge>
                         <ChevronRight className={`h-4 w-4 text-slate-400 transition-transform ${isExpanded ? "rotate-90" : ""}`} />
                       </div>
                     </div>
@@ -1140,24 +1763,8 @@ export default function ExecutiveVisits() {
                           </div>
                         </AVRSection>
 
-                        {/* Section 3: Customer Feedback — EDITABLE */}
-                        <AVRSection number={3} title="Customer Feedback (Positives / Concerns)">
-                          {card.customerFeedback ? (
-                            <div className="bg-white rounded-md border border-slate-200 p-3">
-                              <p className="text-sm text-slate-700">{card.customerFeedback}</p>
-                            </div>
-                          ) : (
-                            <textarea
-                              className="flex min-h-[80px] w-full rounded-md border border-blue-300 bg-white px-3 py-2 text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-mtc-blue"
-                              placeholder="Summarize customer feedback — positives and concerns raised during the visit..."
-                              value={editFeedback[visit.visitId] || ""}
-                              onChange={(e) => setEditFeedback(prev => ({ ...prev, [visit.visitId]: e.target.value }))}
-                            />
-                          )}
-                        </AVRSection>
-
-                        {/* Section 4: Risks Identified */}
-                        <AVRSection number={4} title="Risks Identified">
+                        {/* Section 3: Risks Identified */}
+                        <AVRSection number={3} title="Risks Identified">
                           <div className="grid gap-3 md:grid-cols-3 text-sm">
                             <div className="bg-white rounded-md border border-slate-200 p-3">
                               <span className="text-slate-500 text-xs block mb-1">Operational</span>
@@ -1174,8 +1781,8 @@ export default function ExecutiveVisits() {
                           </div>
                         </AVRSection>
 
-                        {/* Section 5: Opportunities */}
-                        <AVRSection number={5} title="Opportunities">
+                        {/* Section 4: Opportunities */}
+                        <AVRSection number={4} title="Opportunities">
                           <div className="grid gap-3 md:grid-cols-2 text-sm">
                             <div className="bg-white rounded-md border border-slate-200 p-3">
                               <span className="text-slate-500 text-xs block mb-1">Upsell / Cross-sell</span>
@@ -1188,31 +1795,61 @@ export default function ExecutiveVisits() {
                           </div>
                         </AVRSection>
 
-                        {/* Section 6: Action Items */}
-                        <AVRSection number={6} title="Action Items">
+                        {/* Section 5: Action Items (tickets created on submit) */}
+                        <AVRSection number={5} title="Action Items">
                           {card.actionItems && card.actionItems.length > 0 ? (
-                            <div className="bg-white rounded-md border border-slate-200 overflow-hidden">
-                              <table className="w-full text-sm">
+                            <div className="bg-white rounded-md border border-slate-200 overflow-x-auto">
+                              <table className="w-full text-sm min-w-[720px]">
                                 <thead className="bg-slate-100">
                                   <tr>
-                                    <th className="text-left px-3 py-2 text-xs font-medium text-slate-500 uppercase">Action</th>
+                                    <th className="text-left px-3 py-2 text-xs font-medium text-slate-500 uppercase">Category</th>
+                                    <th className="text-left px-3 py-2 text-xs font-medium text-slate-500 uppercase">Type</th>
+                                    <th className="text-left px-3 py-2 text-xs font-medium text-slate-500 uppercase">Item</th>
+                                    <th className="text-left px-3 py-2 text-xs font-medium text-slate-500 uppercase">Qty</th>
+                                    <th className="text-left px-3 py-2 text-xs font-medium text-slate-500 uppercase">Due</th>
                                     <th className="text-left px-3 py-2 text-xs font-medium text-slate-500 uppercase">Owner</th>
-                                    <th className="text-left px-3 py-2 text-xs font-medium text-slate-500 uppercase">Deadline</th>
+                                    <th className="text-left px-3 py-2 text-xs font-medium text-slate-500 uppercase">Notes</th>
                                   </tr>
                                 </thead>
                                 <tbody>
-                                  {card.actionItems.map((item, idx) => (
-                                    <tr key={idx} className="border-t border-slate-100">
-                                      <td className="px-3 py-2">{item.action || "—"}</td>
-                                      <td className="px-3 py-2">{item.owner || "—"}</td>
-                                      <td className="px-3 py-2">{item.deadline || "—"}</td>
-                                    </tr>
-                                  ))}
+                                  {card.actionItems.map((raw, idx) => {
+                                    const row = raw as Record<string, string | undefined>;
+                                    const itemText = String(row.item ?? row.action ?? "—");
+                                    const due = String(row.dueDate ?? row.deadline ?? "—");
+                                    const cat = row.category === "complaint" ? "Complaint" : "Request";
+                                    return (
+                                      <tr key={idx} className="border-t border-slate-100">
+                                        <td className="px-3 py-2">{cat}</td>
+                                        <td className="px-3 py-2 font-mono text-xs">{row.requestType ? row.requestType.replace(/_/g, " ") : "—"}</td>
+                                        <td className="px-3 py-2 max-w-[220px]">{itemText}</td>
+                                        <td className="px-3 py-2">{row.quantity ?? "—"}</td>
+                                        <td className="px-3 py-2 whitespace-nowrap">{due}</td>
+                                        <td className="px-3 py-2">{row.owner ?? "—"}</td>
+                                        <td className="px-3 py-2 text-slate-600 max-w-[200px] truncate" title={row.notes}>{row.notes || "—"}</td>
+                                      </tr>
+                                    );
+                                  })}
                                 </tbody>
                               </table>
                             </div>
                           ) : (
                             <p className="text-sm text-slate-500 italic">No action items recorded.</p>
+                          )}
+                        </AVRSection>
+
+                        {/* Section 6: Customer Feedback — EDITABLE */}
+                        <AVRSection number={6} title="Customer Feedback (Positives / Concerns)">
+                          {card.customerFeedback ? (
+                            <div className="bg-white rounded-md border border-slate-200 p-3">
+                              <p className="text-sm text-slate-700">{card.customerFeedback}</p>
+                            </div>
+                          ) : (
+                            <textarea
+                              className="flex min-h-[80px] w-full rounded-md border border-blue-300 bg-white px-3 py-2 text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-mtc-blue"
+                              placeholder="Summarize customer feedback — positives and concerns raised during the visit..."
+                              value={editFeedback[visit.visitId] || ""}
+                              onChange={(e) => setEditFeedback(prev => ({ ...prev, [visit.visitId]: e.target.value }))}
+                            />
                           )}
                         </AVRSection>
 
@@ -1281,6 +1918,7 @@ export default function ExecutiveVisits() {
                     )}
                   </Card>
                 );
+                return out;
               })}
             </div>
           )}
@@ -1297,9 +1935,11 @@ export default function ExecutiveVisits() {
                   <FileText className="h-5 w-5 text-mtc-blue" />
                   Account Visit Report (AVR) — {controlCardVisit}
                 </CardTitle>
-                <p className="text-xs text-slate-500 mt-1">Complete the control card during or after the customer visit</p>
+                <p className="text-xs text-slate-500 mt-1">
+                  Complete the control card during or after the customer visit. Progress is saved automatically on this device.
+                </p>
               </div>
-              <Button variant="ghost" size="sm" onClick={() => setShowControlCard(false)}>Close</Button>
+              <Button variant="ghost" size="sm" onClick={closeControlCardModal}>Close</Button>
             </CardHeader>
             <CardContent className="space-y-6 pt-6">
               {/* GPS Verification Banner */}
@@ -1316,7 +1956,11 @@ export default function ExecutiveVisits() {
                      {geoLoading ? "Fetching Location..." : geoLocation ? "Presence Verified" : "Location Unavailable"}
                    </h4>
                    <p className={`text-sm ${geoLocation ? "text-mtc-blue" : geoError ? "text-red-600" : "text-slate-500"}`}>
-                     {geoLoading ? "Requesting GPS coordinates..." : geoLocation ? "GPS location confirmed at customer premises. Time tracking started." : geoError}
+                     {geoLoading ? "Requesting GPS coordinates..." : geoLocation
+                       ? geoFromPersistedMeetingStart
+                         ? "This position was saved when you started the meeting — it is visible to you and your manager."
+                         : "GPS saved as meeting start — visible to your manager and on Past visits."
+                       : geoError}
                    </p>
                    <div className="mt-2">
                      <Input
@@ -1363,90 +2007,236 @@ export default function ExecutiveVisits() {
 
               {/* Section 2: SLA & Service Performance */}
               <AVRSection number={2} title="SLA & Service Performance">
+                <p className="text-xs text-slate-500 -mt-1 mb-2">
+                  Use the arrow on each field to see suggestions, or type your own value.
+                </p>
                 <div className="grid gap-4 md:grid-cols-3">
                   <div className="space-y-1">
                     <Label className="text-xs">SLA Compliance %</Label>
-                    <Input placeholder="e.g. 95%" value={avrData.slaCompliance} onChange={(e) => updateAVR("slaCompliance", e.target.value)} />
+                    <AvrDatalistField
+                      id="avr-sla-compliance"
+                      value={avrData.slaCompliance}
+                      onChange={(v) => updateAVR("slaCompliance", v)}
+                      placeholder="e.g. 95% or pick a suggestion"
+                      suggestions={AVR_SLA_COMPLIANCE_SUGGESTIONS}
+                    />
                   </div>
                   <div className="space-y-1">
                     <Label className="text-xs">Open Tickets</Label>
-                    <Input placeholder="e.g. 3" value={avrData.openTickets} onChange={(e) => updateAVR("openTickets", e.target.value)} />
+                    <AvrDatalistField
+                      id="avr-open-tickets"
+                      value={avrData.openTickets}
+                      onChange={(v) => updateAVR("openTickets", v)}
+                      placeholder="Count or pick a suggestion"
+                      suggestions={AVR_OPEN_TICKETS_SUGGESTIONS}
+                    />
                   </div>
                   <div className="space-y-1">
                     <Label className="text-xs">Critical Incidents</Label>
-                    <Input placeholder="e.g. 0" value={avrData.criticalIncidents} onChange={(e) => updateAVR("criticalIncidents", e.target.value)} />
+                    <AvrDatalistField
+                      id="avr-critical-incidents"
+                      value={avrData.criticalIncidents}
+                      onChange={(v) => updateAVR("criticalIncidents", v)}
+                      placeholder="Count or pick a suggestion"
+                      suggestions={AVR_CRITICAL_INCIDENTS_SUGGESTIONS}
+                    />
                   </div>
                 </div>
               </AVRSection>
 
-              {/* Section 3: Customer Feedback — HIDDEN, shown only after completion */}
+              {/* Section 3: Risks Identified */}
+              <AVRSection number={3} title="Risks Identified">
+                <p className="text-xs text-slate-500 -mt-1 mb-2">
+                  Choose a quick option to fill the field, then edit or add detail below.
+                </p>
+                <div className="grid gap-4 md:grid-cols-3">
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">Operational</Label>
+                    <AvrPresetSelect
+                      ariaLabel="Operational risk quick options"
+                      options={AVR_RISK_OPERATIONAL_PRESETS}
+                      onSelect={(v) => updateAVR("risksOperational", v)}
+                    />
+                    <textarea
+                      className="flex min-h-[72px] w-full rounded-md border border-slate-300 bg-transparent px-3 py-2 text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-mtc-blue"
+                      placeholder="Equipment, network, SLA risks… or refine the quick option above"
+                      value={avrData.risksOperational}
+                      onChange={(e) => updateAVR("risksOperational", e.target.value)}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">Commercial</Label>
+                    <AvrPresetSelect
+                      ariaLabel="Commercial risk quick options"
+                      options={AVR_RISK_COMMERCIAL_PRESETS}
+                      onSelect={(v) => updateAVR("risksCommercial", v)}
+                    />
+                    <textarea
+                      className="flex min-h-[72px] w-full rounded-md border border-slate-300 bg-transparent px-3 py-2 text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-mtc-blue"
+                      placeholder="Contract, pricing, retention risks…"
+                      value={avrData.risksCommercial}
+                      onChange={(e) => updateAVR("risksCommercial", e.target.value)}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">Competitive</Label>
+                    <AvrPresetSelect
+                      ariaLabel="Competitive risk quick options"
+                      options={AVR_RISK_COMPETITIVE_PRESETS}
+                      onSelect={(v) => updateAVR("risksCompetitive", v)}
+                    />
+                    <textarea
+                      className="flex min-h-[72px] w-full rounded-md border border-slate-300 bg-transparent px-3 py-2 text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-mtc-blue"
+                      placeholder="Competitor activity, market threats…"
+                      value={avrData.risksCompetitive}
+                      onChange={(e) => updateAVR("risksCompetitive", e.target.value)}
+                    />
+                  </div>
+                </div>
+              </AVRSection>
+
+              {/* Section 4: Opportunities */}
+              <AVRSection number={4} title="Opportunities">
+                <p className="text-xs text-slate-500 -mt-1 mb-2">
+                  Choose a quick option to fill the field, then edit or add detail below.
+                </p>
+                <div className="grid gap-4 md:grid-cols-2">
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">Upsell / Cross-sell</Label>
+                    <AvrPresetSelect
+                      ariaLabel="Upsell quick options"
+                      options={AVR_OPPORTUNITY_UPSELL_PRESETS}
+                      onSelect={(v) => updateAVR("opportunitiesUpsell", v)}
+                    />
+                    <textarea
+                      className="flex min-h-[72px] w-full rounded-md border border-slate-300 bg-transparent px-3 py-2 text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-mtc-blue"
+                      placeholder="Product upgrade, additional services…"
+                      value={avrData.opportunitiesUpsell}
+                      onChange={(e) => updateAVR("opportunitiesUpsell", e.target.value)}
+                    />
+                  </div>
+                  <div className="space-y-1.5">
+                    <Label className="text-xs">Process Improvements</Label>
+                    <AvrPresetSelect
+                      ariaLabel="Process improvement quick options"
+                      options={AVR_OPPORTUNITY_PROCESS_PRESETS}
+                      onSelect={(v) => updateAVR("opportunitiesProcess", v)}
+                    />
+                    <textarea
+                      className="flex min-h-[72px] w-full rounded-md border border-slate-300 bg-transparent px-3 py-2 text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-mtc-blue"
+                      placeholder="SOP improvements, monitoring, communication…"
+                      value={avrData.opportunitiesProcess}
+                      onChange={(e) => updateAVR("opportunitiesProcess", e.target.value)}
+                    />
+                  </div>
+                </div>
+              </AVRSection>
+
+              {/* Section 5: Action Items — each filled row creates a ticket on submit */}
+              <AVRSection number={5} title="Action Items">
+                <p className="text-xs text-slate-500 -mt-1 mb-3">
+                  Rows with an <strong>item / request</strong> description create real tickets for this customer account (same lifecycle as Tickets). Empty rows are skipped.
+                </p>
+                <div className="space-y-4">
+                  {avrData.actionItems.map((item, idx) => (
+                    <div key={idx} className="rounded-lg border border-slate-200 bg-white p-4 space-y-3 shadow-sm">
+                      <div className="flex flex-wrap gap-3 items-end">
+                        <div className="space-y-1 min-w-[140px]">
+                          <Label className="text-xs">Ticket category</Label>
+                          <Select
+                            value={item.category}
+                            onChange={(e) => {
+                              const cat = e.target.value as "request" | "complaint";
+                              setAvrData((prev) => {
+                                const items = [...prev.actionItems];
+                                items[idx] = {
+                                  ...items[idx],
+                                  category: cat,
+                                  requestType: cat === "complaint" ? "other" : "new_product_request",
+                                };
+                                return { ...prev, actionItems: items };
+                              });
+                            }}
+                          >
+                            <option value="request">Service request</option>
+                            <option value="complaint">Complaint</option>
+                          </Select>
+                        </div>
+                        <div className="space-y-1 min-w-[200px] flex-1">
+                          <Label className="text-xs">Ticket type</Label>
+                          <Select
+                            value={item.requestType}
+                            onChange={(e) => updateActionItem(idx, "requestType", e.target.value)}
+                          >
+                            {(item.category === "complaint" ? AVR_TICKET_COMPLAINT_TYPE_OPTIONS : AVR_TICKET_REQUEST_TYPE_OPTIONS).map((o) => (
+                              <option key={o.value} value={o.value}>{o.label}</option>
+                            ))}
+                          </Select>
+                        </div>
+                      </div>
+                      <div className="space-y-1">
+                        <Label className="text-xs">Item / request <span className="text-red-500">*</span></Label>
+                        <Input
+                          placeholder="e.g. 10 × tablets for sales team"
+                          value={item.item}
+                          onChange={(e) => updateActionItem(idx, "item", e.target.value)}
+                        />
+                      </div>
+                      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                        <div className="space-y-1">
+                          <Label className="text-xs">Quantity</Label>
+                          <Input
+                            placeholder="10"
+                            inputMode="numeric"
+                            value={item.quantity}
+                            onChange={(e) => updateActionItem(idx, "quantity", e.target.value)}
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs">Target due date</Label>
+                          <Input type="date" value={item.dueDate} onChange={(e) => updateActionItem(idx, "dueDate", e.target.value)} />
+                        </div>
+                        <div className="space-y-1">
+                          <Label className="text-xs">Internal owner</Label>
+                          <Input
+                            placeholder="Who follows up internally"
+                            value={item.owner}
+                            onChange={(e) => updateActionItem(idx, "owner", e.target.value)}
+                          />
+                        </div>
+                        <div className="space-y-1 sm:col-span-2 lg:col-span-4">
+                          <Label className="text-xs">Notes (optional)</Label>
+                          <Input
+                            placeholder="Extra detail for the ticket"
+                            value={item.notes}
+                            onChange={(e) => updateActionItem(idx, "notes", e.target.value)}
+                          />
+                        </div>
+                      </div>
+                      <div className="flex justify-end pt-1">
+                        <Button type="button" variant="ghost" size="sm" onClick={() => removeActionItem(idx)} disabled={avrData.actionItems.length <= 1}>
+                          <Trash2 className="h-4 w-4 text-slate-400" /> Remove row
+                        </Button>
+                      </div>
+                    </div>
+                  ))}
+                  <Button type="button" variant="outline" size="sm" onClick={addActionItem} className="flex items-center gap-1">
+                    <Plus className="h-3 w-3" /> Add action item
+                  </Button>
+                </div>
+              </AVRSection>
+
+              {/* Section 6: Customer Feedback — visible after visit completion (post–control card & rating) */}
               <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50/50 p-4">
                 <div className="flex items-center gap-2 text-slate-400">
-                  <span className="flex items-center justify-center h-6 w-6 rounded-full bg-slate-200 text-xs font-bold text-slate-500">3</span>
+                  <span className="flex items-center justify-center h-6 w-6 rounded-full bg-slate-200 text-xs font-bold text-slate-500">6</span>
                   <span className="text-sm font-medium">Customer Feedback (Positives / Concerns)</span>
                   <Badge variant="neutral" className="ml-auto text-xs">Visible after completion</Badge>
                 </div>
                 <p className="text-xs text-slate-400 mt-2 ml-8">This section will be available for review and input after the control card is submitted and the customer rating is captured.</p>
               </div>
 
-              {/* Section 4: Risks Identified */}
-              <AVRSection number={4} title="Risks Identified">
-                <div className="grid gap-4 md:grid-cols-3">
-                  <div className="space-y-1">
-                    <Label className="text-xs">Operational</Label>
-                    <textarea className="flex min-h-[50px] w-full rounded-md border border-slate-300 bg-transparent px-3 py-2 text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-mtc-blue" placeholder="Equipment, network, SLA risks..." value={avrData.risksOperational} onChange={(e) => updateAVR("risksOperational", e.target.value)} />
-                  </div>
-                  <div className="space-y-1">
-                    <Label className="text-xs">Commercial</Label>
-                    <textarea className="flex min-h-[50px] w-full rounded-md border border-slate-300 bg-transparent px-3 py-2 text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-mtc-blue" placeholder="Contract, pricing, retention risks..." value={avrData.risksCommercial} onChange={(e) => updateAVR("risksCommercial", e.target.value)} />
-                  </div>
-                  <div className="space-y-1">
-                    <Label className="text-xs">Competitive</Label>
-                    <textarea className="flex min-h-[50px] w-full rounded-md border border-slate-300 bg-transparent px-3 py-2 text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-mtc-blue" placeholder="Competitor activity, market threats..." value={avrData.risksCompetitive} onChange={(e) => updateAVR("risksCompetitive", e.target.value)} />
-                  </div>
-                </div>
-              </AVRSection>
-
-              {/* Section 5: Opportunities */}
-              <AVRSection number={5} title="Opportunities">
-                <div className="grid gap-4 md:grid-cols-2">
-                  <div className="space-y-1">
-                    <Label className="text-xs">Upsell / Cross-sell</Label>
-                    <textarea className="flex min-h-[50px] w-full rounded-md border border-slate-300 bg-transparent px-3 py-2 text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-mtc-blue" placeholder="Product upgrade, additional services..." value={avrData.opportunitiesUpsell} onChange={(e) => updateAVR("opportunitiesUpsell", e.target.value)} />
-                  </div>
-                  <div className="space-y-1">
-                    <Label className="text-xs">Process Improvements</Label>
-                    <textarea className="flex min-h-[50px] w-full rounded-md border border-slate-300 bg-transparent px-3 py-2 text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-mtc-blue" placeholder="SOP improvements, monitoring, communication..." value={avrData.opportunitiesProcess} onChange={(e) => updateAVR("opportunitiesProcess", e.target.value)} />
-                  </div>
-                </div>
-              </AVRSection>
-
-              {/* Section 6: Action Items */}
-              <AVRSection number={6} title="Action Items">
-                <div className="space-y-3">
-                  <div className="grid grid-cols-[1fr_1fr_auto_auto] gap-2 text-xs font-medium text-slate-500 uppercase tracking-wide px-1">
-                    <span>Action</span>
-                    <span>Owner</span>
-                    <span>Due Date</span>
-                    <span></span>
-                  </div>
-                  {avrData.actionItems.map((item, idx) => (
-                    <div key={idx} className="grid grid-cols-[1fr_1fr_auto_auto] gap-2 items-center">
-                      <Input placeholder="Action description..." value={item.action} onChange={(e) => updateActionItem(idx, "action", e.target.value)} />
-                      <Input placeholder="Owner name..." value={item.owner} onChange={(e) => updateActionItem(idx, "owner", e.target.value)} />
-                      <Input type="date" className="w-36" value={item.dueDate} onChange={(e) => updateActionItem(idx, "dueDate", e.target.value)} />
-                      <Button variant="ghost" size="sm" onClick={() => removeActionItem(idx)} disabled={avrData.actionItems.length <= 1}>
-                        <Trash2 className="h-4 w-4 text-slate-400" />
-                      </Button>
-                    </div>
-                  ))}
-                  <Button variant="outline" size="sm" onClick={addActionItem} className="flex items-center gap-1">
-                    <Plus className="h-3 w-3" /> Add Action Item
-                  </Button>
-                </div>
-              </AVRSection>
-
-              {/* Section 7: Overall Account Health — HIDDEN, shown only after completion */}
+              {/* Section 7: Overall Account Health — visible after visit completion */}
               <div className="rounded-lg border border-dashed border-slate-300 bg-slate-50/50 p-4">
                 <div className="flex items-center gap-2 text-slate-400">
                   <span className="flex items-center justify-center h-6 w-6 rounded-full bg-slate-200 text-xs font-bold text-slate-500">7</span>
@@ -1458,12 +2248,14 @@ export default function ExecutiveVisits() {
 
               {/* Submit */}
               <div className="flex justify-end gap-2 pt-4 border-t border-slate-200">
-                <Button variant="outline" onClick={() => {
-                  if (controlCardVisitId) saveDraft(controlCardVisitId);
-                  setShowControlCard(false);
-                  toast.info("Draft saved", { description: "You can resume this control card later." });
-                }}>
-                  Save Draft
+                <Button
+                  variant="outline"
+                  onClick={() => {
+                    closeControlCardModal();
+                    toast.info("Draft saved", { description: "You can resume when you reopen this visit’s control card." });
+                  }}
+                >
+                  Save draft & close
                 </Button>
                 <Button onClick={handleSubmitControlCard} disabled={submittingControlCard}>
                   {submittingControlCard ? "Submitting..." : "Submit & Request Rating"}

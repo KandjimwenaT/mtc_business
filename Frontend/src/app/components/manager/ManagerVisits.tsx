@@ -32,12 +32,18 @@ import {
   Users,
   Eye,
   AlertTriangle,
+  Download,
+  Navigation,
+  ClipboardList,
+  Video,
+  Lock,
 } from "lucide-react";
 import {
   getManagerVisits,
   getManagerControlCards,
   getPendingReschedules,
   approveReschedule,
+  openStreetMapMeetingStartLink,
   type VisitRecord,
   type ControlCardRecord,
 } from "../../api/visitApi";
@@ -56,6 +62,7 @@ const statusConfig: Record<string, { label: string; variant: "default" | "succes
   declined: { label: "Declined", variant: "danger" },
   confirmed: { label: "Confirmed", variant: "success" },
   in_progress: { label: "In Progress", variant: "default" },
+  follow_up_pending: { label: "AVR follow-up", variant: "warning" },
   completed: { label: "Completed", variant: "success" },
   cancelled: { label: "Cancelled", variant: "danger" },
   rescheduled: { label: "Rescheduled", variant: "warning" },
@@ -66,6 +73,13 @@ const healthColor: Record<string, string> = {
   amber: "bg-amber-500",
   red: "bg-red-500",
 };
+
+/** Sequelize DECIMAL / JSON numbers often arrive as strings; normalize for maps & comparisons. */
+function parseNumericCoord(value: number | string | null | undefined): number | null {
+  if (value === null || value === undefined || value === "") return null;
+  const n = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(n) ? n : null;
+}
 
 // Calendar helpers
 function getWeekDays(date: Date): Date[] {
@@ -120,6 +134,8 @@ function execColor(name: string, names: string[]): string {
   return EXEC_COLORS[idx % EXEC_COLORS.length];
 }
 
+const PAGE_SIZE = 10;
+
 export default function ManagerVisits() {
   const outletCtx = useOutletContext<StaffLayoutOutletContext | undefined>();
   const supervisorBadges = outletCtx?.supervisorBadges ?? defaultSupervisorBadges();
@@ -139,6 +155,9 @@ export default function ManagerVisits() {
   const [statusFilter, setStatusFilter] = useState("");
   const [healthFilter, setHealthFilter] = useState("");
   const [ratingFilter, setRatingFilter] = useState("");
+  const [previousExecFilter, setPreviousExecFilter] = useState("");
+  const [previousDateFrom, setPreviousDateFrom] = useState("");
+  const [previousDateTo, setPreviousDateTo] = useState("");
 
   // Calendar
   const [calendarDate, setCalendarDate] = useState(new Date());
@@ -147,6 +166,11 @@ export default function ManagerVisits() {
   // Modals
   const [selectedVisit, setSelectedVisit] = useState<VisitRecord | null>(null);
   const [selectedCard, setSelectedCard] = useState<ControlCardRecord | null>(null);
+  const [focusedFeedbackVisitId, setFocusedFeedbackVisitId] = useState<number | null>(null);
+  const [focusedControlCardVisitId, setFocusedControlCardVisitId] = useState<number | null>(null);
+  const [previousPage, setPreviousPage] = useState(1);
+  const [feedbackPage, setFeedbackPage] = useState(1);
+  const [controlCardsPage, setControlCardsPage] = useState(1);
 
   // Load manager-scoped data when needed (supervisor skips until "Manager Oversight")
   useEffect(() => {
@@ -195,7 +219,26 @@ export default function ManagerVisits() {
         .sort((a, b) => new Date(`${b.visitDate}T${b.startTime}`).getTime() - new Date(`${a.visitDate}T${a.startTime}`).getTime()),
     [visits]
   );
+  const filteredPreviousVisits = useMemo(() => {
+    return previousVisits.filter((v) => {
+      if (previousExecFilter && v.executiveName !== previousExecFilter) return false;
+      if (previousDateFrom) {
+        const from = new Date(`${previousDateFrom}T00:00:00`);
+        if (new Date(`${v.visitDate}T${v.startTime}`) < from) return false;
+      }
+      if (previousDateTo) {
+        const to = new Date(`${previousDateTo}T23:59:59`);
+        if (new Date(`${v.visitDate}T${v.startTime}`) > to) return false;
+      }
+      return true;
+    });
+  }, [previousVisits, previousExecFilter, previousDateFrom, previousDateTo]);
   const overdueCount = previousVisits.filter(isOverdueVisit).length;
+  const previousTotalPages = Math.max(1, Math.ceil(filteredPreviousVisits.length / PAGE_SIZE));
+  const paginatedPreviousVisits = useMemo(() => {
+    const start = (previousPage - 1) * PAGE_SIZE;
+    return filteredPreviousVisits.slice(start, start + PAGE_SIZE);
+  }, [filteredPreviousVisits, previousPage]);
 
   // Calendar days
   const calendarDays = calendarView === "week" ? getWeekDays(calendarDate) : getMonthDays(calendarDate);
@@ -223,7 +266,9 @@ export default function ManagerVisits() {
 
   // Completed visits with ratings for feedback tab
   const feedbackVisits = useMemo(() => {
-    let filtered = visits.filter((v) => v.status === "completed" && v.customerRating !== null);
+    let filtered = visits.filter(
+      (v) => (v.status === "completed" || v.status === "follow_up_pending") && v.customerRating !== null,
+    );
     if (execFilter) filtered = filtered.filter((v) => v.executiveName === execFilter);
     if (ratingFilter === "low") filtered = filtered.filter((v) => (v.customerRating ?? 0) <= 2);
     else if (ratingFilter === "high") filtered = filtered.filter((v) => (v.customerRating ?? 0) >= 4);
@@ -247,6 +292,11 @@ export default function ManagerVisits() {
     });
     return { total, avg, low, byExec };
   }, [visits]);
+  const feedbackTotalPages = Math.max(1, Math.ceil(feedbackVisits.length / PAGE_SIZE));
+  const paginatedFeedbackVisits = useMemo(() => {
+    const start = (feedbackPage - 1) * PAGE_SIZE;
+    return feedbackVisits.slice(start, start + PAGE_SIZE);
+  }, [feedbackVisits, feedbackPage]);
 
   // Filtered control cards
   const filteredCards = useMemo(() => {
@@ -259,6 +309,16 @@ export default function ManagerVisits() {
     if (searchQuery) filtered = filtered.filter((cc) => cc.accountName.toLowerCase().includes(searchQuery.toLowerCase()));
     return filtered;
   }, [controlCards, execFilter, healthFilter, searchQuery, visits]);
+  const controlCardsTotalPages = Math.max(1, Math.ceil(filteredCards.length / PAGE_SIZE));
+  const paginatedControlCards = useMemo(() => {
+    const start = (controlCardsPage - 1) * PAGE_SIZE;
+    return filteredCards.slice(start, start + PAGE_SIZE);
+  }, [filteredCards, controlCardsPage]);
+
+  const controlCardLinkedVisit = useMemo(() => {
+    if (!selectedCard) return null;
+    return visits.find((v) => v.visitId === selectedCard.visitId) ?? null;
+  }, [selectedCard, visits]);
 
   // Helper: find exec name for a control card
   const execNameForCard = (cc: ControlCardRecord): string => {
@@ -302,10 +362,92 @@ export default function ManagerVisits() {
     setCalendarDate(d);
   };
 
+  const exportPreviousVisits = () => {
+    if (filteredPreviousVisits.length === 0) {
+      toast("No previous visits to export for selected filters.");
+      return;
+    }
+    const rows = [
+      ["Visit ID", "Visit Number", "Executive", "Corporate", "Visit Date", "Start Time", "End Time", "Status", "Meeting Type"],
+      ...filteredPreviousVisits.map((v) => [
+        String(v.visitId),
+        v.visitNumber ?? "",
+        v.executiveName,
+        v.accountName,
+        v.visitDate,
+        v.startTime,
+        v.endTime,
+        v.status,
+        v.meetingType,
+      ]),
+    ];
+    const csv = rows
+      .map((row) => row.map((cell) => `"${String(cell).replace(/"/g, "\"\"")}"`).join(","))
+      .join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    const execLabel = previousExecFilter ? previousExecFilter.replace(/\s+/g, "_") : "all_executives";
+    const fromLabel = previousDateFrom || "start";
+    const toLabel = previousDateTo || "today";
+    link.href = url;
+    link.setAttribute("download", `previous_visits_${execLabel}_${fromLabel}_to_${toLabel}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    toast.success("Previous visits exported successfully.");
+  };
+
+  useEffect(() => {
+    setPreviousPage(1);
+  }, [previousExecFilter, previousDateFrom, previousDateTo]);
+
+  useEffect(() => {
+    setFeedbackPage(1);
+  }, [searchQuery, execFilter, ratingFilter, activeTab]);
+
+  useEffect(() => {
+    setControlCardsPage(1);
+  }, [searchQuery, execFilter, healthFilter, activeTab]);
+
+  const handleViewFeedbackForVisit = (visit: VisitRecord) => {
+    setFocusedFeedbackVisitId(visit.visitId);
+    setFocusedControlCardVisitId(null);
+    setSelectedCard(null);
+    setActiveTab("feedback");
+    setSearchQuery(visit.accountName);
+    setExecFilter(visit.executiveName);
+    setStatusFilter("");
+    setHealthFilter("");
+    setRatingFilter("");
+    if (visit.customerRating === null) {
+      toast("No customer feedback submitted for this visit yet.");
+    }
+  };
+
+  const handleViewControlCardForVisit = (visit: VisitRecord) => {
+    const matchingCard = controlCards.find((card) => card.visitId === visit.visitId) ?? null;
+    setFocusedControlCardVisitId(visit.visitId);
+    setFocusedFeedbackVisitId(null);
+    setActiveTab("controlCards");
+    setSearchQuery(visit.accountName);
+    setExecFilter(visit.executiveName);
+    setStatusFilter("");
+    setHealthFilter("");
+    setRatingFilter("");
+    if (!matchingCard) {
+      setSelectedCard(null);
+      toast("No control card submitted for this visit yet.");
+      return;
+    }
+    setSelectedCard(matchingCard);
+  };
+
   const tabs: { key: Tab; label: string; badge?: number }[] = [
     { key: "schedule", label: "Executive Visit Schedule" },
-    { key: "previous", label: "Previous Visits", badge: overdueCount },
     { key: "reschedules", label: "Pending Reschedules", badge: pendingCount },
+    { key: "previous", label: "Previous Visits", badge: overdueCount },
     { key: "feedback", label: "Customer Feedback" },
     { key: "controlCards", label: "Control Cards" },
   ];
@@ -393,7 +535,16 @@ export default function ManagerVisits() {
         {tabs.map((tab) => (
           <button
             key={tab.key}
-            onClick={() => { setActiveTab(tab.key); setSearchQuery(""); setExecFilter(""); setStatusFilter(""); setHealthFilter(""); setRatingFilter(""); }}
+            onClick={() => {
+              setActiveTab(tab.key);
+              setSearchQuery("");
+              setExecFilter("");
+              setStatusFilter("");
+              setHealthFilter("");
+              setRatingFilter("");
+              setFocusedFeedbackVisitId(null);
+              setFocusedControlCardVisitId(null);
+            }}
             className={`py-3 px-5 text-sm font-medium border-b-2 transition-colors whitespace-nowrap flex items-center gap-2 ${
               activeTab === tab.key ? "border-mtc-blue text-mtc-blue" : "border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300"
             }`}
@@ -562,6 +713,33 @@ export default function ManagerVisits() {
             </Card>
           )}
           <Card>
+            <CardContent className="py-4">
+              <div className="flex flex-wrap items-end gap-3">
+                <div className="min-w-[220px]">
+                  <label className="text-xs text-slate-500 mb-1 block">Executive</label>
+                  <Select value={previousExecFilter} onChange={(e) => setPreviousExecFilter(e.target.value)}>
+                    <option value="">All Executives</option>
+                    {executiveNames.map((n) => <option key={n} value={n}>{n}</option>)}
+                  </Select>
+                </div>
+                <div>
+                  <label className="text-xs text-slate-500 mb-1 block">From</label>
+                  <Input type="date" value={previousDateFrom} onChange={(e) => setPreviousDateFrom(e.target.value)} />
+                </div>
+                <div>
+                  <label className="text-xs text-slate-500 mb-1 block">To</label>
+                  <Input type="date" value={previousDateTo} onChange={(e) => setPreviousDateTo(e.target.value)} />
+                </div>
+                <Button variant="outline" size="sm" onClick={() => { setPreviousExecFilter(""); setPreviousDateFrom(""); setPreviousDateTo(""); }}>
+                  Clear
+                </Button>
+                <Button size="sm" onClick={exportPreviousVisits}>
+                  <Download className="h-4 w-4 mr-1" /> Export
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+          <Card>
             <Table>
               <TableHeader>
                 <TableRow>
@@ -570,16 +748,16 @@ export default function ManagerVisits() {
                   <TableHead>Date</TableHead>
                   <TableHead>Time</TableHead>
                   <TableHead>Status</TableHead>
-                  <TableHead>Action</TableHead>
+                  <TableHead className="text-right">Action</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {previousVisits.length === 0 ? (
+                {paginatedPreviousVisits.length === 0 ? (
                   <TableRow>
                     <td colSpan={6} className="text-center py-8 text-slate-400 p-4">No previous visits found.</td>
                   </TableRow>
                 ) : (
-                  previousVisits.map((v) => {
+                  paginatedPreviousVisits.map((v) => {
                     const sc = statusConfig[v.status] || { label: v.status, variant: "default" as const };
                     return (
                       <TableRow key={v.visitId}>
@@ -590,8 +768,15 @@ export default function ManagerVisits() {
                         <TableCell>
                           {isOverdueVisit(v) ? <Badge variant="danger">Overdue</Badge> : <Badge variant={sc.variant}>{sc.label}</Badge>}
                         </TableCell>
-                        <TableCell className="text-xs text-slate-500">
-                          {isOverdueVisit(v) ? "Notify executive / customer" : "Closed"}
+                        <TableCell className="text-right">
+                          <div className="flex justify-end gap-2">
+                            <Button size="sm" variant="outline" onClick={() => handleViewFeedbackForVisit(v)}>
+                              <MessageSquare className="h-3.5 w-3.5 mr-1" /> View Customer Feedback
+                            </Button>
+                            <Button size="sm" variant="outline" onClick={() => handleViewControlCardForVisit(v)}>
+                              <FileText className="h-3.5 w-3.5 mr-1" /> View Control Card
+                            </Button>
+                          </div>
                         </TableCell>
                       </TableRow>
                     );
@@ -599,6 +784,21 @@ export default function ManagerVisits() {
                 )}
               </TableBody>
             </Table>
+            <div className="p-4 border-t border-slate-200 flex items-center justify-between">
+              <span className="text-xs text-slate-500">
+                Showing {(previousPage - 1) * PAGE_SIZE + (paginatedPreviousVisits.length > 0 ? 1 : 0)}-
+                {(previousPage - 1) * PAGE_SIZE + paginatedPreviousVisits.length} of {filteredPreviousVisits.length}
+              </span>
+              <div className="flex items-center gap-2">
+                <Button variant="outline" size="sm" onClick={() => setPreviousPage((p) => Math.max(1, p - 1))} disabled={previousPage === 1}>
+                  Previous
+                </Button>
+                <span className="text-xs text-slate-500">Page {previousPage} of {previousTotalPages}</span>
+                <Button variant="outline" size="sm" onClick={() => setPreviousPage((p) => Math.min(previousTotalPages, p + 1))} disabled={previousPage >= previousTotalPages}>
+                  Next
+                </Button>
+              </div>
+            </div>
           </Card>
         </div>
       )}
@@ -778,7 +978,7 @@ export default function ManagerVisits() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {feedbackVisits.length === 0 ? (
+                {paginatedFeedbackVisits.length === 0 ? (
                   <TableRow>
                     <td colSpan={6} className="text-center py-8 text-slate-400 p-4">
                       <MessageSquare className="h-8 w-8 mx-auto mb-2 text-slate-300" />
@@ -786,8 +986,17 @@ export default function ManagerVisits() {
                     </td>
                   </TableRow>
                 ) : (
-                  feedbackVisits.map((v) => (
-                    <TableRow key={v.visitId} className={v.customerRating !== null && v.customerRating <= 2 ? "bg-red-50/50" : ""}>
+                  paginatedFeedbackVisits.map((v) => (
+                    <TableRow
+                      key={v.visitId}
+                      className={
+                        focusedFeedbackVisitId === v.visitId
+                          ? "bg-blue-50/70"
+                          : v.customerRating !== null && v.customerRating <= 2
+                          ? "bg-red-50/50"
+                          : ""
+                      }
+                    >
                       <TableCell>
                         <div className="flex items-center gap-2">
                           <span className={`h-2 w-2 rounded-full ${execColor(v.executiveName, executiveNames)}`} />
@@ -818,6 +1027,21 @@ export default function ManagerVisits() {
                 )}
               </TableBody>
             </Table>
+            <div className="p-4 border-t border-slate-200 flex items-center justify-between">
+              <span className="text-xs text-slate-500">
+                Showing {(feedbackPage - 1) * PAGE_SIZE + (paginatedFeedbackVisits.length > 0 ? 1 : 0)}-
+                {(feedbackPage - 1) * PAGE_SIZE + paginatedFeedbackVisits.length} of {feedbackVisits.length}
+              </span>
+              <div className="flex items-center gap-2">
+                <Button variant="outline" size="sm" onClick={() => setFeedbackPage((p) => Math.max(1, p - 1))} disabled={feedbackPage === 1}>
+                  Previous
+                </Button>
+                <span className="text-xs text-slate-500">Page {feedbackPage} of {feedbackTotalPages}</span>
+                <Button variant="outline" size="sm" onClick={() => setFeedbackPage((p) => Math.min(feedbackTotalPages, p + 1))} disabled={feedbackPage >= feedbackTotalPages}>
+                  Next
+                </Button>
+              </div>
+            </div>
           </Card>
         </div>
       )}
@@ -856,7 +1080,7 @@ export default function ManagerVisits() {
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {filteredCards.length === 0 ? (
+                {paginatedControlCards.length === 0 ? (
                   <TableRow>
                     <td colSpan={6} className="text-center py-8 text-slate-400 p-4">
                       <FileText className="h-8 w-8 mx-auto mb-2 text-slate-300" />
@@ -864,8 +1088,8 @@ export default function ManagerVisits() {
                     </td>
                   </TableRow>
                 ) : (
-                  filteredCards.map((cc) => (
-                    <TableRow key={cc.controlCardId}>
+                  paginatedControlCards.map((cc) => (
+                    <TableRow key={cc.controlCardId} className={focusedControlCardVisitId === cc.visitId ? "bg-blue-50/70" : ""}>
                       <TableCell className="font-medium text-slate-900">{execNameForCard(cc)}</TableCell>
                       <TableCell>{cc.accountName}</TableCell>
                       <TableCell>{new Date(cc.visitDate).toLocaleDateString("en-ZA", { month: "short", day: "numeric", year: "numeric" })}</TableCell>
@@ -892,6 +1116,21 @@ export default function ManagerVisits() {
                 )}
               </TableBody>
             </Table>
+            <div className="p-4 border-t border-slate-200 flex items-center justify-between">
+              <span className="text-xs text-slate-500">
+                Showing {(controlCardsPage - 1) * PAGE_SIZE + (paginatedControlCards.length > 0 ? 1 : 0)}-
+                {(controlCardsPage - 1) * PAGE_SIZE + paginatedControlCards.length} of {filteredCards.length}
+              </span>
+              <div className="flex items-center gap-2">
+                <Button variant="outline" size="sm" onClick={() => setControlCardsPage((p) => Math.max(1, p - 1))} disabled={controlCardsPage === 1}>
+                  Previous
+                </Button>
+                <span className="text-xs text-slate-500">Page {controlCardsPage} of {controlCardsTotalPages}</span>
+                <Button variant="outline" size="sm" onClick={() => setControlCardsPage((p) => Math.min(controlCardsTotalPages, p + 1))} disabled={controlCardsPage >= controlCardsTotalPages}>
+                  Next
+                </Button>
+              </div>
+            </div>
           </Card>
         </div>
       )}
@@ -942,6 +1181,38 @@ export default function ManagerVisits() {
                     </span>
                   </div>
                 )}
+                {(() => {
+                  const sl = selectedVisit.startGeoLatitude != null ? Number(selectedVisit.startGeoLatitude) : NaN;
+                  const sg = selectedVisit.startGeoLongitude != null ? Number(selectedVisit.startGeoLongitude) : NaN;
+                  if (!Number.isFinite(sl) || !Number.isFinite(sg)) return null;
+                  return (
+                    <div className="col-span-2 rounded-md border border-sky-200 bg-sky-50/80 p-3">
+                      <span className="text-slate-500 block mb-1 flex items-center gap-1.5">
+                        <Navigation className="h-3.5 w-3.5 text-sky-600" aria-hidden />
+                        Meeting start (GPS)
+                      </span>
+                      {selectedVisit.meetingStartedAt && (
+                        <p className="text-xs text-slate-600 mb-1">
+                          {new Date(selectedVisit.meetingStartedAt).toLocaleString("en-ZA", {
+                            dateStyle: "medium",
+                            timeStyle: "short",
+                          })}
+                        </p>
+                      )}
+                      <p className="text-xs font-mono text-slate-800 mb-2">
+                        {sl.toFixed(6)}, {sg.toFixed(6)}
+                      </p>
+                      <a
+                        href={openStreetMapMeetingStartLink(sl, sg)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-xs font-medium text-sky-800 underline hover:text-sky-950"
+                      >
+                        Open in map
+                      </a>
+                    </div>
+                  );
+                })()}
                 <div className="col-span-2">
                   <span className="text-slate-500 block mb-1">Purpose</span>
                   <span className="font-medium text-slate-900">{selectedVisit.purpose}</span>
@@ -981,165 +1252,420 @@ export default function ManagerVisits() {
         </div>
       )}
 
-      {/* ============= CONTROL CARD DETAIL MODAL ============= */}
-      {selectedCard && (
-        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in" onClick={() => setSelectedCard(null)}>
-          <Card className="w-full max-w-3xl max-h-[90vh] overflow-y-auto" onClick={(e) => e.stopPropagation()}>
-            <CardHeader className="sticky top-0 bg-white border-b border-slate-200 z-10 flex flex-row items-center justify-between py-4">
-              <CardTitle className="text-base">Control Card — {selectedCard.accountName}</CardTitle>
-              <Button variant="ghost" size="sm" onClick={() => setSelectedCard(null)}><X className="h-4 w-4" /></Button>
-            </CardHeader>
-            <CardContent className="pt-6 space-y-6">
-              {/* Header info */}
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-                <div>
-                  <span className="text-slate-500 block mb-1">Executive</span>
-                  <span className="font-medium text-slate-900">{execNameForCard(selectedCard)}</span>
-                </div>
-                <div>
-                  <span className="text-slate-500 block mb-1">Visit Date</span>
-                  <span className="font-medium text-slate-900">{new Date(selectedCard.visitDate).toLocaleDateString("en-ZA", { month: "short", day: "numeric", year: "numeric" })}</span>
-                </div>
-                <div>
-                  <span className="text-slate-500 block mb-1">CSR Manager</span>
-                  <span className="font-medium text-slate-900">{selectedCard.csrManager || "—"}</span>
-                </div>
-                <div>
-                  <span className="text-slate-500 block mb-1">Account Health</span>
-                  {selectedCard.accountHealth ? (
-                    <span className="inline-flex items-center gap-1.5">
-                      <span className={`h-2.5 w-2.5 rounded-full ${healthColor[selectedCard.accountHealth]}`} />
-                      <span className="font-medium capitalize">{selectedCard.accountHealth}</span>
-                    </span>
-                  ) : <span className="text-slate-400">Not set</span>}
-                </div>
-              </div>
+      {/* ============= CONTROL CARD DETAIL MODAL (full manager brief) ============= */}
+      {selectedCard && (() => {
+        const v = controlCardLinkedVisit;
+        const avrLat = parseNumericCoord(selectedCard.geoLatitude);
+        const avrLng = parseNumericCoord(selectedCard.geoLongitude);
+        const startLat = v ? parseNumericCoord(v.startGeoLatitude) : null;
+        const startLng = v ? parseNumericCoord(v.startGeoLongitude) : null;
+        const hasStartGps = startLat !== null && startLng !== null;
+        const hasAvrGps = avrLat !== null && avrLng !== null;
+        const customerRated =
+          v && v.customerRating != null && Number(v.customerRating) > 0;
 
-              {/* Section 1: Visit Objective */}
-              <div className="space-y-1">
-                <h4 className="text-sm font-semibold text-slate-900 flex items-center gap-2">
-                  <span className="flex items-center justify-center h-5 w-5 rounded-full bg-mtc-blue text-white text-[10px] font-bold">1</span>
-                  Visit Objective
-                </h4>
-                <p className="text-sm text-slate-700 pl-7">{selectedCard.visitObjective || "—"}</p>
-              </div>
-
-              {/* Section 2: SLA & Service Performance */}
-              <div className="space-y-2">
-                <h4 className="text-sm font-semibold text-slate-900 flex items-center gap-2">
-                  <span className="flex items-center justify-center h-5 w-5 rounded-full bg-mtc-blue text-white text-[10px] font-bold">2</span>
-                  SLA & Service Performance
-                </h4>
-                <div className="grid grid-cols-3 gap-3 pl-7 text-sm">
-                  <div><span className="text-slate-500">SLA Compliance:</span> <span className="font-medium">{selectedCard.slaCompliance || "—"}</span></div>
-                  <div><span className="text-slate-500">Open Tickets:</span> <span className="font-medium">{selectedCard.openTickets || "—"}</span></div>
-                  <div><span className="text-slate-500">Critical Incidents:</span> <span className="font-medium">{selectedCard.criticalIncidents || "—"}</span></div>
-                </div>
-              </div>
-
-              {/* Section 3: Customer Feedback */}
-              <div className="space-y-1">
-                <h4 className="text-sm font-semibold text-slate-900 flex items-center gap-2">
-                  <span className="flex items-center justify-center h-5 w-5 rounded-full bg-mtc-blue text-white text-[10px] font-bold">3</span>
-                  Customer Feedback
-                </h4>
-                <p className="text-sm text-slate-700 pl-7">{selectedCard.customerFeedback || "—"}</p>
-              </div>
-
-              {/* Section 4: Risks */}
-              <div className="space-y-2">
-                <h4 className="text-sm font-semibold text-slate-900 flex items-center gap-2">
-                  <span className="flex items-center justify-center h-5 w-5 rounded-full bg-mtc-blue text-white text-[10px] font-bold">4</span>
-                  Risks Identified
-                </h4>
-                <div className="grid gap-3 pl-7 text-sm">
-                  <div><span className="text-slate-500">Operational:</span> <span className="ml-1">{selectedCard.risksOperational || "—"}</span></div>
-                  <div><span className="text-slate-500">Commercial:</span> <span className="ml-1">{selectedCard.risksCommercial || "—"}</span></div>
-                  <div><span className="text-slate-500">Competitive:</span> <span className="ml-1">{selectedCard.risksCompetitive || "—"}</span></div>
-                </div>
-              </div>
-
-              {/* Section 5: Opportunities */}
-              <div className="space-y-2">
-                <h4 className="text-sm font-semibold text-slate-900 flex items-center gap-2">
-                  <span className="flex items-center justify-center h-5 w-5 rounded-full bg-mtc-blue text-white text-[10px] font-bold">5</span>
-                  Opportunities
-                </h4>
-                <div className="grid gap-3 pl-7 text-sm">
-                  <div><span className="text-slate-500">Upsell:</span> <span className="ml-1">{selectedCard.opportunitiesUpsell || "—"}</span></div>
-                  <div><span className="text-slate-500">Process Improvement:</span> <span className="ml-1">{selectedCard.opportunitiesProcess || "—"}</span></div>
-                </div>
-              </div>
-
-              {/* Section 6: Action Items */}
-              <div className="space-y-2">
-                <h4 className="text-sm font-semibold text-slate-900 flex items-center gap-2">
-                  <span className="flex items-center justify-center h-5 w-5 rounded-full bg-mtc-blue text-white text-[10px] font-bold">6</span>
-                  Action Items
-                </h4>
-                {selectedCard.actionItems && selectedCard.actionItems.length > 0 ? (
-                  <div className="pl-7">
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead>Action</TableHead>
-                          <TableHead>Owner</TableHead>
-                          <TableHead>Deadline</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {selectedCard.actionItems.map((item, idx) => (
-                          <TableRow key={idx}>
-                            <TableCell>{item.action}</TableCell>
-                            <TableCell>{item.owner}</TableCell>
-                            <TableCell>{item.deadline}</TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                  </div>
-                ) : (
-                  <p className="text-sm text-slate-400 pl-7">No action items recorded.</p>
-                )}
-              </div>
-
-              {/* Section 7: Account Health */}
-              <div className="space-y-1">
-                <h4 className="text-sm font-semibold text-slate-900 flex items-center gap-2">
-                  <span className="flex items-center justify-center h-5 w-5 rounded-full bg-mtc-blue text-white text-[10px] font-bold">7</span>
-                  Overall Account Health
-                </h4>
-                <div className="pl-7">
-                  {selectedCard.accountHealth ? (
-                    <div className="flex items-center gap-3">
-                      {["green", "amber", "red"].map((h) => (
-                        <div key={h} className={`flex items-center gap-1.5 px-3 py-1.5 rounded-md border ${selectedCard.accountHealth === h ? "border-slate-400 bg-slate-50 font-medium" : "border-slate-100 text-slate-300"}`}>
-                          <span className={`h-3 w-3 rounded-full ${healthColor[h]}`} />
-                          <span className="text-sm capitalize">{h}</span>
-                        </div>
-                      ))}
+        return (
+          <div
+            className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in"
+            onClick={() => setSelectedCard(null)}
+          >
+            <Card
+              className="w-full max-w-4xl max-h-[92vh] flex flex-col overflow-hidden border-slate-200/90 shadow-2xl"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <CardHeader className="shrink-0 border-b border-mtc-blue-dark/25 bg-mtc-blue text-white py-5 px-6 shadow-sm">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="min-w-0">
+                    <p className="text-[11px] font-semibold uppercase tracking-wider text-white/75">Account visit report · Manager view</p>
+                    <CardTitle className="text-xl sm:text-2xl text-white mt-1 font-semibold tracking-tight truncate">
+                      {selectedCard.accountName}
+                    </CardTitle>
+                    <div className="flex flex-wrap gap-2 mt-3 text-xs">
+                      {v?.visitNumber && (
+                        <span className="rounded-full bg-white/20 px-2.5 py-1 font-medium text-white">{v.visitNumber}</span>
+                      )}
+                      <span className="rounded-full bg-white/15 px-2.5 py-1 text-white/95">
+                        AVR submitted{" "}
+                        {new Date(selectedCard.submittedAt).toLocaleString("en-ZA", {
+                          dateStyle: "medium",
+                          timeStyle: "short",
+                        })}
+                      </span>
+                      {selectedCard.updatedAt && selectedCard.createdAt !== selectedCard.updatedAt && (
+                        <span className="rounded-full bg-white/15 px-2.5 py-1 text-white/95">
+                          Last updated{" "}
+                          {new Date(selectedCard.updatedAt).toLocaleString("en-ZA", {
+                            dateStyle: "medium",
+                            timeStyle: "short",
+                          })}
+                        </span>
+                      )}
                     </div>
-                  ) : (
-                    <span className="text-sm text-slate-400">Not assessed</span>
+                  </div>
+                  <Button variant="ghost" size="sm" className="text-white hover:bg-white/20 shrink-0 h-9 w-9 p-0" onClick={() => setSelectedCard(null)}>
+                    <X className="h-5 w-5" />
+                  </Button>
+                </div>
+              </CardHeader>
+
+              <CardContent className="flex-1 min-h-0 overflow-y-auto p-0 bg-slate-50/40">
+                <div className="p-6 space-y-6">
+                  {/* Snapshot strip */}
+                  <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                    <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                      <span className="text-xs font-medium text-slate-500 uppercase tracking-wide">Executive</span>
+                      <p className="mt-1 font-semibold text-slate-900">{execNameForCard(selectedCard)}</p>
+                    </div>
+                    <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                      <span className="text-xs font-medium text-slate-500 uppercase tracking-wide">Visit date</span>
+                      <p className="mt-1 font-semibold text-slate-900">
+                        {new Date(selectedCard.visitDate).toLocaleDateString("en-ZA", {
+                          weekday: "short",
+                          month: "short",
+                          day: "numeric",
+                          year: "numeric",
+                        })}
+                      </p>
+                      {v && (
+                        <p className="text-xs text-slate-500 mt-1 flex items-center gap-1">
+                          <Clock className="h-3 w-3 shrink-0" aria-hidden />
+                          {v.startTime} – {v.endTime}
+                        </p>
+                      )}
+                    </div>
+                    <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                      <span className="text-xs font-medium text-slate-500 uppercase tracking-wide">CSR manager</span>
+                      <p className="mt-1 font-semibold text-slate-900">{selectedCard.csrManager || "—"}</p>
+                    </div>
+                    <div className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                      <span className="text-xs font-medium text-slate-500 uppercase tracking-wide">Account health</span>
+                      {selectedCard.accountHealth ? (
+                        <p className="mt-1 inline-flex items-center gap-2 font-semibold text-slate-900 capitalize">
+                          <span className={`h-2.5 w-2.5 rounded-full ${healthColor[selectedCard.accountHealth]}`} />
+                          {selectedCard.accountHealth}
+                        </p>
+                      ) : (
+                        <p className="mt-1 text-slate-400 text-sm">Not set</p>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Scheduled visit context */}
+                  {v && (
+                    <section className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+                      <div className="border-b border-slate-100 bg-slate-50/90 px-4 py-3 flex items-center gap-2">
+                        <Calendar className="h-4 w-4 text-slate-600" aria-hidden />
+                        <h3 className="text-sm font-semibold text-slate-900">Scheduled meeting</h3>
+                        <Badge variant={(statusConfig[v.status] || { variant: "default" as const }).variant} className="ml-auto text-[10px]">
+                          {(statusConfig[v.status] || { label: v.status }).label}
+                        </Badge>
+                      </div>
+                      <div className="p-4 grid gap-4 sm:grid-cols-2 text-sm">
+                        <div className="sm:col-span-2">
+                          <span className="text-slate-500 block text-xs font-medium uppercase tracking-wide mb-1">Purpose</span>
+                          <p className="font-medium text-slate-900">{v.purpose}</p>
+                        </div>
+                        {v.agenda && (
+                          <div className="sm:col-span-2">
+                            <span className="text-slate-500 block text-xs font-medium uppercase tracking-wide mb-1">Agenda</span>
+                            <p className="text-slate-700 whitespace-pre-wrap">{v.agenda}</p>
+                          </div>
+                        )}
+                        <div>
+                          <span className="text-slate-500 block text-xs font-medium uppercase tracking-wide mb-1">Format</span>
+                          <p className="font-medium text-slate-900 capitalize flex items-center gap-1.5">
+                            {v.meetingType === "online" ? <Video className="h-3.5 w-3.5 text-slate-400" /> : <MapPin className="h-3.5 w-3.5 text-slate-400" />}
+                            {v.meetingType.replace("_", " ")}
+                          </p>
+                        </div>
+                        <div>
+                          <span className="text-slate-500 block text-xs font-medium uppercase tracking-wide mb-1">Location / link</span>
+                          <p className="font-medium text-slate-900">
+                            {v.meetingType === "online" ? v.onlineLink || "—" : v.location || "—"}
+                          </p>
+                        </div>
+                        {v.attendees && v.attendees.length > 0 && (
+                          <div className="sm:col-span-2">
+                            <span className="text-slate-500 block text-xs font-medium uppercase tracking-wide mb-1 flex items-center gap-1">
+                              <Users className="h-3.5 w-3.5" /> Portal attendees
+                            </span>
+                            <p className="text-slate-700">{v.attendees.join(", ")}</p>
+                          </div>
+                        )}
+                      </div>
+                    </section>
                   )}
-                </div>
-              </div>
 
-              {/* Geolocation */}
-              {(selectedCard.geoLatitude || selectedCard.geoLongitude) && (
-                <div className="pl-7 text-xs text-slate-400 flex items-center gap-1">
-                  <MapPin className="h-3 w-3" />
-                  GPS: {selectedCard.geoLatitude}, {selectedCard.geoLongitude}
-                </div>
-              )}
+                  {/* Customer portal rating (post-visit) */}
+                  {v && (
+                    <section className="rounded-xl border border-violet-200 bg-violet-50/40 shadow-sm overflow-hidden">
+                      <div className="border-b border-violet-100 bg-violet-100/50 px-4 py-3 flex items-center gap-2">
+                        <Star className="h-4 w-4 text-violet-700 fill-violet-400/30" aria-hidden />
+                        <h3 className="text-sm font-semibold text-violet-950">Customer rating (portal)</h3>
+                      </div>
+                      <div className="p-4">
+                        {customerRated ? (
+                          <div className="space-y-2">
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="text-lg font-bold text-slate-900">{v.customerRating}/5</span>
+                              <div className="flex items-center gap-0.5">
+                                {[1, 2, 3, 4, 5].map((s) => (
+                                  <Star
+                                    key={s}
+                                    className={`h-5 w-5 ${s <= (v.customerRating ?? 0) ? "fill-amber-400 text-amber-400" : "text-slate-200"}`}
+                                  />
+                                ))}
+                              </div>
+                              {v.customerRatedAt && (
+                                <span className="text-xs text-slate-500">
+                                  {new Date(v.customerRatedAt).toLocaleString("en-ZA", { dateStyle: "medium", timeStyle: "short" })}
+                                </span>
+                              )}
+                            </div>
+                            {v.customerRatingComment ? (
+                              <p className="text-sm text-slate-700 rounded-lg bg-white/80 border border-violet-100 p-3">{v.customerRatingComment}</p>
+                            ) : (
+                              <p className="text-xs text-slate-500">No written comment.</p>
+                            )}
+                          </div>
+                        ) : (
+                          <p className="text-sm text-slate-600">No customer rating submitted yet for this visit.</p>
+                        )}
+                      </div>
+                    </section>
+                  )}
 
-              <div className="flex justify-end pt-4 border-t border-slate-200">
-                <Button variant="outline" onClick={() => setSelectedCard(null)}>Close</Button>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-      )}
+                  {/* GPS: meeting start vs AVR capture */}
+                  <section className="rounded-xl border border-sky-200 bg-white shadow-sm overflow-hidden">
+                    <div className="border-b border-sky-100 bg-sky-50/80 px-4 py-3 flex items-center gap-2">
+                      <Navigation className="h-4 w-4 text-sky-700" aria-hidden />
+                      <h3 className="text-sm font-semibold text-sky-950">GPS & location captures</h3>
+                    </div>
+                    <div className="p-4 grid gap-4 md:grid-cols-2">
+                      <div className={`rounded-lg border p-4 ${hasStartGps ? "border-sky-200 bg-sky-50/40" : "border-dashed border-slate-200 bg-slate-50/50"}`}>
+                        <p className="text-xs font-semibold uppercase tracking-wide text-sky-900 mb-2">Meeting start (executive)</p>
+                        {hasStartGps && startLat !== null && startLng !== null ? (
+                          <>
+                            {v?.meetingStartedAt && (
+                              <p className="text-xs text-slate-600 mb-2">
+                                {new Date(v.meetingStartedAt).toLocaleString("en-ZA", { dateStyle: "medium", timeStyle: "short" })}
+                              </p>
+                            )}
+                            <p className="text-xs font-mono text-slate-800 mb-3">
+                              {startLat.toFixed(6)}, {startLng.toFixed(6)}
+                            </p>
+                            <a
+                              href={openStreetMapMeetingStartLink(startLat, startLng)}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-xs font-semibold text-sky-800 underline hover:text-sky-950"
+                            >
+                              Open in OpenStreetMap
+                            </a>
+                          </>
+                        ) : (
+                          <p className="text-sm text-slate-500">No meeting-start GPS recorded.</p>
+                        )}
+                      </div>
+                      <div className={`rounded-lg border p-4 ${hasAvrGps ? "border-teal-200 bg-teal-50/40" : "border-dashed border-slate-200 bg-slate-50/50"}`}>
+                        <p className="text-xs font-semibold uppercase tracking-wide text-teal-900 mb-2">AVR / control card capture</p>
+                        {hasAvrGps && avrLat !== null && avrLng !== null ? (
+                          <>
+                            <p className="text-xs font-mono text-slate-800 mb-3">
+                              {avrLat.toFixed(6)}, {avrLng.toFixed(6)}
+                            </p>
+                            <a
+                              href={openStreetMapMeetingStartLink(avrLat, avrLng)}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-xs font-semibold text-teal-900 underline hover:text-teal-950"
+                            >
+                              Open in OpenStreetMap
+                            </a>
+                          </>
+                        ) : (
+                          <p className="text-sm text-slate-500">No GPS stored on the control card submission.</p>
+                        )}
+                      </div>
+                    </div>
+                  </section>
+
+                  {/* AVR narrative sections */}
+                  <div className="space-y-4">
+                    <section className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+                      <div className="border-b border-slate-100 px-4 py-3 flex items-center gap-2 bg-emerald-50/60">
+                        <ClipboardList className="h-4 w-4 text-emerald-800" aria-hidden />
+                        <h3 className="text-sm font-semibold text-slate-900">Meeting summary & participants</h3>
+                      </div>
+                      <div className="p-4 space-y-4">
+                        <div>
+                          <h4 className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2">Visit objective</h4>
+                          <p className="text-sm text-slate-800 whitespace-pre-wrap">{selectedCard.visitObjective || "—"}</p>
+                        </div>
+                        {selectedCard.customerParticipants && (
+                          <div>
+                            <h4 className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-2 flex items-center gap-1">
+                              <Users className="h-3 w-3" /> Participants (AVR)
+                            </h4>
+                            <p className="text-sm text-slate-800 whitespace-pre-wrap">{selectedCard.customerParticipants}</p>
+                          </div>
+                        )}
+                      </div>
+                    </section>
+
+                    <section className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+                      <div className="border-b border-slate-100 px-4 py-3 flex items-center gap-2 bg-amber-50/50">
+                        <AlertTriangle className="h-4 w-4 text-amber-700" aria-hidden />
+                        <h3 className="text-sm font-semibold text-slate-900">SLA & service performance</h3>
+                      </div>
+                      <div className="p-4 grid gap-3 sm:grid-cols-3 text-sm">
+                        <div className="rounded-lg bg-slate-50 border border-slate-100 p-3">
+                          <span className="text-xs font-medium text-slate-500 uppercase tracking-wide">SLA compliance</span>
+                          <p className="mt-1 font-medium text-slate-900">{selectedCard.slaCompliance || "—"}</p>
+                        </div>
+                        <div className="rounded-lg bg-slate-50 border border-slate-100 p-3">
+                          <span className="text-xs font-medium text-slate-500 uppercase tracking-wide">Open tickets</span>
+                          <p className="mt-1 font-medium text-slate-900">{selectedCard.openTickets || "—"}</p>
+                        </div>
+                        <div className="rounded-lg bg-slate-50 border border-slate-100 p-3">
+                          <span className="text-xs font-medium text-slate-500 uppercase tracking-wide">Critical incidents</span>
+                          <p className="mt-1 font-medium text-slate-900">{selectedCard.criticalIncidents || "—"}</p>
+                        </div>
+                      </div>
+                    </section>
+
+                    <section className="rounded-xl border border-indigo-200 bg-indigo-50/30 shadow-sm overflow-hidden">
+                      <div className="border-b border-indigo-100 px-4 py-3 flex items-center gap-2 bg-indigo-50/80">
+                        <Lock className="h-4 w-4 text-indigo-800" aria-hidden />
+                        <h3 className="text-sm font-semibold text-indigo-950">Executive notes (internal)</h3>
+                        <span className="text-[10px] font-medium uppercase tracking-wide text-indigo-700 ml-auto hidden sm:inline">Not shown on customer portal</span>
+                      </div>
+                      <div className="p-4">
+                        <div className="flex items-start gap-2 mb-2">
+                          <MessageSquare className="h-4 w-4 text-indigo-600 shrink-0 mt-0.5" aria-hidden />
+                          <p className="text-xs text-indigo-900 font-medium">Section 3 · Customer feedback field (internal use)</p>
+                        </div>
+                        <p className="text-sm text-slate-800 whitespace-pre-wrap rounded-lg bg-white/90 border border-indigo-100 p-4">
+                          {selectedCard.customerFeedback?.trim() ? selectedCard.customerFeedback : "—"}
+                        </p>
+                      </div>
+                    </section>
+
+                    <section className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+                      <div className="border-b border-slate-100 px-4 py-3 bg-slate-50/90">
+                        <h3 className="text-sm font-semibold text-slate-900">Risks identified</h3>
+                      </div>
+                      <div className="p-4 grid gap-3 text-sm">
+                        <div className="rounded-lg border border-slate-100 p-3">
+                          <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Operational</span>
+                          <p className="mt-1 text-slate-800 whitespace-pre-wrap">{selectedCard.risksOperational || "—"}</p>
+                        </div>
+                        <div className="rounded-lg border border-slate-100 p-3">
+                          <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Commercial</span>
+                          <p className="mt-1 text-slate-800 whitespace-pre-wrap">{selectedCard.risksCommercial || "—"}</p>
+                        </div>
+                        <div className="rounded-lg border border-slate-100 p-3">
+                          <span className="text-xs font-semibold text-slate-500 uppercase tracking-wide">Competitive</span>
+                          <p className="mt-1 text-slate-800 whitespace-pre-wrap">{selectedCard.risksCompetitive || "—"}</p>
+                        </div>
+                      </div>
+                    </section>
+
+                    <section className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+                      <div className="border-b border-slate-100 px-4 py-3 bg-violet-50/50">
+                        <h3 className="text-sm font-semibold text-slate-900">Opportunities</h3>
+                      </div>
+                      <div className="p-4 grid gap-3 sm:grid-cols-2 text-sm">
+                        <div className="rounded-lg border border-violet-100 bg-violet-50/30 p-3">
+                          <span className="text-xs font-semibold text-violet-800 uppercase tracking-wide">Upsell</span>
+                          <p className="mt-1 text-slate-800 whitespace-pre-wrap">{selectedCard.opportunitiesUpsell || "—"}</p>
+                        </div>
+                        <div className="rounded-lg border border-violet-100 bg-violet-50/30 p-3">
+                          <span className="text-xs font-semibold text-violet-800 uppercase tracking-wide">Process improvement</span>
+                          <p className="mt-1 text-slate-800 whitespace-pre-wrap">{selectedCard.opportunitiesProcess || "—"}</p>
+                        </div>
+                      </div>
+                    </section>
+
+                    <section className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+                      <div className="border-b border-slate-100 px-4 py-3 bg-slate-50/90 flex items-center gap-2">
+                        <FileText className="h-4 w-4 text-slate-700" aria-hidden />
+                        <h3 className="text-sm font-semibold text-slate-900">Action items</h3>
+                      </div>
+                      <div className="p-4 overflow-x-auto">
+                        {selectedCard.actionItems && selectedCard.actionItems.length > 0 ? (
+                          <Table>
+                            <TableHeader>
+                              <TableRow>
+                                <TableHead className="min-w-[180px]">Item / action</TableHead>
+                                <TableHead>Qty</TableHead>
+                                <TableHead>Category</TableHead>
+                                <TableHead>Type</TableHead>
+                                <TableHead>Owner</TableHead>
+                                <TableHead>Due</TableHead>
+                              </TableRow>
+                            </TableHeader>
+                            <TableBody>
+                              {selectedCard.actionItems.map((item, idx) => (
+                                <TableRow key={idx}>
+                                  <TableCell className="align-top">
+                                    <div className="font-medium text-slate-900">{item.item || item.action || "—"}</div>
+                                    {item.notes && <p className="text-xs text-slate-500 mt-1 whitespace-pre-wrap">{item.notes}</p>}
+                                  </TableCell>
+                                  <TableCell className="align-top text-sm">{item.quantity || "—"}</TableCell>
+                                  <TableCell className="align-top text-sm">{item.category || "—"}</TableCell>
+                                  <TableCell className="align-top text-sm">{item.requestType || "—"}</TableCell>
+                                  <TableCell className="align-top text-sm">{item.owner || "—"}</TableCell>
+                                  <TableCell className="align-top text-sm whitespace-nowrap">{item.dueDate || item.deadline || "—"}</TableCell>
+                                </TableRow>
+                              ))}
+                            </TableBody>
+                          </Table>
+                        ) : (
+                          <p className="text-sm text-slate-400">No action items recorded.</p>
+                        )}
+                      </div>
+                    </section>
+
+                    <section className="rounded-xl border border-slate-200 bg-white shadow-sm overflow-hidden">
+                      <div className="border-b border-slate-100 px-4 py-3 bg-slate-50/90">
+                        <h3 className="text-sm font-semibold text-slate-900">Overall account health (AVR)</h3>
+                      </div>
+                      <div className="p-4">
+                        {selectedCard.accountHealth ? (
+                          <div className="flex flex-wrap items-center gap-3">
+                            {(["green", "amber", "red"] as const).map((h) => (
+                              <div
+                                key={h}
+                                className={`flex items-center gap-2 px-4 py-2 rounded-lg border transition-colors ${
+                                  selectedCard.accountHealth === h
+                                    ? "border-slate-800 bg-slate-900 text-white shadow-md"
+                                    : "border-slate-200 bg-slate-50 text-slate-400"
+                                }`}
+                              >
+                                <span className={`h-3 w-3 rounded-full ${healthColor[h]}`} />
+                                <span className="text-sm font-medium capitalize">{h}</span>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <span className="text-sm text-slate-400">Not assessed.</span>
+                        )}
+                      </div>
+                    </section>
+                  </div>
+                </div>
+
+                <div className="sticky bottom-0 border-t border-slate-200 bg-white px-6 py-4 flex justify-end gap-2 shadow-[0_-4px_12px_rgba(0,0,0,0.04)]">
+                  <Button variant="outline" onClick={() => setSelectedCard(null)}>
+                    Close
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+        );
+      })()}
     </div>
   );
 }

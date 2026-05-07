@@ -1,8 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo } from "react";
 import { useNavigate } from "react-router";
-import { getCurrentUser, getMyAccounts, getMyProfile, type ExecutiveAccountRecord } from "../../api/authApi";
-import { getAssignedTickets, type TicketRecord } from "../../api/ticketApi";
-import { getMyVisits, type VisitRecord } from "../../api/visitApi";
+import { getCurrentUser } from "../../api/authApi";
+import { type TicketRecord } from "../../api/ticketApi";
+import { useExecutiveData } from "../../hooks/useExecutiveData";
 import { 
   Card, 
   CardContent, 
@@ -19,6 +19,8 @@ import {
 import { 
   BarChart, 
   Bar, 
+  LineChart,
+  Line,
   XAxis, 
   YAxis, 
   CartesianGrid, 
@@ -59,48 +61,26 @@ export default function ExecutiveDashboard() {
   const currentUser = getCurrentUser();
   const navigate = useNavigate();
   const executiveName = currentUser?.firstName || "Executive";
-  const [accounts, setAccounts] = useState<ExecutiveAccountRecord[]>([]);
-  const [tickets, setTickets] = useState<TicketRecord[]>([]);
-  const [visits, setVisits] = useState<VisitRecord[]>([]);
-  const [managerName, setManagerName] = useState("N/A");
-  const [managerDepartment, setManagerDepartment] = useState("N/A");
-  const [managerEmail, setManagerEmail] = useState("N/A");
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+  const {
+    accounts,
+    tickets,
+    visits,
+    profile,
+    expiringContracts,
+    spendingSummary,
+    spendingTrend,
+    initialLoading,
+    error,
+  } = useExecutiveData();
 
-  useEffect(() => {
-    const fetchDashboardData = async () => {
-      try {
-        setLoading(true);
-        setError("");
-
-        const [accountsData, ticketsData, visitsData, profile] = await Promise.all([
-          getMyAccounts(),
-          getAssignedTickets(),
-          getMyVisits(),
-          getMyProfile(),
-        ]);
-
-        setAccounts(accountsData);
-        setTickets(ticketsData);
-        setVisits(visitsData);
-
-        if (profile.manager) {
-          setManagerName(`${profile.manager.firstName} ${profile.manager.lastName}`);
-          setManagerDepartment(profile.manager.department || profile.department || "N/A");
-          setManagerEmail(profile.manager.email || "N/A");
-        } else {
-          setManagerDepartment(profile.department || "N/A");
-        }
-      } catch (err: unknown) {
-        setError(err instanceof Error ? err.message : "Failed to load dashboard data");
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchDashboardData();
-  }, []);
+  const monthlySpendingTotal = spendingSummary?.total || "0.00";
+  const managerName = profile?.manager
+    ? `${profile.manager.firstName} ${profile.manager.lastName}`
+    : "N/A";
+  const managerDepartment = profile?.manager
+    ? profile.manager.department || profile.department || "N/A"
+    : profile?.department || "N/A";
+  const managerEmail = profile?.manager?.email || "N/A";
 
   const corporatesMap = useMemo(() => {
     const map = new Map<
@@ -128,7 +108,7 @@ export default function ExecutiveDashboard() {
           lastVisit: "N/A",
           health: "Healthy",
           healthVariant: "success",
-          value: "N/A",
+          value: "N$ 0.00",
         });
       }
       const existing = map.get(acc.corporateId)!;
@@ -167,6 +147,10 @@ export default function ExecutiveDashboard() {
         corp.health = "Good";
         corp.healthVariant = "success";
       }
+      const corporateMonthly = accounts
+        .filter((a) => a.corporateId === corporateId)
+        .reduce((sum, a) => sum + Number(a.monthlySpending || 0), 0);
+      corp.value = `N$ ${corporateMonthly.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     });
 
     return map;
@@ -296,7 +280,7 @@ export default function ExecutiveDashboard() {
     ];
   }, [tickets]);
 
-  if (loading) {
+  if (initialLoading) {
     return (
       <div className="flex min-h-[280px] items-center justify-center text-slate-500">
         Loading executive dashboard...
@@ -335,7 +319,7 @@ export default function ExecutiveDashboard() {
         </CardContent>
       </Card>
 
-      <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-4">
+      <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-5">
         <Card>
           <CardContent className="pt-6">
             <p className="text-sm font-medium text-slate-500">My Corporates</p>
@@ -362,6 +346,17 @@ export default function ExecutiveDashboard() {
             <p className="text-sm font-medium text-slate-500">Avg Rating / SLAs</p>
             <div className="mt-2 text-3xl font-bold text-slate-900">{avgRating > 0 ? avgRating.toFixed(1) : "N/A"}</div>
             <p className="text-xs text-slate-400">Breached SLAs: {breachedSlaCount}</p>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardContent className="pt-6">
+            <p className="text-sm font-medium text-slate-500">Monthly Spending</p>
+            <div className="mt-2 text-3xl font-bold text-slate-900">
+              {`N$ ${Number(monthlySpendingTotal || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+            </div>
+            <p className="text-xs text-slate-400">
+              {`${expiringContracts.length} contracts expiring in 6 months`}
+            </p>
           </CardContent>
         </Card>
       </div>
@@ -429,6 +424,25 @@ export default function ExecutiveDashboard() {
 
       <Card>
         <CardHeader>
+          <CardTitle>Monthly Spending Trend</CardTitle>
+        </CardHeader>
+        <CardContent className="pl-2">
+          <div className="h-[280px]">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={spendingTrend.map((point) => ({ month: point.month, total: Number(point.total || 0) }))}>
+                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
+                <XAxis dataKey="month" stroke="#64748b" fontSize={12} tickLine={false} axisLine={false} />
+                <YAxis stroke="#64748b" fontSize={12} tickLine={false} axisLine={false} />
+                <Tooltip />
+                <Line type="monotone" dataKey="total" name="Spending (NAD)" stroke="#16a34a" strokeWidth={2.5} dot={{ r: 3 }} />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
           <CardTitle>My Corporate Portfolio</CardTitle>
         </CardHeader>
         <CardContent>
@@ -446,7 +460,7 @@ export default function ExecutiveDashboard() {
               </TableRow>
             </TableHeader>
             <TableBody>
-              {portfolioRows.map((row) => (
+              {portfolioRows.slice(0, 10).map((row) => (
                 <TableRow key={row.corporate}>
                   <TableCell className="font-medium">{row.corporate}</TableCell>
                   <TableCell>{row.lines}</TableCell>
@@ -476,6 +490,16 @@ export default function ExecutiveDashboard() {
               )}
             </TableBody>
           </Table>
+          {portfolioRows.length > 10 && (
+            <div className="flex justify-end pt-4">
+              <button
+                onClick={() => navigate("/corporates")}
+                className="text-mtc-blue hover:underline text-sm font-medium"
+              >
+                See more ({portfolioRows.length - 10} more) →
+              </button>
+            </div>
+          )}
         </CardContent>
       </Card>
 

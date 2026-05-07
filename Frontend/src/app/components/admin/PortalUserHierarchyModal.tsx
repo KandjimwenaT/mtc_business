@@ -26,6 +26,10 @@ function safeParseIdArray(region: string | null | undefined): number[] {
   }
 }
 
+function normalizeDepartment(value: string | null | undefined): string {
+  return String(value || "").trim().toLowerCase();
+}
+
 type Props = {
   user: PortalUser;
   onClose: () => void;
@@ -182,8 +186,11 @@ export default function PortalUserHierarchyModal({
     if (person.type === "admin") {
       const manager = person.managerId ? personById.get(person.managerId) ?? null : null;
       const gm = manager?.gmId ? personById.get(manager.gmId) ?? null : null;
-      const linkedExecIds = safeParseIdArray(person.region);
-      const linkedExecutives = executivePersons.filter((e) => linkedExecIds.includes(e.id));
+      const linkedExecutives = executivePersons.filter((e) => {
+        const execManager = e.managerId ? personById.get(e.managerId) ?? null : null;
+        if (!execManager) return false;
+        return normalizeDepartment(execManager.department) === normalizeDepartment(person.department);
+      });
 
       return {
         title: "Admin Hierarchy",
@@ -191,8 +198,9 @@ export default function PortalUserHierarchyModal({
           { label: "Admin", value: `${person.firstName} ${person.lastName}`, kind: "admin" },
           { label: "Manager / Supervisor", value: manager ? `${manager.firstName} ${manager.lastName}` : "—", kind: "manager" },
           { label: "GM", value: gm ? `${gm.firstName} ${gm.lastName}` : "—", kind: "gm" },
+          { label: "Department", value: person.department || "—", kind: "manager" },
           {
-            label: "Linked executives (by region)",
+            label: "Executives in this department",
             value: linkedExecutives.length === 0 ? "—" : `${linkedExecutives.length} executive(s)`,
             kind: "executive",
           },

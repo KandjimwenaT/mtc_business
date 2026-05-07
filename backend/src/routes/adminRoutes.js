@@ -13,6 +13,8 @@ router.delete("/persons/:personId", adminController.deletePersonWithoutPortalAcc
 router.get("/gms", adminController.getGMs);
 router.get("/managers", adminController.getManagers);
 router.get("/executives", adminController.getExecutives);
+router.get("/executives/pending-onboarding", adminController.getPendingImportedExecutives);
+router.post("/executives/:executiveId/complete-onboarding", adminController.completeImportedExecutiveOnboarding);
 router.put("/executives/:executivePersonId/promote-supervisor", adminController.promoteExecutiveToSupervisor);
 router.put("/executives/:supervisorPersonId/demote-executive", adminController.demoteSupervisorToExecutive);
 
@@ -28,14 +30,25 @@ router.get("/corporates/no-contact-persons", adminController.getCorporatesWithou
 router.post("/corporates/:corporateId/submit-approval", adminController.submitCorporateApproval);
 router.put("/corporates/:corporateId/approve", adminController.approveCorporate);
 router.put("/corporates/:corporateId/reassign-executive", adminController.reassignCorporateExecutive);
+router.get("/corporates/:corporateId/contact-persons", adminController.getCorporateContactPersons);
+router.post("/corporates/:corporateId/contact-persons", adminController.assignContactPersonToCorporate);
+router.delete(
+  "/corporates/:corporateId/contact-persons/:accountManagerId",
+  adminController.removeContactPersonFromCorporate
+);
 router.post("/accounts", adminController.createAccount);
 router.get("/accounts", adminController.getAccounts);
 router.put("/accounts/:accountId/approve", adminController.approveAccount);
 router.post("/accounts/:accountId/contracts", adminController.createContract);
 router.get("/accounts/:accountId/contracts", adminController.getAccountContracts);
+router.get("/contracts/expiring", adminController.getExpiringContracts);
 router.post("/accounts/:accountId/services", adminController.createService);
 router.get("/accounts/:accountId/services", adminController.getAccountServices);
 router.put("/accounts/:accountId/services/:serviceId", adminController.updateServiceStatus);
 router.delete("/accounts/:accountId/services/:serviceId", adminController.deleteService);
+router.post("/accounts/:accountId/invoices", adminController.createInvoice);
+router.get("/invoices", adminController.getInvoices);
+router.get("/spending/monthly-summary", adminController.getManagerMonthlySpendingSummary);
+router.get("/spending/monthly-trend", adminController.getManagerMonthlySpendingTrend);
 
 module.exports = router;
