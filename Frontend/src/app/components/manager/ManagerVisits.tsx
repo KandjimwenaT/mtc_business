@@ -1303,7 +1303,7 @@ export default function ManagerVisits() {
                     </div>
                   </div>
                   <Button variant="ghost" size="sm" className="text-white hover:bg-white/20 shrink-0 h-9 w-9 p-0" onClick={() => setSelectedCard(null)}>
-                    <X className="h-5 w-5" />
+                     <X className="h-5 w-5" />
                   </Button>
                 </div>
               </CardHeader>
