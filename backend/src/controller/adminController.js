@@ -18,9 +18,11 @@ const { createForUserIds } = require("../services/notificationService");
 const {
   propagateContactPersonToCorporateAccounts,
   enrichAccountsWithCorporateContact,
+  getContactPersonsForCorporate,
 } = require("../services/contactPersonService");
 const { Op } = require("sequelize");
 const { sequelize } = require("../config/database");
+const { runKeyAccountsImport } = require("../services/keyAccountsExcelImportService");
 
 // ── Helper: resolve a Manager profile id from a persons.id ──────────
 // persons.managerId stores persons.id values, but executive_staff.manager_id
@@ -45,6 +47,27 @@ async function resolveExecutiveUserIdByExecutiveProfileId(executiveProfileId) {
     where: { role: "executive_staff", email: executive.email },
   });
   return user ? user.id : null;
+}
+
+// Corporates keyed by corporates.manager_id (Manager.managerId or legacy persons.id), or unset for
+// some imports — then scope follows the assigned executive_staff.manager_id row.
+async function managerHasCorporateScope(corporate, managerProfile, managerPersonId) {
+  if (!corporate || !managerProfile) return false;
+  const assignedId = corporate.managerId;
+  const matchesStoredManager =
+    assignedId === managerProfile.managerId ||
+    (managerPersonId !== null && assignedId === managerPersonId);
+
+  if (matchesStoredManager) return true;
+
+  if (assignedId != null && assignedId !== undefined) return false;
+
+  if (!corporate.executiveId) return false;
+
+  const execStaff = await ExecutiveStaff.findByPk(corporate.executiveId, {
+    attributes: ["managerId"],
+  });
+  return !!(execStaff && execStaff.managerId === managerProfile.managerId);
 }
 
 function isoMonth(dateValue) {
@@ -1064,9 +1087,7 @@ exports.approveCorporate = async (req, res) => {
       where: { email: managerProfile.email, type: "manager" },
     });
     const managerPersonId = managerPerson ? managerPerson.id : null;
-    const isAssignedManager =
-      corporate.managerId === managerProfile.managerId ||
-      (managerPersonId !== null && corporate.managerId === managerPersonId);
+    const isAssignedManager = await managerHasCorporateScope(corporate, managerProfile, managerPersonId);
 
     if (!isAssignedManager) {
       return res.status(403).json({ status: "Failed", message: "You are not assigned to this corporate" });
@@ -1154,9 +1175,7 @@ exports.reassignCorporateExecutive = async (req, res) => {
       return res.status(404).json({ status: "Failed", message: "Corporate not found" });
     }
 
-    const isAssignedManager =
-      corporate.managerId === managerProfile.managerId ||
-      (managerPersonId !== null && corporate.managerId === managerPersonId);
+    const isAssignedManager = await managerHasCorporateScope(corporate, managerProfile, managerPersonId);
     if (!isAssignedManager) {
       return res.status(403).json({ status: "Failed", message: "You are not assigned to this corporate" });
     }
@@ -1183,6 +1202,25 @@ exports.reassignCorporateExecutive = async (req, res) => {
     }
 
     const previousExecutiveProfileId = corporate.executiveId || null;
+
+    if (previousExecutiveProfileId === execStaff.executiveId) {
+      return res.status(400).json({
+        status: "Failed",
+        message: "That executive is already assigned to this corporate",
+      });
+    }
+
+    let previousExecutiveName = null;
+    if (previousExecutiveProfileId) {
+      const prevRow = await ExecutiveStaff.findByPk(previousExecutiveProfileId);
+      if (prevRow) {
+        previousExecutiveName =
+          `${prevRow.firstName || ""} ${prevRow.lastName || ""}`.trim() || null;
+      }
+    }
+    const newExecutiveDisplayName =
+      `${executivePerson.firstName || ""} ${executivePerson.lastName || ""}`.trim() ||
+      "your new account executive";
 
     // Corporate-level assignment
     await corporate.update({ executiveId: execStaff.executiveId });
@@ -1222,6 +1260,42 @@ exports.reassignCorporateExecutive = async (req, res) => {
           kind: "executive_reassigned_to",
         },
       });
+    }
+
+    try {
+      const contactPersons = await getContactPersonsForCorporate(corporate.corporateId);
+      const emails = [
+        ...new Set(
+          contactPersons
+            .map((c) => (c.email || "").trim())
+            .filter((e) => e.length > 0)
+        ),
+      ];
+      if (emails.length > 0) {
+        const portalContacts = await User.findAll({
+          where: { role: "customer", email: { [Op.in]: emails } },
+          attributes: ["id"],
+        });
+        const contactCustomerIds = [...new Set(portalContacts.map((u) => u.id).filter(Boolean))];
+        if (contactCustomerIds.length > 0) {
+          const contactMessage = previousExecutiveName
+            ? `Your MTC business account executive for ${corporate.corporateName} has changed from ${previousExecutiveName} to ${newExecutiveDisplayName}.`
+            : `Your dedicated MTC business account executive for ${corporate.corporateName} is now ${newExecutiveDisplayName}.`;
+          await createForUserIds(contactCustomerIds, {
+            type: "assignment",
+            title: `Account executive updated — ${corporate.corporateName}`,
+            message: contactMessage,
+            priority: "normal",
+            metadata: {
+              corporateId: corporate.corporateId,
+              corporateName: corporate.corporateName,
+              kind: "executive_reassigned_contact_person",
+            },
+          });
+        }
+      }
+    } catch (contactNotifyErr) {
+      console.error("Failed to notify contact persons of executive reassignment:", contactNotifyErr);
     }
 
     try {
@@ -2456,6 +2530,76 @@ exports.completeImportedExecutiveOnboarding = async (req, res) => {
     return res
       .status(500)
       .json({ status: "Failed", message: "Internal server error" });
+  }
+};
+
+/** Super-admin: full key-accounts import from uploaded .xlsx (same behavior as CLI with all include flags). */
+exports.importKeyAccountsFromExcelUpload = async (req, res) => {
+  try {
+    if (!req.file || !req.file.buffer) {
+      return res.status(400).json({ status: "Failed", message: "No file uploaded" });
+    }
+
+    const sheet = req.body && req.body.sheet != null ? String(req.body.sheet).trim() : "";
+
+    let assignedManagerProfileId = null;
+    const rawMgr = req.body && req.body.managerId;
+    if (rawMgr != null && String(rawMgr).trim() !== "") {
+      const mid = Number(String(rawMgr).trim());
+      if (!Number.isInteger(mid) || mid <= 0) {
+        return res.status(400).json({ status: "Failed", message: "managerId must be a positive integer" });
+      }
+      const managerRow = await Manager.findByPk(mid);
+      if (!managerRow) {
+        return res.status(400).json({
+          status: "Failed",
+          message: "Invalid manager selection — use a portal manager id from GET /admin/managers",
+        });
+      }
+      assignedManagerProfileId = mid;
+    }
+
+    const result = await runKeyAccountsImport({
+      workbookBuffer: req.file.buffer,
+      sheet,
+      dryRun: false,
+      createMissingExecutives: true,
+      includeAccounts: true,
+      includeServices: true,
+      includeContracts: true,
+      ...(assignedManagerProfileId != null ? { assignedManagerProfileId } : {}),
+    });
+
+    const maxUnresolved = 50;
+    return res.status(200).json({
+      status: "Success",
+      message: "Import completed",
+      sheetName: result.sheetName,
+      stats: result.stats,
+      createdExecutivesCount: result.createdExecutives.length,
+      unresolvedSample: result.unresolved.slice(0, maxUnresolved),
+      unresolvedTotal: result.unresolved.length,
+    });
+  } catch (error) {
+    console.error("Key accounts Excel import error:", error);
+    const msg = typeof error.message === "string" ? error.message : "Import failed";
+
+    const isClientError =
+      msg.includes("Could not find") ||
+      msg.includes("No rows found") ||
+      msg.includes("Sheet not found") ||
+      msg.includes("Missing or empty workbook") ||
+      msg.includes("Only Excel");
+
+    if (isClientError) {
+      return res.status(400).json({ status: "Failed", message: msg });
+    }
+
+    const detail =
+      error.rowContext != null
+        ? `${msg} (row: ${error.rowContext.corporateNumber} / ${error.rowContext.corporateName})`
+        : msg;
+    return res.status(500).json({ status: "Failed", message: detail });
   }
 };
 

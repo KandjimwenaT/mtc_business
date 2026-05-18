@@ -17,13 +17,13 @@ import {
   TableHeader,
   TableRow
 } from "./ui-components";
-import { Building2, Search, Users, Star, X, FileText, Database, Loader2, CheckCircle, UserPlus, Trash2, AlertTriangle } from "lucide-react";
+import { Building2, Search, Users, Star, X, FileText, Database, Loader2, CheckCircle, UserPlus, Trash2, AlertTriangle, ArrowRightLeft } from "lucide-react";
 import {
   getAccounts, getAccountContracts, getAccountServices, getPersonsByType,
   createAccount, createContract, createService, createCorporate, getCorporates,
   getExpiringContracts,
   updateAccountServiceStatus, deleteAccountService,
-  submitCorporateForApproval, approveCorporate,
+  submitCorporateForApproval, approveCorporate, reassignCorporateExecutive,
   getCorporateContactPersons, assignContactPersonToCorporate, removeContactPersonFromCorporate,
   type AccountRecord, type ContractRecord, type ServiceRecord, type PersonRecord, type CorporateRecord, type ExpiringContractRecord,
   type AccountPayload, type ContractPayload, type ServicePayload, type CorporatePayload,
@@ -167,6 +167,11 @@ export default function Corporates() {
   const [deletingServiceId, setDeletingServiceId] = useState<number | null>(null);
   const [submittingCorporateApproval, setSubmittingCorporateApproval] = useState(false);
   const [approvingCorporate, setApprovingCorporate] = useState(false);
+  const [reassigningCorporateExecutive, setReassigningCorporateExecutive] = useState(false);
+  const [corporateReassignOpen, setCorporateReassignOpen] = useState(false);
+  const [corporateReassignDraft, setCorporateReassignDraft] = useState("");
+  const [detailReassignOpen, setDetailReassignOpen] = useState(false);
+  const [detailReassignDraft, setDetailReassignDraft] = useState("");
 
   // Approve modal state
   const [corporateExecId, setCorporateExecId] = useState<string>("");
@@ -264,9 +269,17 @@ export default function Corporates() {
       setManagers(mgrs);
       setAccountManagers(acctMgrs);
       if (showCorporatePanel) {
-        setSelectedCorporate((prev) => prev ?? (corps.length > 0 ? corps[0] : null));
+        setSelectedCorporate((prev) => {
+          if (!prev) return corps.length > 0 ? corps[0] : null;
+          const fresh = corps.find((c) => c.corporateId === prev.corporateId);
+          return fresh ?? (corps.length > 0 ? corps[0] : null);
+        });
       } else {
-        setSelectedAccount((prev) => prev ?? (accs.length > 0 ? accs[0] : null));
+        setSelectedAccount((prev) => {
+          if (!prev) return accs.length > 0 ? accs[0] : null;
+          const fresh = accs.find((a) => a.accountId === prev.accountId);
+          return fresh ?? (accs.length > 0 ? accs[0] : null);
+        });
       }
     } catch (err) {
       toast.error("Failed to load accounts", { description: err instanceof Error ? err.message : undefined });
@@ -274,6 +287,37 @@ export default function Corporates() {
       setLoadingAccounts(false);
     }
   }, [showCorporatePanel]);
+
+  const reassignExecutiveForCorporate = useCallback(
+    async (corporateId: number, personId: number) => {
+      setReassigningCorporateExecutive(true);
+      try {
+        await reassignCorporateExecutive(corporateId, personId);
+        toast.success("Executive reassigned", {
+          description:
+            "Notifications were sent to the previous and new executives, and to contact persons who have portal access.",
+        });
+        setCorporateReassignOpen(false);
+        setCorporateReassignDraft("");
+        setDetailReassignOpen(false);
+        setDetailReassignDraft("");
+        await fetchAccounts();
+        const freshAccs = await getAccounts();
+        setDetailAccount((prev) => {
+          if (!prev) return prev;
+          const next = freshAccs.find((a) => a.accountId === prev.accountId);
+          return next ?? prev;
+        });
+      } catch (err) {
+        toast.error("Failed to reassign executive", {
+          description: err instanceof Error ? err.message : undefined,
+        });
+      } finally {
+        setReassigningCorporateExecutive(false);
+      }
+    },
+    [fetchAccounts]
+  );
 
   useEffect(() => {
     if (canManageCorporates) fetchAccounts();
@@ -305,6 +349,16 @@ export default function Corporates() {
     if (!canManageCorporates) return;
     refreshCorporateContactPersons(selectedCorporate?.corporateId ?? null);
   }, [canManageCorporates, selectedCorporate?.corporateId, refreshCorporateContactPersons]);
+
+  useEffect(() => {
+    setCorporateReassignOpen(false);
+    setCorporateReassignDraft("");
+  }, [selectedCorporate?.corporateId]);
+
+  useEffect(() => {
+    setDetailReassignOpen(false);
+    setDetailReassignDraft("");
+  }, [detailAccount?.accountId]);
 
   // Existing contact persons (across the system) that are NOT yet linked to
   // the currently-selected corporate, filtered by the modal search query.
@@ -831,6 +885,26 @@ export default function Corporates() {
   const assignmentExecutives = (isManager && currentManagerPerson)
     ? executives.filter((e) => e.managerId === currentManagerPerson.id)
     : executives;
+
+  const selectedCorporateExecPersonId = useMemo(() => {
+    if (!selectedCorporate) return "";
+    const key = buildExecKey(selectedCorporate.executiveFirstName, selectedCorporate.executiveLastName);
+    if (!key) return "";
+    const match = assignmentExecutives.find(
+      (ex) => buildExecKey(ex.firstName, ex.lastName) === key
+    );
+    return match ? String(match.id) : "";
+  }, [selectedCorporate, assignmentExecutives]);
+
+  const detailAccountExecPersonId = useMemo(() => {
+    if (!detailAccount) return "";
+    const key = buildExecKey(detailAccount.executiveFirstName, detailAccount.executiveLastName);
+    if (!key) return "";
+    const match = assignmentExecutives.find(
+      (ex) => buildExecKey(ex.firstName, ex.lastName) === key
+    );
+    return match ? String(match.id) : "";
+  }, [detailAccount, assignmentExecutives]);
 
   const handleEditProfile = () => {
     setShowEditProfile(false);
@@ -1422,6 +1496,109 @@ export default function Corporates() {
                           </div>
                         </div>
                       )}
+                      {isManager && selectedCorporate?.approvalStatus === "approved" && (
+                        <div className="p-4 border-b border-slate-200 bg-slate-50/40">
+                          <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+                            <div className="space-y-1 min-w-0">
+                              <p className="text-sm font-medium text-slate-700">Executive assignment</p>
+                              <p className="text-xs text-slate-500">
+                                Reassign for this corporate and every child account. When you confirm, the previous executive,
+                                the new executive, and each linked contact person with portal access receive a notification.
+                              </p>
+                            </div>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="shrink-0"
+                              onClick={() => {
+                                setCorporateReassignOpen((open) => !open);
+                                setCorporateReassignDraft("");
+                              }}
+                              disabled={reassigningCorporateExecutive || assignmentExecutives.length === 0}
+                            >
+                              <ArrowRightLeft className="h-4 w-4 mr-1.5" />
+                              {corporateReassignOpen ? "Close" : "Reassign executive"}
+                            </Button>
+                          </div>
+                          {corporateReassignOpen && (
+                            <div className="mt-4 p-3 rounded-lg border border-slate-200 bg-white space-y-3">
+                              <div className="space-y-1">
+                                <label className="text-xs font-medium text-slate-600">New executive</label>
+                                <Select
+                                  className="w-full sm:max-w-md h-9 text-sm"
+                                  value={corporateReassignDraft}
+                                  onChange={(e) => setCorporateReassignDraft(e.target.value)}
+                                  disabled={reassigningCorporateExecutive}
+                                >
+                                  <option value="">Choose an executive…</option>
+                                  {assignmentExecutives.map((exec) => (
+                                    <option
+                                      key={exec.id}
+                                      value={String(exec.id)}
+                                      disabled={String(exec.id) === selectedCorporateExecPersonId}
+                                    >
+                                      {exec.firstName} {exec.lastName}
+                                      {exec.region ? ` — ${exec.region}` : ""}
+                                    </option>
+                                  ))}
+                                </Select>
+                              </div>
+                              <div className="flex flex-wrap items-center gap-2">
+                                <Button
+                                  size="sm"
+                                  type="button"
+                                  onClick={async () => {
+                                    if (!selectedCorporate || !corporateReassignDraft) {
+                                      toast.error("Select an executive first");
+                                      return;
+                                    }
+                                    const nextPersonId = parseInt(corporateReassignDraft, 10);
+                                    if (
+                                      Number.isNaN(nextPersonId) ||
+                                      corporateReassignDraft === selectedCorporateExecPersonId
+                                    ) {
+                                      toast.error("Choose a different executive than the one currently assigned");
+                                      return;
+                                    }
+                                    await reassignExecutiveForCorporate(selectedCorporate.corporateId, nextPersonId);
+                                  }}
+                                  disabled={
+                                    reassigningCorporateExecutive ||
+                                    !corporateReassignDraft ||
+                                    corporateReassignDraft === selectedCorporateExecPersonId
+                                  }
+                                >
+                                  {reassigningCorporateExecutive ? (
+                                    <span className="inline-flex items-center gap-2">
+                                      <Loader2 className="h-4 w-4 animate-spin" /> Working…
+                                    </span>
+                                  ) : (
+                                    "Confirm reassignment"
+                                  )}
+                                </Button>
+                                <Button
+                                  type="button"
+                                  variant="ghost"
+                                  size="sm"
+                                  onClick={() => {
+                                    setCorporateReassignOpen(false);
+                                    setCorporateReassignDraft("");
+                                  }}
+                                  disabled={reassigningCorporateExecutive}
+                                >
+                                  Cancel
+                                </Button>
+                              </div>
+                              {assignmentExecutives.length === 0 && (
+                                <p className="text-xs text-amber-700">
+                                  No executives on your team were found. Check that your manager profile is linked correctly.
+                                </p>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )}
                       <div className="grid grid-cols-2 md:grid-cols-4 divide-x divide-slate-200 border-b border-slate-200">
                         <div className="p-4 text-center">
                           <div className="text-sm text-slate-500 mb-1">Assigned Executive</div>
@@ -1824,6 +2001,104 @@ export default function Corporates() {
                       <div><p className="text-xs text-slate-400">Parent Account ID</p><p className="text-sm font-medium text-slate-900 mt-0.5">#{detailAccount.parentAccountId}</p></div>
                     )}
                   </div>
+                  {isManager && detailAccount.corporateId && detailAccount.approvalStatus === "approved" && (
+                    <div className="mt-4 p-3 rounded-lg border border-slate-200 bg-white space-y-3">
+                      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-2">
+                        <div>
+                          <label className="text-xs font-medium text-slate-600">Executive assignment</label>
+                          <p className="text-xs text-slate-500 mt-0.5">
+                            Reassignment is at corporate level (all child accounts stay in sync). Confirm to notify
+                            executives and contact persons with portal access.
+                          </p>
+                        </div>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          className="shrink-0"
+                          onClick={() => {
+                            setDetailReassignOpen((open) => !open);
+                            setDetailReassignDraft("");
+                          }}
+                          disabled={reassigningCorporateExecutive || assignmentExecutives.length === 0}
+                        >
+                          <ArrowRightLeft className="h-4 w-4 mr-1.5" />
+                          {detailReassignOpen ? "Close" : "Reassign executive"}
+                        </Button>
+                      </div>
+                      {detailReassignOpen && (
+                        <div className="pt-1 space-y-3 border-t border-slate-100">
+                          <div className="space-y-1">
+                            <label className="text-xs font-medium text-slate-600">New executive</label>
+                            <Select
+                              className="w-full max-w-md h-9 text-sm"
+                              value={detailReassignDraft}
+                              onChange={(e) => setDetailReassignDraft(e.target.value)}
+                              disabled={reassigningCorporateExecutive}
+                            >
+                              <option value="">Choose an executive…</option>
+                              {assignmentExecutives.map((exec) => (
+                                <option
+                                  key={exec.id}
+                                  value={String(exec.id)}
+                                  disabled={String(exec.id) === detailAccountExecPersonId}
+                                >
+                                  {exec.firstName} {exec.lastName}
+                                  {exec.region ? ` — ${exec.region}` : ""}
+                                </option>
+                              ))}
+                            </Select>
+                          </div>
+                          <div className="flex flex-wrap gap-2">
+                            <Button
+                              size="sm"
+                              type="button"
+                              onClick={async () => {
+                                if (!detailAccount.corporateId || !detailReassignDraft) {
+                                  toast.error("Select an executive first");
+                                  return;
+                                }
+                                const nextPersonId = parseInt(detailReassignDraft, 10);
+                                if (
+                                  Number.isNaN(nextPersonId) ||
+                                  detailReassignDraft === detailAccountExecPersonId
+                                ) {
+                                  toast.error("Choose a different executive than the one currently assigned");
+                                  return;
+                                }
+                                await reassignExecutiveForCorporate(detailAccount.corporateId, nextPersonId);
+                              }}
+                              disabled={
+                                reassigningCorporateExecutive ||
+                                !detailReassignDraft ||
+                                detailReassignDraft === detailAccountExecPersonId
+                              }
+                            >
+                              {reassigningCorporateExecutive ? (
+                                <span className="inline-flex items-center gap-2">
+                                  <Loader2 className="h-4 w-4 animate-spin" /> Working…
+                                </span>
+                              ) : (
+                                "Confirm reassignment"
+                              )}
+                            </Button>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => {
+                                setDetailReassignOpen(false);
+                                setDetailReassignDraft("");
+                              }}
+                              disabled={reassigningCorporateExecutive}
+                            >
+                              Cancel
+                            </Button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 {/* ── SECTION 2: Contracts ── */}

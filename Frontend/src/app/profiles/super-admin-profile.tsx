@@ -9,18 +9,20 @@ import {
   Plus, Edit, X, CheckCircle, Search,
   Mail, Activity, Database, UserPlus, Key, Loader2, RefreshCw,
   Building2, ChevronRight, Settings, Eye, Trash2, UserCircle,
-  UserCheck,
+  UserCheck, Upload, FileSpreadsheet,
 } from "lucide-react";
 import {
   createPerson, getPersonsByType, createPortalAccess, getPortalUsers, revokePortalAccess, deletePersonWithoutPortalAccess,
   getExecutives, getCorporatesWithoutContactPersons,
   createAccount, getAccounts, createContract, createService, getAccountServices, getAccountContracts,
-  getPendingImportedExecutives, completeImportedExecutive,
+  getPendingImportedExecutives, completeImportedExecutive, importKeyAccountsFromExcel,
+  getManagers,
   type PersonPayload, type PersonRecord, type PortalUser,
   type ExecutiveRecord,
   type AccountPayload, type AccountRecord, type ContractPayload, type ContractRecord, type CorporateRecord,
   type ServicePayload, type ServiceRecord,
   type PendingImportedExecutive,
+  type ManagerRecord,
 } from "../api/adminApi";
 import { getMyProfile } from "../api/authApi";
 import type { UserProfile } from "../api/authApi";
@@ -95,6 +97,14 @@ export default function SuperAdminProfile() {
   const [pendingExecutives, setPendingExecutives] = useState<PendingImportedExecutive[]>([]);
   const [loadingPendingExecutives, setLoadingPendingExecutives] = useState(false);
   const [selectedPendingExec, setSelectedPendingExec] = useState<PendingImportedExecutive | null>(null);
+  const [keyAccountsImportDragging, setKeyAccountsImportDragging] = useState(false);
+  const [keyAccountsImporting, setKeyAccountsImporting] = useState(false);
+  const [keyAccountsSheetName, setKeyAccountsSheetName] = useState("");
+  const [keyAccountsImportManagers, setKeyAccountsImportManagers] = useState<ManagerRecord[]>([]);
+  const [keyAccountsAssignedManagerProfileId, setKeyAccountsAssignedManagerProfileId] = useState<
+    number | undefined
+  >(undefined);
+  const keyAccountsFileInputRef = useRef<HTMLInputElement | null>(null);
   const [onboardingForm, setOnboardingForm] = useState<{ firstName: string; lastName: string; email: string; phone: string; managerPersonId: number | undefined; existingExecutiveId: number | undefined }>({
     firstName: "", lastName: "", email: "", phone: "", managerPersonId: undefined, existingExecutiveId: undefined,
   });
@@ -201,12 +211,14 @@ export default function SuperAdminProfile() {
   const fetchPendingExecutives = useCallback(async () => {
     setLoadingPendingExecutives(true);
     try {
-      const [pending, managers] = await Promise.all([
+      const [pending, managers, portalManagers] = await Promise.all([
         getPendingImportedExecutives(),
         getPersonsByType("manager"),
+        getManagers(),
       ]);
       setPendingExecutives(pending);
       setManagerList(managers);
+      setKeyAccountsImportManagers(portalManagers);
       if (executiveList.length === 0) {
         const execs = await getExecutives();
         setExecutiveList(execs);
@@ -217,6 +229,39 @@ export default function SuperAdminProfile() {
       setLoadingPendingExecutives(false);
     }
   }, []);
+
+  const runKeyAccountsImportForFile = async (file: File | null | undefined) => {
+    if (!file) return;
+    const name = file.name.toLowerCase();
+    if (!name.endsWith(".xlsx")) {
+      toast.error("Please upload an Excel .xlsx file");
+      return;
+    }
+    setKeyAccountsImporting(true);
+    try {
+      const result = await importKeyAccountsFromExcel(file, {
+        sheet: keyAccountsSheetName.trim() || undefined,
+        ...(keyAccountsAssignedManagerProfileId != null
+          ? { assignedManagerProfileId: keyAccountsAssignedManagerProfileId }
+          : {}),
+      });
+      const s = result.stats;
+      toast.success("Key accounts import completed", {
+        description: `Sheet “${result.sheetName}”: corporates created ${s.created}, updated ${s.updated}; accounts +${s.accountsCreated} / ~${s.accountsUpdated}; services +${s.servicesCreated}; contracts +${s.contractsCreated}. New placeholder executives: ${result.createdExecutivesCount}.`,
+      });
+      if (result.unresolvedTotal > 0) {
+        toast.message(`${result.unresolvedTotal} row(s) had no matching executive`, {
+          description:
+            "Those rows were skipped. Add executives in the system or enable consistent account-manager names in the file.",
+        });
+      }
+      await fetchPendingExecutives();
+    } catch (err: unknown) {
+      toast.error("Import failed", { description: err instanceof Error ? err.message : undefined });
+    } finally {
+      setKeyAccountsImporting(false);
+    }
+  };
 
   useEffect(() => {
     if (activeTab === "users") fetchPortalUsers();
@@ -1139,6 +1184,125 @@ export default function SuperAdminProfile() {
 
       {/* PENDING IMPORTED EXECUTIVES (placeholders from Excel import) */}
       {activeTab === "pendingExecutives" && (
+        <div className="space-y-6">
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base flex items-center gap-2">
+                <FileSpreadsheet className="h-5 w-5 text-mtc-blue" />
+                Import key accounts from Excel
+              </CardTitle>
+              <p className="text-xs text-slate-500 mt-1">
+                Upload the same .xlsx format as the backend import script. This creates or updates key-account corporates,
+                linked customer accounts, services (when MSISDN is present), and contracts. Missing account managers become placeholder executives
+                with @import.local emails — complete onboarding for them in the table below.
+              </p>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-2 max-w-md">
+                <Label htmlFor="key-accounts-manager">Link corporates to manager (optional)</Label>
+                <Select
+                  id="key-accounts-manager"
+                  value={keyAccountsAssignedManagerProfileId?.toString() ?? ""}
+                  onChange={(e) =>
+                    setKeyAccountsAssignedManagerProfileId(
+                      e.target.value ? Number(e.target.value) : undefined
+                    )
+                  }
+                  disabled={keyAccountsImporting}
+                >
+                  <option value="">Infer from each executive&apos;s portal record</option>
+                  {keyAccountsImportManagers.map((m) => (
+                    <option key={m.managerId} value={m.managerId}>
+                      {m.firstName} {m.lastName}
+                      {m.department ? ` — ${m.department}` : ""} (ID&nbsp;{m.managerId})
+                    </option>
+                  ))}
+                </Select>
+                <p className="text-xs text-slate-500">
+                  When chosen, corporates and <span className="font-mono">executive_staff</span> use that portal manager’s{' '}
+                  <span className="font-mono">managers.manager_id</span>. Customer accounts resolve the matching{' '}
+                  <span className="font-mono">persons.id</span> (manager Person by email); if none exists yet,{' '}
+                  <span className="font-mono">accounts.manager_id</span> is left empty to satisfy the DB foreign key.
+                </p>
+              </div>
+              <div className="space-y-2 max-w-md">
+                <Label htmlFor="key-accounts-sheet">Sheet name (optional)</Label>
+                <Input
+                  id="key-accounts-sheet"
+                  placeholder="Leave blank to use the first sheet"
+                  value={keyAccountsSheetName}
+                  onChange={(e) => setKeyAccountsSheetName(e.target.value)}
+                  disabled={keyAccountsImporting}
+                />
+              </div>
+              <input
+                ref={keyAccountsFileInputRef}
+                type="file"
+                accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                className="hidden"
+                onChange={(e) => {
+                  const f = e.target.files?.[0];
+                  void runKeyAccountsImportForFile(f);
+                  e.target.value = "";
+                }}
+              />
+              <div
+                role="button"
+                tabIndex={0}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    if (!keyAccountsImporting) keyAccountsFileInputRef.current?.click();
+                  }
+                }}
+                onDragEnter={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setKeyAccountsImportDragging(true);
+                }}
+                onDragLeave={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setKeyAccountsImportDragging(false);
+                }}
+                onDragOver={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setKeyAccountsImportDragging(false);
+                  const f = e.dataTransfer.files?.[0];
+                  void runKeyAccountsImportForFile(f);
+                }}
+                className={`rounded-xl border-2 border-dashed px-6 py-10 text-center transition-colors ${
+                  keyAccountsImportDragging
+                    ? "border-mtc-blue bg-blue-50/50"
+                    : "border-slate-200 bg-slate-50/50 hover:border-slate-300"
+                } ${keyAccountsImporting ? "pointer-events-none opacity-60" : "cursor-pointer"}`}
+                onClick={() => {
+                  if (!keyAccountsImporting) keyAccountsFileInputRef.current?.click();
+                }}
+              >
+                {keyAccountsImporting ? (
+                  <div className="flex flex-col items-center gap-2 text-slate-600">
+                    <Loader2 className="h-8 w-8 animate-spin text-mtc-blue" />
+                    <span className="text-sm font-medium">Importing…</span>
+                  </div>
+                ) : (
+                  <div className="flex flex-col items-center gap-2 text-slate-600">
+                    <Upload className="h-8 w-8 text-mtc-blue" />
+                    <span className="text-sm font-medium text-slate-800">
+                      Drag and drop an .xlsx file here, or click to browse
+                    </span>
+                    <span className="text-xs text-slate-500">Max 50 MB · Admin only</span>
+                  </div>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+
         <Card>
           <CardHeader className="flex flex-row items-center justify-between">
             <div>
@@ -1208,6 +1372,7 @@ export default function SuperAdminProfile() {
             </TableBody>
           </Table>
         </Card>
+        </div>
       )}
 
 

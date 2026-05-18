@@ -118,8 +118,18 @@ app.use((err, req, res, next) => {
   if (err instanceof multer.MulterError) {
     return res.status(400).json({
       status: 'Failed',
-      message: err.code === 'LIMIT_FILE_SIZE' ? 'Attachment must be 5MB or smaller' : err.message,
+      message:
+        err.code === 'LIMIT_FILE_SIZE'
+          ? 'Uploaded file exceeds the maximum allowed size.'
+          : err.message,
     });
+  }
+  if (
+    err &&
+    typeof err.message === 'string' &&
+    err.message.includes('Only Excel')
+  ) {
+    return res.status(400).json({ status: 'Failed', message: err.message });
   }
   console.error('Unhandled error:', err);
   res.status(500).json({ status: 'Failed', message: 'Internal server error' });

@@ -250,6 +250,14 @@ function authHeaders(): HeadersInit {
   };
 }
 
+/** For multipart requests — do not set Content-Type (browser sets boundary). */
+function authHeadersMultipart(): HeadersInit {
+  const token = localStorage.getItem("accessToken");
+  return {
+    ...(token ? { Authorization: `Bearer ${token}` } : {}),
+  };
+}
+
 function handleUnauthorized(status: number) {
   if (status === 401) {
     localStorage.removeItem("accessToken");
@@ -428,6 +436,58 @@ export const completeImportedExecutive = async (
   const data = await res.json();
   if (!res.ok) { handleUnauthorized(res.status); throw new Error(data.message || "Failed to complete onboarding"); }
   return data;
+};
+
+export interface KeyAccountsImportStats {
+  totalRows: number;
+  skipped: number;
+  unresolvedExecutive: number;
+  created: number;
+  updated: number;
+  accountsCreated: number;
+  accountsUpdated: number;
+  servicesCreated: number;
+  servicesUpdated: number;
+  contractsCreated: number;
+  contractsUpdated: number;
+  corporateNameDedupHits: number;
+  accountNameDedupHits: number;
+  skippedServiceRows: number;
+}
+
+export interface KeyAccountsImportResponse {
+  status: string;
+  message: string;
+  sheetName: string;
+  stats: KeyAccountsImportStats;
+  createdExecutivesCount: number;
+  unresolvedSample: Array<{ corporateNumber: string; corporateName: string; accountManager: string }>;
+  unresolvedTotal: number;
+}
+
+export const importKeyAccountsFromExcel = async (
+  file: File,
+  options?: { sheet?: string; assignedManagerProfileId?: number }
+): Promise<KeyAccountsImportResponse> => {
+  const form = new FormData();
+  form.append("file", file);
+  if (options?.sheet?.trim()) form.append("sheet", options.sheet.trim());
+  if (
+    options?.assignedManagerProfileId != null &&
+    Number.isInteger(options.assignedManagerProfileId) &&
+    options.assignedManagerProfileId > 0
+  ) {
+    form.append("managerId", String(options.assignedManagerProfileId));
+  }
+
+  const res = await fetch(`${API_BASE_URL}/admin/imports/key-accounts`, {
+    method: "POST",
+    headers: authHeadersMultipart(),
+    body: form,
+  });
+  const data = await res.json();
+  if (!res.ok) { handleUnauthorized(res.status); throw new Error(data.message || "Failed to import spreadsheet"); }
+  return data as KeyAccountsImportResponse;
 };
 
 // ── Customer accounts ─────────────────────────────────────────────

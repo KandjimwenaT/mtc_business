@@ -6,7 +6,7 @@ import {
 } from "../components/ui-components";;
 import {
   User, Mail, Phone, Briefcase, Users, ArrowRightLeft, FileText, Clock,
-  Settings, Plus, Trash2, X, CheckCircle, ArrowUp, Edit, Shield
+  Settings, Plus, Trash2, X, CheckCircle, ArrowUp, Edit, Shield, Loader2
 } from "lucide-react";
 import { getMyProfile } from "../api/authApi";
 import type { UserProfile } from "../api/authApi";
@@ -31,6 +31,7 @@ export default function ManagementProfile() {
   const [managerCorporates, setManagerCorporates] = useState<CorporateRecord[]>([]);
   const [managerExecutives, setManagerExecutives] = useState<PersonRecord[]>([]);
   const [reassigningCorporateId, setReassigningCorporateId] = useState<number | null>(null);
+  const [executiveReassignPick, setExecutiveReassignPick] = useState<Record<number, string>>({});
   const [promotingExecutiveId, setPromotingExecutiveId] = useState<number | null>(null);
   const [demotingSupervisorId, setDemotingSupervisorId] = useState<number | null>(null);
 
@@ -189,45 +190,94 @@ export default function ManagementProfile() {
                         </span>
                       </TableCell>
                       <TableCell>{new Date(c.created_at).toLocaleDateString()}</TableCell>
-                      <TableCell className="text-right">
-                        <Select
-                          className="w-40 h-8 text-xs"
-                          value={c.executiveId ? String(c.executiveId) : ""}
-                          disabled={reassigningCorporateId === c.corporateId}
-                          onChange={async (e) => {
-                            const nextExecutiveId = e.target.value ? parseInt(e.target.value, 10) : 0;
-                            if (!nextExecutiveId) return;
-                            setReassigningCorporateId(c.corporateId);
-                            try {
-                              await reassignCorporateExecutive(c.corporateId, nextExecutiveId);
-                              setManagerCorporates((prev) =>
-                                prev.map((corp) => {
-                                  if (corp.corporateId !== c.corporateId) return corp;
-                                  const picked = managerExecutives.find((ex) => ex.id === nextExecutiveId);
-                                  return {
-                                    ...corp,
-                                    executiveId: nextExecutiveId,
-                                    executiveFirstName: picked?.firstName,
-                                    executiveLastName: picked?.lastName,
-                                  };
-                                })
-                              );
-                              const picked = managerExecutives.find((ex) => ex.id === nextExecutiveId);
-                              toast.success(`${c.corporateName} reassigned to ${picked ? `${picked.firstName} ${picked.lastName}` : "selected executive"}`);
-                            } catch (err) {
-                              toast.error("Reassignment failed", { description: err instanceof Error ? err.message : undefined });
-                            } finally {
-                              setReassigningCorporateId(null);
-                            }
-                          }}
-                        >
-                          <option value="">Reassign to...</option>
-                          {managerExecutives.map((ex) => (
-                            <option key={ex.id} value={String(ex.id)}>
-                              {ex.firstName} {ex.lastName}
-                            </option>
-                          ))}
-                        </Select>
+                      <TableCell className="text-right align-top">
+                        {(() => {
+                          const currentPersonId = managerExecutives.find(
+                            (ex) =>
+                              `${(ex.firstName || "").trim()} ${(ex.lastName || "").trim()}`.toLowerCase() ===
+                              `${(c.executiveFirstName || "").trim()} ${(c.executiveLastName || "").trim()}`.toLowerCase()
+                          )?.id;
+                          const pick = executiveReassignPick[c.corporateId] ?? "";
+                          return (
+                            <div className="inline-flex flex-col items-end gap-1.5 max-w-[11rem]">
+                              <Select
+                                className="w-40 h-8 text-xs"
+                                value={pick}
+                                disabled={reassigningCorporateId === c.corporateId}
+                                onChange={(e) =>
+                                  setExecutiveReassignPick((prev) => ({
+                                    ...prev,
+                                    [c.corporateId]: e.target.value,
+                                  }))
+                                }
+                              >
+                                <option value="">Choose executive…</option>
+                                {managerExecutives.map((ex) => (
+                                  <option
+                                    key={ex.id}
+                                    value={String(ex.id)}
+                                    disabled={currentPersonId != null && ex.id === currentPersonId}
+                                  >
+                                    {ex.firstName} {ex.lastName}
+                                  </option>
+                                ))}
+                              </Select>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="h-7 text-xs"
+                                disabled={
+                                  reassigningCorporateId === c.corporateId ||
+                                  !pick ||
+                                  pick === String(currentPersonId ?? "")
+                                }
+                                onClick={async () => {
+                                  const nextExecutiveId = parseInt(pick, 10);
+                                  if (!nextExecutiveId) return;
+                                  setReassigningCorporateId(c.corporateId);
+                                  try {
+                                    const updated = await reassignCorporateExecutive(c.corporateId, nextExecutiveId);
+                                    const picked = managerExecutives.find((ex) => ex.id === nextExecutiveId);
+                                    setManagerCorporates((prev) =>
+                                      prev.map((corp) => {
+                                        if (corp.corporateId !== c.corporateId) return corp;
+                                        return {
+                                          ...corp,
+                                          executiveId: updated.executiveId ?? corp.executiveId,
+                                          executiveFirstName: picked?.firstName,
+                                          executiveLastName: picked?.lastName,
+                                        };
+                                      })
+                                    );
+                                    setExecutiveReassignPick((prev) => {
+                                        const next = { ...prev };
+                                        delete next[c.corporateId];
+                                        return next;
+                                      });
+                                    toast.success(`${c.corporateName} reassigned`, {
+                                        description:
+                                          "Notifications were sent to the previous and new executives, and to contact persons with portal access.",
+                                      });
+                                  } catch (err) {
+                                    toast.error("Reassignment failed", {
+                                      description: err instanceof Error ? err.message : undefined,
+                                    });
+                                  } finally {
+                                    setReassigningCorporateId(null);
+                                  }
+                                }}
+                              >
+                                {reassigningCorporateId === c.corporateId ? (
+                                  <span className="inline-flex items-center gap-1">
+                                    <Loader2 className="h-3 w-3 animate-spin" /> Working…
+                                  </span>
+                                ) : (
+                                  "Confirm"
+                                )}
+                              </Button>
+                            </div>
+                          );
+                        })()}
                       </TableCell>
                     </TableRow>
                   );
