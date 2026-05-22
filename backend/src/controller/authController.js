@@ -5,6 +5,7 @@ const OTPModel = require("../models/otpModel");
 const User = require("../models/User");
 const Person = require("../models/Person");
 const AccountManager = require("../models/AccountManager");
+const CorporateContactPerson = require("../models/CorporateContactPerson");
 const GM = require("../models/GM");
 const Manager = require("../models/Manager");
 const ExecutiveStaff = require("../models/ExecutiveStaff");
@@ -18,6 +19,7 @@ const { createForUserIds } = require("../services/notificationService");
 const {
   getCorporateIdsForAccountManager,
   enrichAccountsWithCorporateContact,
+  propagateContactPersonToCorporateAccounts,
 } = require("../services/contactPersonService");
 
 const hasExecutiveScope = (role) =>
@@ -1474,6 +1476,450 @@ exports.getMyAccount = async (req, res) => {
     });
   } catch (error) {
     console.error("Get my account error:", error);
+    return res.status(500).json({ status: "Failed", message: "Internal server error" });
+  }
+};
+
+// ── Executive-scoped corporate contact persons ──────────────────────
+//
+// Executives (and supervisors with executive scope) can manage the
+// contact persons of corporates they own. A corporate is "owned" by an
+// executive when either Corporate.executiveId matches their executive
+// profile or at least one Account under that corporate is assigned to
+// them. Ownership is checked on every mutation so executives can never
+// touch corporates outside their book of business.
+
+const serializeAccountManagerAsContactPerson = (am, corporateName = null) => ({
+  id: am.accountManagerId,
+  firstName: am.firstName,
+  lastName: am.lastName,
+  email: am.email,
+  phone: am.phone,
+  type: "customer",
+  region: null,
+  department: corporateName,
+  gmId: null,
+  managerId: null,
+  corporateId: am.corporateId,
+  hasPortalAccess: am.hasPortalAccess,
+  created_at: am.createdAt,
+});
+
+const resolveExecutiveStaffForUser = async (user) => {
+  if (!user || !hasExecutiveScope(user.role)) return null;
+  return ExecutiveStaff.findOne({ where: { userId: user.id } });
+};
+
+const getOwnedCorporateIdsForExecutive = async (exec) => {
+  if (!exec) return [];
+  const [corporateRows, accountRows] = await Promise.all([
+    Corporate.findAll({
+      where: { executiveId: exec.executiveId },
+      attributes: ["corporateId"],
+    }),
+    Account.findAll({
+      where: { executiveId: exec.executiveId },
+      attributes: ["corporateId"],
+    }),
+  ]);
+  const ids = new Set();
+  for (const c of corporateRows) {
+    if (Number.isInteger(c.corporateId)) ids.add(c.corporateId);
+  }
+  for (const a of accountRows) {
+    if (Number.isInteger(a.corporateId)) ids.add(a.corporateId);
+  }
+  return [...ids];
+};
+
+const assertExecutiveOwnsCorporate = async (corporateIdRaw, user) => {
+  const corporateId = Number(corporateIdRaw);
+  if (!Number.isInteger(corporateId)) {
+    return { error: { status: 400, message: "Valid corporate ID is required" } };
+  }
+  if (!hasExecutiveScope(user?.role)) {
+    return { error: { status: 403, message: "This endpoint is for executive and supervisor users" } };
+  }
+  const exec = await resolveExecutiveStaffForUser(user);
+  if (!exec) {
+    return { error: { status: 404, message: "Executive profile not found" } };
+  }
+  const corporate = await Corporate.findByPk(corporateId);
+  if (!corporate) {
+    return { error: { status: 404, message: "Corporate not found" } };
+  }
+  const isDirectlyAssigned = corporate.executiveId === exec.executiveId;
+  if (!isDirectlyAssigned) {
+    const linkedAccount = await Account.findOne({
+      where: { corporateId: corporate.corporateId, executiveId: exec.executiveId },
+      attributes: ["accountId"],
+    });
+    if (!linkedAccount) {
+      return { error: { status: 403, message: "You do not have access to this corporate" } };
+    }
+  }
+  return { exec, corporate };
+};
+
+const listContactPersonsForCorporateInternal = async (corporateId) => {
+  const numericId = Number(corporateId);
+  if (!Number.isInteger(numericId)) return [];
+  const [primary, junction] = await Promise.all([
+    AccountManager.findAll({ where: { corporateId: numericId } }),
+    CorporateContactPerson.findAll({ where: { corporateId: numericId } }),
+  ]);
+  const junctionAmIds = junction
+    .map((j) => j.accountManagerId)
+    .filter((id) => Number.isInteger(id));
+  const junctionAms = junctionAmIds.length
+    ? await AccountManager.findAll({ where: { accountManagerId: junctionAmIds } })
+    : [];
+  const seen = new Set();
+  const all = [];
+  for (const am of [...primary, ...junctionAms]) {
+    if (!am || seen.has(am.accountManagerId)) continue;
+    seen.add(am.accountManagerId);
+    all.push(am);
+  }
+  return all;
+};
+
+// Business rule (executive scope): a corporate may have at most one
+// contact person at a time. Use this to reject add/create requests when
+// a contact already exists; the executive must remove the current one
+// first.
+const corporateAlreadyHasContactPerson = async (corporateId, excludeAccountManagerId = null) => {
+  const ams = await listContactPersonsForCorporateInternal(corporateId);
+  return ams.some((am) => am.accountManagerId !== excludeAccountManagerId);
+};
+
+// Undo the contact mirroring done by propagateContactPersonToCorporateAccounts.
+// We only blank out per-account contact fields that still match the contact
+// person we're removing, so manually-entered, account-specific contacts are
+// left untouched.
+const clearMirroredContactFromCorporateAccounts = async (corporateId, accountManager) => {
+  if (!corporateId || !accountManager) return 0;
+  const removedFirst = (accountManager.firstName || "").trim().toLowerCase();
+  const removedLast = (accountManager.lastName || "").trim().toLowerCase();
+  const removedEmail = (accountManager.email || "").trim().toLowerCase();
+  const accounts = await Account.findAll({ where: { corporateId } });
+  let cleared = 0;
+  for (const acc of accounts) {
+    const accFirst = (acc.contactFirstName || "").trim().toLowerCase();
+    const accLast = (acc.contactLastName || "").trim().toLowerCase();
+    const accEmail = (acc.contactEmail || "").trim().toLowerCase();
+    const matchesRemoved =
+      (!!removedEmail && accEmail === removedEmail) ||
+      (!!removedFirst && !!removedLast && accFirst === removedFirst && accLast === removedLast);
+    if (!matchesRemoved) continue;
+    await acc.update({
+      contactFirstName: "",
+      contactLastName: "",
+      contactEmail: "",
+      contactPhone: null,
+    });
+    cleared += 1;
+  }
+  return cleared;
+};
+
+// GET /auth/my-corporates
+exports.getMyCorporates = async (req, res) => {
+  try {
+    const user = req.user;
+    if (!hasExecutiveScope(user.role)) {
+      return res.status(403).json({ status: "Failed", message: "This endpoint is for executive and supervisor users" });
+    }
+    const exec = await resolveExecutiveStaffForUser(user);
+    if (!exec) {
+      return res.status(404).json({ status: "Failed", message: "Executive profile not found" });
+    }
+    const ids = await getOwnedCorporateIdsForExecutive(exec);
+    if (ids.length === 0) {
+      return res.status(200).json({ status: "Success", corporates: [] });
+    }
+    const corporates = await Corporate.findAll({
+      where: { corporateId: ids },
+      order: [["corporate_name", "ASC"]],
+    });
+    return res.status(200).json({ status: "Success", corporates });
+  } catch (error) {
+    console.error("Get my corporates error:", error);
+    return res.status(500).json({ status: "Failed", message: "Internal server error" });
+  }
+};
+
+// GET /auth/my-account-managers
+// Returns the contact persons (AccountManagers) already linked to any of
+// the executive's owned corporates, so they can be picked and re-linked
+// to additional corporates in the executive's book.
+exports.getMyAccountManagers = async (req, res) => {
+  try {
+    const user = req.user;
+    if (!hasExecutiveScope(user.role)) {
+      return res.status(403).json({ status: "Failed", message: "This endpoint is for executive and supervisor users" });
+    }
+    const exec = await resolveExecutiveStaffForUser(user);
+    if (!exec) {
+      return res.status(404).json({ status: "Failed", message: "Executive profile not found" });
+    }
+    const corporateIds = await getOwnedCorporateIdsForExecutive(exec);
+    if (corporateIds.length === 0) {
+      return res.status(200).json({ status: "Success", persons: [] });
+    }
+    const [primary, junction] = await Promise.all([
+      AccountManager.findAll({ where: { corporateId: corporateIds } }),
+      CorporateContactPerson.findAll({ where: { corporateId: corporateIds } }),
+    ]);
+    const amIds = new Set();
+    const ams = [];
+    for (const am of primary) {
+      if (amIds.has(am.accountManagerId)) continue;
+      amIds.add(am.accountManagerId);
+      ams.push(am);
+    }
+    const missingIds = junction
+      .map((j) => j.accountManagerId)
+      .filter((id) => Number.isInteger(id) && !amIds.has(id));
+    if (missingIds.length > 0) {
+      const extras = await AccountManager.findAll({ where: { accountManagerId: missingIds } });
+      for (const am of extras) {
+        if (amIds.has(am.accountManagerId)) continue;
+        amIds.add(am.accountManagerId);
+        ams.push(am);
+      }
+    }
+    const corporates = await Corporate.findAll({ where: { corporateId: corporateIds } });
+    const corpMap = Object.fromEntries(corporates.map((c) => [c.corporateId, c]));
+    const persons = ams.map((am) =>
+      serializeAccountManagerAsContactPerson(am, corpMap[am.corporateId]?.corporateName || null)
+    );
+    return res.status(200).json({ status: "Success", persons });
+  } catch (error) {
+    console.error("Get my account managers error:", error);
+    return res.status(500).json({ status: "Failed", message: "Internal server error" });
+  }
+};
+
+// GET /auth/my-corporates/:corporateId/contact-persons
+exports.getMyCorporateContactPersons = async (req, res) => {
+  try {
+    const ownership = await assertExecutiveOwnsCorporate(req.params.corporateId, req.user);
+    if (ownership.error) {
+      return res.status(ownership.error.status).json({ status: "Failed", message: ownership.error.message });
+    }
+    const { corporate } = ownership;
+    const ams = await listContactPersonsForCorporateInternal(corporate.corporateId);
+    const persons = ams.map((am) => serializeAccountManagerAsContactPerson(am, corporate.corporateName));
+    return res.status(200).json({ status: "Success", persons });
+  } catch (error) {
+    console.error("Get my corporate contact persons error:", error);
+    return res.status(500).json({ status: "Failed", message: "Internal server error" });
+  }
+};
+
+// POST /auth/my-corporates/:corporateId/contact-persons   body: { accountManagerId }
+exports.assignContactPersonToMyCorporate = async (req, res) => {
+  try {
+    const ownership = await assertExecutiveOwnsCorporate(req.params.corporateId, req.user);
+    if (ownership.error) {
+      return res.status(ownership.error.status).json({ status: "Failed", message: ownership.error.message });
+    }
+    const { corporate } = ownership;
+    const { accountManagerId } = req.body || {};
+    if (!accountManagerId) {
+      return res.status(400).json({ status: "Failed", message: "Contact person ID is required" });
+    }
+    const accountManager = await AccountManager.findByPk(accountManagerId);
+    if (!accountManager) {
+      return res.status(404).json({ status: "Failed", message: "Contact person not found" });
+    }
+
+    if (accountManager.corporateId === corporate.corporateId) {
+      return res.status(200).json({
+        status: "Success",
+        message: "Contact person is already linked to this corporate",
+        person: serializeAccountManagerAsContactPerson(accountManager, corporate.corporateName),
+      });
+    }
+
+    // Only one contact person per corporate.
+    if (await corporateAlreadyHasContactPerson(corporate.corporateId, accountManager.accountManagerId)) {
+      return res.status(400).json({
+        status: "Failed",
+        message:
+          "This corporate already has a contact person. Remove the existing one before assigning a new contact.",
+      });
+    }
+
+    const [, created] = await CorporateContactPerson.findOrCreate({
+      where: {
+        corporateId: corporate.corporateId,
+        accountManagerId: accountManager.accountManagerId,
+      },
+      defaults: {
+        corporateId: corporate.corporateId,
+        accountManagerId: accountManager.accountManagerId,
+      },
+    });
+
+    try {
+      await propagateContactPersonToCorporateAccounts(corporate.corporateId, accountManager);
+    } catch (propagationError) {
+      console.error("Propagate contact to corporate accounts failed:", propagationError);
+    }
+
+    return res.status(created ? 201 : 200).json({
+      status: "Success",
+      message: created
+        ? "Contact person linked to corporate"
+        : "Contact person is already linked to this corporate",
+      person: serializeAccountManagerAsContactPerson(accountManager, corporate.corporateName),
+    });
+  } catch (error) {
+    console.error("Assign contact person to my corporate error:", error);
+    return res.status(500).json({ status: "Failed", message: "Internal server error" });
+  }
+};
+
+// DELETE /auth/my-corporates/:corporateId/contact-persons/:accountManagerId
+exports.removeContactPersonFromMyCorporate = async (req, res) => {
+  try {
+    const ownership = await assertExecutiveOwnsCorporate(req.params.corporateId, req.user);
+    if (ownership.error) {
+      return res.status(ownership.error.status).json({ status: "Failed", message: ownership.error.message });
+    }
+    const { corporate } = ownership;
+    const { accountManagerId } = req.params;
+    if (!accountManagerId) {
+      return res.status(400).json({ status: "Failed", message: "Contact person ID is required" });
+    }
+    const accountManager = await AccountManager.findByPk(accountManagerId);
+    if (!accountManager) {
+      return res.status(404).json({ status: "Failed", message: "Contact person not found" });
+    }
+
+    // Drop the junction link for this corporate (no-op if it wasn't there).
+    const removedJunction = await CorporateContactPerson.destroy({
+      where: {
+        corporateId: corporate.corporateId,
+        accountManagerId: accountManager.accountManagerId,
+      },
+    });
+
+    const isPrimaryHere = accountManager.corporateId === corporate.corporateId;
+    if (isPrimaryHere) {
+      // If the contact also lives on other corporates (junction links),
+      // promote one of those to be its new primary corporate.
+      const remaining = await CorporateContactPerson.findOne({
+        where: { accountManagerId: accountManager.accountManagerId },
+      });
+      if (remaining) {
+        await accountManager.update({ corporateId: remaining.corporateId });
+        await CorporateContactPerson.destroy({
+          where: {
+            corporateId: remaining.corporateId,
+            accountManagerId: accountManager.accountManagerId,
+          },
+        });
+      } else if (accountManager.hasPortalAccess) {
+        // We can't safely orphan a contact that still has portal login
+        // credentials — revoke those first via the admin tools.
+        return res.status(400).json({
+          status: "Failed",
+          message:
+            "This contact has portal access. Revoke their portal access before removing them from their only corporate.",
+        });
+      } else {
+        // No other corporate to fall back to and no portal access:
+        // delete the contact record entirely so the corporate is left
+        // with no contact person (which is the intended state).
+        await accountManager.destroy();
+      }
+    } else if (!removedJunction) {
+      return res.status(404).json({
+        status: "Failed",
+        message: "Contact person is not linked to this corporate",
+      });
+    }
+
+    // Clear the mirrored contact fields on the corporate's child accounts
+    // whenever the contact we just removed matches what was propagated.
+    try {
+      await clearMirroredContactFromCorporateAccounts(corporate.corporateId, accountManager);
+    } catch (clearErr) {
+      console.error("Clear propagated contact fields failed:", clearErr);
+    }
+
+    return res.status(200).json({
+      status: "Success",
+      message: "Contact person removed from corporate",
+    });
+  } catch (error) {
+    console.error("Remove contact person from my corporate error:", error);
+    return res.status(500).json({ status: "Failed", message: "Internal server error" });
+  }
+};
+
+// POST /auth/my-corporates/:corporateId/contact-persons/new
+// body: { firstName, lastName, email, phone? }
+exports.createContactPersonForMyCorporate = async (req, res) => {
+  try {
+    const ownership = await assertExecutiveOwnsCorporate(req.params.corporateId, req.user);
+    if (ownership.error) {
+      return res.status(ownership.error.status).json({ status: "Failed", message: ownership.error.message });
+    }
+    const { corporate } = ownership;
+    const { firstName, lastName, email, phone } = req.body || {};
+
+    if (!firstName || !lastName || !email) {
+      return res.status(400).json({
+        status: "Failed",
+        message: "First name, last name and email are required",
+      });
+    }
+    if (!securityService.validateEmail(email)) {
+      return res.status(400).json({ status: "Failed", message: "Invalid email format" });
+    }
+
+    // Only one contact person per corporate.
+    if (await corporateAlreadyHasContactPerson(corporate.corporateId)) {
+      return res.status(400).json({
+        status: "Failed",
+        message:
+          "This corporate already has a contact person. Remove the existing one before creating a new contact.",
+      });
+    }
+
+    const existing = await AccountManager.findOne({ where: { email } });
+    if (existing) {
+      return res
+        .status(400)
+        .json({ status: "Failed", message: "A contact person with this email already exists" });
+    }
+
+    const accountManager = await AccountManager.create({
+      firstName,
+      lastName,
+      email,
+      phone: phone || null,
+      corporateId: corporate.corporateId,
+      hasPortalAccess: false,
+    });
+
+    try {
+      await propagateContactPersonToCorporateAccounts(corporate.corporateId, accountManager);
+    } catch (propagationError) {
+      console.error("Propagate contact to corporate accounts failed:", propagationError);
+    }
+
+    return res.status(201).json({
+      status: "Success",
+      message: "Contact person created and linked",
+      person: serializeAccountManagerAsContactPerson(accountManager, corporate.corporateName),
+    });
+  } catch (error) {
+    console.error("Create contact person for my corporate error:", error);
     return res.status(500).json({ status: "Failed", message: "Internal server error" });
   }
 };

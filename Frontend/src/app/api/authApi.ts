@@ -1,4 +1,5 @@
 import { API_BASE_URL } from "./apiBase";
+import type { CorporateRecord, PersonRecord } from "./adminApi";
 
 export interface LoginPayload {
   email: string;
@@ -508,4 +509,132 @@ export const getMyAccount = async (): Promise<CustomerAccountResponse> => {
   }
 
   return data as CustomerAccountResponse;
+};
+
+// ── Executive-scoped corporate contact persons ───────────────────
+//
+// Mirrors the admin/manager contact-person API but is ownership-checked
+// server-side so executives can only manage corporates they own (either
+// via Corporate.executiveId or via an assigned Account under that
+// corporate).
+
+export interface ExecutiveContactPersonPayload {
+  firstName: string;
+  lastName: string;
+  email: string;
+  phone?: string;
+}
+
+export const getMyCorporates = async (): Promise<CorporateRecord[]> => {
+  const response = await fetch(`${API_BASE_URL}/auth/my-corporates`, {
+    method: "GET",
+    headers: authHeaders(),
+  });
+  if (response.status === 401) {
+    handleUnauthorized();
+    throw new Error("Session expired");
+  }
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.message || "Failed to fetch corporates");
+  }
+  return (data.corporates ?? []) as CorporateRecord[];
+};
+
+export const getMyAccountManagers = async (): Promise<PersonRecord[]> => {
+  const response = await fetch(`${API_BASE_URL}/auth/my-account-managers`, {
+    method: "GET",
+    headers: authHeaders(),
+  });
+  if (response.status === 401) {
+    handleUnauthorized();
+    throw new Error("Session expired");
+  }
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.message || "Failed to fetch contact persons");
+  }
+  return (data.persons ?? []) as PersonRecord[];
+};
+
+export const getMyCorporateContactPersons = async (
+  corporateId: number,
+): Promise<PersonRecord[]> => {
+  const response = await fetch(
+    `${API_BASE_URL}/auth/my-corporates/${corporateId}/contact-persons`,
+    { method: "GET", headers: authHeaders() },
+  );
+  if (response.status === 401) {
+    handleUnauthorized();
+    throw new Error("Session expired");
+  }
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.message || "Failed to load contact persons");
+  }
+  return (data.persons ?? []) as PersonRecord[];
+};
+
+export const assignContactPersonToMyCorporate = async (
+  corporateId: number,
+  accountManagerId: number,
+): Promise<PersonRecord> => {
+  const response = await fetch(
+    `${API_BASE_URL}/auth/my-corporates/${corporateId}/contact-persons`,
+    {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify({ accountManagerId }),
+    },
+  );
+  if (response.status === 401) {
+    handleUnauthorized();
+    throw new Error("Session expired");
+  }
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.message || "Failed to link contact person");
+  }
+  return data.person as PersonRecord;
+};
+
+export const removeContactPersonFromMyCorporate = async (
+  corporateId: number,
+  accountManagerId: number,
+): Promise<void> => {
+  const response = await fetch(
+    `${API_BASE_URL}/auth/my-corporates/${corporateId}/contact-persons/${accountManagerId}`,
+    { method: "DELETE", headers: authHeaders() },
+  );
+  if (response.status === 401) {
+    handleUnauthorized();
+    throw new Error("Session expired");
+  }
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data.message || "Failed to remove contact person");
+  }
+};
+
+export const createContactPersonForMyCorporate = async (
+  corporateId: number,
+  payload: ExecutiveContactPersonPayload,
+): Promise<PersonRecord> => {
+  const response = await fetch(
+    `${API_BASE_URL}/auth/my-corporates/${corporateId}/contact-persons/new`,
+    {
+      method: "POST",
+      headers: authHeaders(),
+      body: JSON.stringify(payload),
+    },
+  );
+  if (response.status === 401) {
+    handleUnauthorized();
+    throw new Error("Session expired");
+  }
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.message || "Failed to create contact person");
+  }
+  return data.person as PersonRecord;
 };

@@ -23,6 +23,31 @@ router.get('/my-spending-summary', auth, authController.getMyMonthlySpendingSumm
 router.get('/my-spending-trend', auth, authController.getMyMonthlySpendingTrend);
 router.get('/my-expiring-contracts', auth, authController.getMyExpiringContracts);
 router.get('/my-account', auth, authController.getMyAccount);
+
+// Executive-scoped corporate contact persons (ownership-checked in controller)
+router.get('/my-corporates', auth, authController.getMyCorporates);
+router.get('/my-account-managers', auth, authController.getMyAccountManagers);
+router.get(
+  '/my-corporates/:corporateId/contact-persons',
+  auth,
+  authController.getMyCorporateContactPersons
+);
+router.post(
+  '/my-corporates/:corporateId/contact-persons',
+  auth,
+  authController.assignContactPersonToMyCorporate
+);
+router.post(
+  '/my-corporates/:corporateId/contact-persons/new',
+  auth,
+  authController.createContactPersonForMyCorporate
+);
+router.delete(
+  '/my-corporates/:corporateId/contact-persons/:accountManagerId',
+  auth,
+  authController.removeContactPersonFromMyCorporate
+);
+
 router.put('/profile', auth, authController.updateProfile);
 router.put('/change-password', auth, authController.changePassword);
 

@@ -28,7 +28,17 @@ import {
   type AccountRecord, type ContractRecord, type ServiceRecord, type PersonRecord, type CorporateRecord, type ExpiringContractRecord,
   type AccountPayload, type ContractPayload, type ServicePayload, type CorporatePayload,
 } from "../api/adminApi";
-import { getMyExpiringContracts, type ExecutiveAccountRecord, type ExpiringContractRecord as ExecutiveExpiringContractRecord } from "../api/authApi";
+import {
+  getMyExpiringContracts,
+  getMyAccountManagers,
+  getMyCorporateContactPersons,
+  assignContactPersonToMyCorporate,
+  removeContactPersonFromMyCorporate,
+  createContactPersonForMyCorporate,
+  type ExecutiveAccountRecord,
+  type ExpiringContractRecord as ExecutiveExpiringContractRecord,
+  type ExecutiveContactPersonPayload,
+} from "../api/authApi";
 import { getAllTickets, type TicketRecord } from "../api/ticketApi";
 import { Mail, Phone } from "lucide-react";
 import AdminCorporateWizard from "./admin/adminCorporateWizard";
@@ -243,6 +253,7 @@ export default function Corporates() {
     accounts: execAccounts,
     initialLoading: execInitialLoading,
     initialized: execInitialized,
+    refreshAccounts: refreshExecAccounts,
   } = useExecutiveData();
   const loadingExecAccounts = execInitialLoading || (!execInitialized && hasExecutiveScope);
   const [execExpiringContracts, setExecExpiringContracts] = useState<ExecutiveExpiringContractRecord[]>([]);
@@ -250,6 +261,23 @@ export default function Corporates() {
   const [execDetailContracts, setExecDetailContracts] = useState<ContractRecord[]>([]);
   const [execDetailServices, setExecDetailServices] = useState<ServiceRecord[]>([]);
   const [loadingExecDetail, setLoadingExecDetail] = useState(false);
+
+  // === Executive: corporate contact-person management ===
+  const [execCorporateContacts, setExecCorporateContacts] = useState<PersonRecord[]>([]);
+  const [loadingExecCorporateContacts, setLoadingExecCorporateContacts] = useState(false);
+  const [execAccountManagers, setExecAccountManagers] = useState<PersonRecord[]>([]);
+  const [showExecContactPersonModal, setShowExecContactPersonModal] = useState(false);
+  const [showExecCreateContactModal, setShowExecCreateContactModal] = useState(false);
+  const [execContactSearchQuery, setExecContactSearchQuery] = useState("");
+  const [assigningExecContactId, setAssigningExecContactId] = useState<number | null>(null);
+  const [removingExecContactId, setRemovingExecContactId] = useState<number | null>(null);
+  const [creatingExecContact, setCreatingExecContact] = useState(false);
+  const [newExecContactForm, setNewExecContactForm] = useState<ExecutiveContactPersonPayload>({
+    firstName: "",
+    lastName: "",
+    email: "",
+    phone: "",
+  });
 
   // Fetch accounts & executives for manager
   const fetchAccounts = useCallback(async () => {
@@ -426,6 +454,142 @@ export default function Corporates() {
     setSelectedExecAccount(acc);
     setExecDetailContracts(acc.contracts as unknown as ContractRecord[]);
     setExecDetailServices(acc.services as unknown as ServiceRecord[]);
+  };
+
+  // Refresh the contact persons linked to the executive's currently selected
+  // account's corporate. Mirrors the admin "Contact Persons" table on the
+  // corporate detail view.
+  const refreshExecCorporateContacts = useCallback(async (corporateId: number | null | undefined) => {
+    if (!corporateId) {
+      setExecCorporateContacts([]);
+      return;
+    }
+    setLoadingExecCorporateContacts(true);
+    try {
+      const persons = await getMyCorporateContactPersons(corporateId);
+      setExecCorporateContacts(persons);
+    } catch (err) {
+      toast.error("Failed to load contact persons", {
+        description: err instanceof Error ? err.message : undefined,
+      });
+      setExecCorporateContacts([]);
+    } finally {
+      setLoadingExecCorporateContacts(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isExecutive) return;
+    refreshExecCorporateContacts(selectedExecAccount?.corporateId ?? null);
+  }, [isExecutive, selectedExecAccount?.corporateId, refreshExecCorporateContacts]);
+
+  // Load the pool of account managers the executive can pick from (everyone
+  // already linked to one of their corporates).
+  useEffect(() => {
+    if (!isExecutive) return;
+    getMyAccountManagers()
+      .then(setExecAccountManagers)
+      .catch((err) =>
+        toast.error("Failed to load contact persons", {
+          description: err instanceof Error ? err.message : undefined,
+        })
+      );
+  }, [isExecutive]);
+
+  const availableExecContactCandidates = useMemo(() => {
+    const linkedIds = new Set(execCorporateContacts.map((c) => c.id));
+    const q = execContactSearchQuery.trim().toLowerCase();
+    return execAccountManagers
+      .filter((am) => !linkedIds.has(am.id))
+      .filter((am) => {
+        if (!q) return true;
+        const fullName = `${am.firstName ?? ""} ${am.lastName ?? ""}`.toLowerCase();
+        return (
+          fullName.includes(q) ||
+          (am.email ?? "").toLowerCase().includes(q) ||
+          (am.phone ?? "").toLowerCase().includes(q) ||
+          (am.department ?? "").toLowerCase().includes(q)
+        );
+      });
+  }, [execAccountManagers, execCorporateContacts, execContactSearchQuery]);
+
+  const resetNewExecContactForm = () => {
+    setNewExecContactForm({ firstName: "", lastName: "", email: "", phone: "" });
+  };
+
+  const handleAssignExecContactPerson = async (accountManagerId: number) => {
+    if (!selectedExecAccount?.corporateId) return;
+    setAssigningExecContactId(accountManagerId);
+    try {
+      await assignContactPersonToMyCorporate(selectedExecAccount.corporateId, accountManagerId);
+      toast.success("Contact person linked to corporate");
+      await Promise.all([
+        refreshExecCorporateContacts(selectedExecAccount.corporateId),
+        getMyAccountManagers().then(setExecAccountManagers).catch(() => {}),
+        refreshExecAccounts(),
+      ]);
+      setShowExecContactPersonModal(false);
+      setExecContactSearchQuery("");
+    } catch (err) {
+      toast.error("Failed to link contact person", {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    } finally {
+      setAssigningExecContactId(null);
+    }
+  };
+
+  const handleRemoveExecContactPerson = async (accountManagerId: number) => {
+    if (!selectedExecAccount?.corporateId) return;
+    if (!window.confirm("Remove this contact person from this corporate?")) return;
+    setRemovingExecContactId(accountManagerId);
+    try {
+      await removeContactPersonFromMyCorporate(selectedExecAccount.corporateId, accountManagerId);
+      toast.success("Contact person removed");
+      await Promise.all([
+        refreshExecCorporateContacts(selectedExecAccount.corporateId),
+        getMyAccountManagers().then(setExecAccountManagers).catch(() => {}),
+        refreshExecAccounts(),
+      ]);
+    } catch (err) {
+      toast.error("Failed to remove contact person", {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    } finally {
+      setRemovingExecContactId(null);
+    }
+  };
+
+  const handleCreateExecContactPerson = async () => {
+    if (!selectedExecAccount?.corporateId) return;
+    const { firstName, lastName, email, phone } = newExecContactForm;
+    if (!firstName.trim() || !lastName.trim() || !email.trim()) {
+      toast.error("First name, last name and email are required");
+      return;
+    }
+    setCreatingExecContact(true);
+    try {
+      await createContactPersonForMyCorporate(selectedExecAccount.corporateId, {
+        firstName: firstName.trim(),
+        lastName: lastName.trim(),
+        email: email.trim(),
+        phone: phone?.trim() || undefined,
+      });
+      toast.success("Contact person created and linked");
+      await Promise.all([
+        refreshExecCorporateContacts(selectedExecAccount.corporateId),
+        getMyAccountManagers().then(setExecAccountManagers).catch(() => {}),
+        refreshExecAccounts(),
+      ]);
+      setShowExecCreateContactModal(false);
+      resetNewExecContactForm();
+    } catch (err) {
+      toast.error("Failed to create contact person", {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    } finally {
+      setCreatingExecContact(false);
+    }
   };
 
   // Auto-select the first cached account when executive data finishes loading.
@@ -863,6 +1027,21 @@ export default function Corporates() {
     }
   }, [isExecutive, alphabetFilteredExecAccounts, selectedExecAccount]);
 
+  // Keep the currently selected exec account in sync with the upstream
+  // execAccounts cache. The cache refreshes after contact-person mutations
+  // so propagated contact info (name/email/phone) reflects immediately in
+  // the right-hand Account Summary card.
+  useEffect(() => {
+    if (!isExecutive) return;
+    if (!selectedExecAccount) return;
+    const fresh = execAccounts.find((a) => a.accountId === selectedExecAccount.accountId);
+    if (fresh && fresh !== selectedExecAccount) {
+      setSelectedExecAccount(fresh);
+      setExecDetailContracts(fresh.contracts as unknown as ContractRecord[]);
+      setExecDetailServices(fresh.services as unknown as ServiceRecord[]);
+    }
+  }, [isExecutive, execAccounts, selectedExecAccount]);
+
   useEffect(() => {
     if (!isManager) return;
     if (!selectedCorporate || !alphabetFilteredCorporateRecords.some((corp) => corp.corporateId === selectedCorporate.corporateId)) {
@@ -1173,6 +1352,117 @@ export default function Corporates() {
                       </div>
                     </CardContent>
                   </Card>
+
+                  {/* Corporate Contact Persons (executive can assign) */}
+                  {selectedExecAccount.corporateId && (
+                    <Card>
+                      <CardHeader>
+                        <div className="flex items-start justify-between gap-3 flex-wrap">
+                          <div>
+                            <CardTitle className="text-base flex items-center gap-2">
+                              <Users className="h-4 w-4 text-slate-500" /> Contact Person
+                            </CardTitle>
+                            <p className="text-xs text-slate-500 mt-1">
+                              Linked to{" "}
+                              <span className="font-medium text-slate-700">
+                                {selectedExecAccount.corporateName || "this corporate"}
+                              </span>
+                              . Each corporate may have one contact person at a time —
+                              remove the current contact to assign a new one.
+                            </p>
+                          </div>
+                          {execCorporateContacts.length === 0 && !loadingExecCorporateContacts && (
+                            <div className="flex flex-wrap gap-2">
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => {
+                                  setShowExecContactPersonModal(true);
+                                  setExecContactSearchQuery("");
+                                }}
+                              >
+                                <UserPlus className="h-4 w-4 mr-1" /> Add Contact Person
+                              </Button>
+                              <Button
+                                size="sm"
+                                onClick={() => {
+                                  resetNewExecContactForm();
+                                  setShowExecCreateContactModal(true);
+                                }}
+                              >
+                                <UserPlus className="h-4 w-4 mr-1" /> New Contact Person
+                              </Button>
+                            </div>
+                          )}
+                        </div>
+                      </CardHeader>
+                      <CardContent>
+                        <div className="rounded-lg border border-slate-200 overflow-x-auto">
+                          <table className="w-full text-sm">
+                            <thead className="bg-slate-50">
+                              <tr className="text-left text-slate-500">
+                                <th className="px-4 py-2.5">Name</th>
+                                <th className="px-4 py-2.5">Email</th>
+                                <th className="px-4 py-2.5">Phone</th>
+                                <th className="px-4 py-2.5">Portal Access</th>
+                                <th className="px-4 py-2.5 text-right">Action</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-slate-100">
+                              {loadingExecCorporateContacts ? (
+                                <tr>
+                                  <td colSpan={5} className="px-4 py-3 text-slate-500">
+                                    <span className="inline-flex items-center gap-2">
+                                      <Loader2 className="h-4 w-4 animate-spin" /> Loading contact persons…
+                                    </span>
+                                  </td>
+                                </tr>
+                              ) : execCorporateContacts.length === 0 ? (
+                                <tr>
+                                  <td colSpan={5} className="px-4 py-3 text-slate-500">
+                                    No contact person added.
+                                  </td>
+                                </tr>
+                              ) : (
+                                execCorporateContacts.map((cp) => (
+                                  <tr key={cp.id}>
+                                    <td className="px-4 py-3 font-medium">
+                                      {cp.firstName} {cp.lastName}
+                                    </td>
+                                    <td className="px-4 py-3">{cp.email}</td>
+                                    <td className="px-4 py-3">{cp.phone || "—"}</td>
+                                    <td className="px-4 py-3">
+                                      {cp.hasPortalAccess ? (
+                                        <Badge variant="success">Enabled</Badge>
+                                      ) : (
+                                        <Badge variant="warning">Not enabled</Badge>
+                                      )}
+                                    </td>
+                                    <td className="px-4 py-3 text-right">
+                                      <Button
+                                        variant="ghost"
+                                        size="sm"
+                                        onClick={() => handleRemoveExecContactPerson(cp.id)}
+                                        disabled={removingExecContactId === cp.id}
+                                      >
+                                        {removingExecContactId === cp.id ? (
+                                          <Loader2 className="h-4 w-4 animate-spin" />
+                                        ) : (
+                                          <span className="inline-flex items-center gap-1 text-red-600">
+                                            <Trash2 className="h-4 w-4" /> Remove
+                                          </span>
+                                        )}
+                                      </Button>
+                                    </td>
+                                  </tr>
+                                ))
+                              )}
+                            </tbody>
+                          </table>
+                        </div>
+                      </CardContent>
+                    </Card>
+                  )}
 
                   {/* Contracts */}
                   <Card>
@@ -2250,6 +2540,261 @@ export default function Corporates() {
               <Button variant="outline" onClick={handleCloseDetail}>Close</Button>
             </div>
           </div>
+        </div>
+      )}
+
+      {/* ═══════════ EXECUTIVE: Select Contact Person Modal ═══════════ */}
+      {isExecutive && showExecContactPersonModal && selectedExecAccount?.corporateId && (
+        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in">
+          <Card className="w-full max-w-2xl max-h-[90vh] flex flex-col">
+            <CardHeader className="flex flex-row items-center justify-between border-b border-slate-200 py-4">
+              <div>
+                <CardTitle className="flex items-center gap-2">
+                  <Users className="h-5 w-5 text-mtc-blue" />
+                  Select Contact Person
+                </CardTitle>
+                <p className="text-xs text-slate-500 mt-1">
+                  Choose an existing contact person to link to{" "}
+                  <span className="font-medium text-slate-700">
+                    {selectedExecAccount.corporateName || "this corporate"}
+                  </span>
+                  . A contact person can be linked to multiple corporates.
+                </p>
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setShowExecContactPersonModal(false);
+                  setExecContactSearchQuery("");
+                }}
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            </CardHeader>
+            <CardContent className="pt-4 flex-1 overflow-hidden flex flex-col gap-3">
+              <div className="relative">
+                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400 pointer-events-none" />
+                <Input
+                  className="pl-9"
+                  placeholder="Search by name, email, phone, or current corporate…"
+                  value={execContactSearchQuery}
+                  onChange={(e) => setExecContactSearchQuery(e.target.value)}
+                  autoFocus
+                />
+              </div>
+
+              <div className="rounded-lg border border-slate-200 overflow-y-auto flex-1">
+                {execAccountManagers.length === 0 ? (
+                  <div className="p-6 text-sm text-slate-500 text-center space-y-3">
+                    <div>
+                      You have no contact persons linked to your corporates yet.
+                    </div>
+                    <Button
+                      size="sm"
+                      onClick={() => {
+                        setShowExecContactPersonModal(false);
+                        setExecContactSearchQuery("");
+                        resetNewExecContactForm();
+                        setShowExecCreateContactModal(true);
+                      }}
+                    >
+                      <UserPlus className="h-4 w-4 mr-1" />
+                      Create New Contact Person
+                    </Button>
+                  </div>
+                ) : availableExecContactCandidates.length === 0 ? (
+                  <div className="p-6 text-sm text-slate-500 text-center">
+                    {execContactSearchQuery
+                      ? "No contact persons match your search."
+                      : "All existing contact persons are already linked to this corporate."}
+                  </div>
+                ) : (
+                  <table className="w-full text-sm">
+                    <thead className="bg-slate-50 sticky top-0">
+                      <tr className="text-left text-slate-500">
+                        <th className="px-4 py-2.5">Name</th>
+                        <th className="px-4 py-2.5">Email</th>
+                        <th className="px-4 py-2.5">Phone</th>
+                        <th className="px-4 py-2.5">Current Corporate</th>
+                        <th className="px-4 py-2.5 text-right">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {availableExecContactCandidates.map((cp) => (
+                        <tr key={cp.id} className="hover:bg-slate-50">
+                          <td className="px-4 py-3 font-medium text-slate-900">
+                            {cp.firstName} {cp.lastName}
+                          </td>
+                          <td className="px-4 py-3 text-slate-700 inline-flex items-center gap-1">
+                            <Mail className="h-3 w-3 text-slate-400" /> {cp.email}
+                          </td>
+                          <td className="px-4 py-3 text-slate-700">
+                            {cp.phone ? (
+                              <span className="inline-flex items-center gap-1">
+                                <Phone className="h-3 w-3 text-slate-400" /> {cp.phone}
+                              </span>
+                            ) : (
+                              "—"
+                            )}
+                          </td>
+                          <td className="px-4 py-3 text-slate-600">{cp.department || "—"}</td>
+                          <td className="px-4 py-3 text-right">
+                            <Button
+                              size="sm"
+                              onClick={() => handleAssignExecContactPerson(cp.id)}
+                              disabled={assigningExecContactId !== null}
+                            >
+                              {assigningExecContactId === cp.id ? (
+                                <span className="inline-flex items-center gap-1">
+                                  <Loader2 className="h-4 w-4 animate-spin" /> Linking…
+                                </span>
+                              ) : (
+                                "Select"
+                              )}
+                            </Button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+
+              <div className="rounded-md border border-dashed border-slate-300 bg-slate-50 p-3 text-xs text-slate-600">
+                Can't find the contact person you're looking for? Use{" "}
+                <span className="font-medium">New Contact Person</span> to create one
+                and link it to this corporate.
+              </div>
+            </CardContent>
+            <div className="flex flex-col-reverse gap-2 px-6 py-4 border-t border-slate-200 sm:flex-row sm:justify-between">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setShowExecContactPersonModal(false);
+                  setExecContactSearchQuery("");
+                }}
+              >
+                Close
+              </Button>
+              <Button
+                onClick={() => {
+                  setShowExecContactPersonModal(false);
+                  setExecContactSearchQuery("");
+                  resetNewExecContactForm();
+                  setShowExecCreateContactModal(true);
+                }}
+              >
+                <UserPlus className="h-4 w-4 mr-1" />
+                Create New Contact Person
+              </Button>
+            </div>
+          </Card>
+        </div>
+      )}
+
+      {/* ═══════════ EXECUTIVE: Create New Contact Person Modal ═══════════ */}
+      {isExecutive && showExecCreateContactModal && selectedExecAccount?.corporateId && (
+        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in">
+          <Card className="w-full max-w-lg">
+            <CardHeader className="flex flex-row items-center justify-between border-b border-slate-200 py-4">
+              <div>
+                <CardTitle className="flex items-center gap-2">
+                  <UserPlus className="h-5 w-5 text-mtc-blue" />
+                  New Contact Person
+                </CardTitle>
+                <p className="text-xs text-slate-500 mt-1">
+                  Create a new contact person and link them to{" "}
+                  <span className="font-medium text-slate-700">
+                    {selectedExecAccount.corporateName || "this corporate"}
+                  </span>
+                  .
+                </p>
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setShowExecCreateContactModal(false);
+                  resetNewExecContactForm();
+                }}
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            </CardHeader>
+            <CardContent className="pt-4 space-y-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div>
+                  <label className="text-xs font-medium text-slate-600">First name</label>
+                  <Input
+                    className="mt-1"
+                    value={newExecContactForm.firstName}
+                    onChange={(e) =>
+                      setNewExecContactForm((prev) => ({ ...prev, firstName: e.target.value }))
+                    }
+                    placeholder="John"
+                  />
+                </div>
+                <div>
+                  <label className="text-xs font-medium text-slate-600">Last name</label>
+                  <Input
+                    className="mt-1"
+                    value={newExecContactForm.lastName}
+                    onChange={(e) =>
+                      setNewExecContactForm((prev) => ({ ...prev, lastName: e.target.value }))
+                    }
+                    placeholder="Doe"
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="text-xs font-medium text-slate-600">Email</label>
+                <Input
+                  className="mt-1"
+                  type="email"
+                  value={newExecContactForm.email}
+                  onChange={(e) =>
+                    setNewExecContactForm((prev) => ({ ...prev, email: e.target.value }))
+                  }
+                  placeholder="john.doe@example.com"
+                />
+              </div>
+              <div>
+                <label className="text-xs font-medium text-slate-600">Phone (optional)</label>
+                <Input
+                  className="mt-1"
+                  value={newExecContactForm.phone ?? ""}
+                  onChange={(e) =>
+                    setNewExecContactForm((prev) => ({ ...prev, phone: e.target.value }))
+                  }
+                  placeholder="+264 81 000 0000"
+                />
+              </div>
+            </CardContent>
+            <div className="flex flex-col-reverse gap-2 px-6 py-4 border-t border-slate-200 sm:flex-row sm:justify-end">
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setShowExecCreateContactModal(false);
+                  resetNewExecContactForm();
+                }}
+                disabled={creatingExecContact}
+              >
+                Cancel
+              </Button>
+              <Button onClick={handleCreateExecContactPerson} disabled={creatingExecContact}>
+                {creatingExecContact ? (
+                  <span className="inline-flex items-center gap-1">
+                    <Loader2 className="h-4 w-4 animate-spin" /> Creating…
+                  </span>
+                ) : (
+                  <>
+                    <UserPlus className="h-4 w-4 mr-1" /> Create &amp; Link
+                  </>
+                )}
+              </Button>
+            </div>
+          </Card>
         </div>
       )}
 
