@@ -23,6 +23,11 @@ router.post(
   keyAccountsImportUpload.single("file"),
   adminController.importKeyAccountsFromExcelUpload
 );
+router.get(
+  "/imports/key-accounts/jobs/:jobId",
+  superAdminOnly,
+  adminController.getKeyAccountsImportJob
+);
 router.put("/executives/:executivePersonId/promote-supervisor", adminController.promoteExecutiveToSupervisor);
 router.put("/executives/:supervisorPersonId/demote-executive", adminController.demoteSupervisorToExecutive);
 

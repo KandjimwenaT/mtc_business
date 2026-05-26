@@ -140,6 +140,9 @@ async function ensureServiceMsisdnDuplicatesAllowed() {
  * @param {number} [options.assignedManagerProfileId] - managers.manager_id; when set, stamped on
  *   corporates/accounts for this batch and on newly created placeholder executives.
  * @param {(msg: string) => void} [options.onProgress] - optional; e.g. thousand-row progress
+ * @param {(processed: number, total: number) => void} [options.onProgressRow] - optional; called
+ *   every ~25 rows with the running counters. Used by the async-job endpoint to drive the UI
+ *   progress bar without spamming on huge imports.
  */
 async function runKeyAccountsImport(options) {
   const {
@@ -153,6 +156,7 @@ async function runKeyAccountsImport(options) {
     limit = 0,
     offset = 0,
     onProgress,
+    onProgressRow,
     assignedManagerProfileId: assignedManagerOpt = null,
   } = options;
 
@@ -549,6 +553,15 @@ async function runKeyAccountsImport(options) {
       if (onProgress && processed % 1000 === 0) {
         onProgress(`Processed ${processed}/${selectedRows.length} rows...`);
       }
+      // Fine-grained callback (every 25 rows + on the last row) so the async-job
+      // endpoint can drive a smooth 0–100% progress bar in the UI.
+      if (onProgressRow && (processed % 25 === 0 || processed === selectedRows.length)) {
+        try {
+          onProgressRow(processed, selectedRows.length);
+        } catch (_) {
+          // Never let a buggy progress listener break the import.
+        }
+      }
     } catch (rowError) {
       rowError.rowContext = {
         corporateNumber,
@@ -569,6 +582,30 @@ async function runKeyAccountsImport(options) {
   };
 }
 
+/**
+ * Cheap pre-flight: read the workbook and return the sheet name + total
+ * data-row count so we can size the progress bar before the import runs.
+ * Mirrors the header detection used by `runKeyAccountsImport`.
+ */
+function countKeyAccountsRows({ workbookBuffer, sheet: sheetNameOpt = "" } = {}) {
+  requireArg(
+    workbookBuffer && Buffer.isBuffer(workbookBuffer) && workbookBuffer.length > 0,
+    "Missing or empty workbook buffer"
+  );
+  const workbook = XLSX.read(workbookBuffer, { type: "buffer" });
+  const sheetName = sheetNameOpt || workbook.SheetNames[0];
+  requireArg(!!workbook.Sheets[sheetName], `Sheet not found: ${sheetName}`);
+
+  const headerRowIndex = detectHeaderRow(workbook.Sheets[sheetName]);
+  const rows = XLSX.utils.sheet_to_json(workbook.Sheets[sheetName], {
+    defval: "",
+    raw: false,
+    range: headerRowIndex,
+  });
+  return { sheetName, totalRows: rows.length };
+}
+
 module.exports = {
   runKeyAccountsImport,
+  countKeyAccountsRows,
 };

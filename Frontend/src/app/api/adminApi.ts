@@ -465,9 +465,49 @@ export interface KeyAccountsImportResponse {
   unresolvedTotal: number;
 }
 
+export interface KeyAccountsImportProgress {
+  /** 0-100, integer */
+  percent: number;
+  processedRows: number;
+  totalRows: number;
+  /** Current job phase from the backend. */
+  status: "pending" | "running" | "completed" | "failed";
+}
+
+interface KeyAccountsImportJobStartResponse {
+  status: string;
+  message: string;
+  jobId: string;
+  sheetName: string | null;
+  totalRows: number;
+}
+
+interface KeyAccountsImportJobStatus {
+  jobId: string;
+  status: "pending" | "running" | "completed" | "failed";
+  sheetName: string | null;
+  totalRows: number;
+  processedRows: number;
+  percent: number;
+  stats: KeyAccountsImportStats | null;
+  createdExecutivesCount: number;
+  unresolvedSample: Array<{ corporateNumber: string; corporateName: string; accountManager: string }>;
+  unresolvedTotal: number;
+  message: string | null;
+  error: string | null;
+  startedAt: number;
+  finishedAt: number | null;
+}
+
+/**
+ * Upload the spreadsheet, then poll the backend for progress until the
+ * import completes. The backend returns 202 Accepted with a `jobId`
+ * immediately to avoid reverse-proxy 504 timeouts on large files.
+ */
 export const importKeyAccountsFromExcel = async (
   file: File,
-  options?: { sheet?: string; assignedManagerProfileId?: number }
+  options?: { sheet?: string; assignedManagerProfileId?: number },
+  onProgress?: (progress: KeyAccountsImportProgress) => void
 ): Promise<KeyAccountsImportResponse> => {
   const form = new FormData();
   form.append("file", file);
@@ -480,14 +520,107 @@ export const importKeyAccountsFromExcel = async (
     form.append("managerId", String(options.assignedManagerProfileId));
   }
 
-  const res = await fetch(`${API_BASE_URL}/admin/imports/key-accounts`, {
+  const startRes = await fetch(`${API_BASE_URL}/admin/imports/key-accounts`, {
     method: "POST",
     headers: authHeadersMultipart(),
     body: form,
   });
-  const data = await res.json();
-  if (!res.ok) { handleUnauthorized(res.status); throw new Error(data.message || "Failed to import spreadsheet"); }
-  return data as KeyAccountsImportResponse;
+  const startData = (await startRes.json()) as KeyAccountsImportJobStartResponse & {
+    message?: string;
+  };
+  if (!startRes.ok) {
+    handleUnauthorized(startRes.status);
+    throw new Error(startData.message || "Failed to start import");
+  }
+  const { jobId } = startData;
+  if (!jobId) {
+    throw new Error("Server did not return an import job id");
+  }
+
+  // Initial 0% tick so the UI can render the progress bar right away.
+  onProgress?.({
+    percent: 0,
+    processedRows: 0,
+    totalRows: startData.totalRows ?? 0,
+    status: "pending",
+  });
+
+  // Adaptive polling: start snappy (2s) for fast feedback on small imports,
+  // but back off if the API rate limiter (429) pushes back so very long
+  // imports still complete cleanly. Cap at 10s.
+  const minIntervalMs = 2000;
+  const maxIntervalMs = 10000;
+  let intervalMs = minIntervalMs;
+  // Safety cap: ~2 hours of polling at the max interval.
+  const maxPolls = 1200;
+
+  for (let i = 0; i < maxPolls; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    let pollRes: Response;
+    try {
+      pollRes = await fetch(
+        `${API_BASE_URL}/admin/imports/key-accounts/jobs/${encodeURIComponent(jobId)}`,
+        { headers: authHeaders() }
+      );
+    } catch (err) {
+      // Transient network blip — keep polling.
+      continue;
+    }
+
+    if (pollRes.status === 429) {
+      const retryAfter = Number(pollRes.headers.get("Retry-After"));
+      intervalMs = Math.min(
+        maxIntervalMs,
+        Number.isFinite(retryAfter) && retryAfter > 0
+          ? retryAfter * 1000
+          : Math.max(intervalMs * 2, minIntervalMs)
+      );
+      continue;
+    }
+
+    const pollData = await pollRes.json().catch(() => ({}));
+    if (!pollRes.ok) {
+      handleUnauthorized(pollRes.status);
+      throw new Error(
+        (pollData && (pollData as { message?: string }).message) || "Failed to fetch import status"
+      );
+    }
+
+    // Recover toward the snappy interval after a successful poll.
+    intervalMs = minIntervalMs;
+
+    const job = (pollData as { job?: KeyAccountsImportJobStatus }).job;
+    if (!job) {
+      throw new Error("Malformed import status response");
+    }
+
+    onProgress?.({
+      percent: job.percent ?? 0,
+      processedRows: job.processedRows ?? 0,
+      totalRows: job.totalRows ?? 0,
+      status: job.status,
+    });
+
+    if (job.status === "completed") {
+      if (!job.stats) {
+        throw new Error("Import finished but no stats were returned");
+      }
+      return {
+        status: "Success",
+        message: job.message || "Import completed",
+        sheetName: job.sheetName || "",
+        stats: job.stats,
+        createdExecutivesCount: job.createdExecutivesCount,
+        unresolvedSample: job.unresolvedSample,
+        unresolvedTotal: job.unresolvedTotal,
+      };
+    }
+    if (job.status === "failed") {
+      throw new Error(job.error || "Import failed");
+    }
+  }
+
+  throw new Error("Import timed out while waiting for the server to finish");
 };
 
 // ── Customer accounts ─────────────────────────────────────────────

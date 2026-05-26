@@ -4,6 +4,7 @@ import {
   Button, Card, CardContent, CardHeader, CardTitle, Input, Select, Label, Badge,
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow
 } from "../components/ui-components";
+import { Progress } from "../components/ui/progress";
 import {
   User, Shield, Users, Lock, Bell, FileText, Clock,
   Plus, Edit, X, CheckCircle, Search,
@@ -99,6 +100,12 @@ export default function SuperAdminProfile() {
   const [selectedPendingExec, setSelectedPendingExec] = useState<PendingImportedExecutive | null>(null);
   const [keyAccountsImportDragging, setKeyAccountsImportDragging] = useState(false);
   const [keyAccountsImporting, setKeyAccountsImporting] = useState(false);
+  const [keyAccountsImportProgress, setKeyAccountsImportProgress] = useState<{
+    percent: number;
+    processedRows: number;
+    totalRows: number;
+    status: "pending" | "running" | "completed" | "failed";
+  } | null>(null);
   const [keyAccountsSheetName, setKeyAccountsSheetName] = useState("");
   const [keyAccountsImportManagers, setKeyAccountsImportManagers] = useState<ManagerRecord[]>([]);
   const [keyAccountsAssignedManagerProfileId, setKeyAccountsAssignedManagerProfileId] = useState<
@@ -238,12 +245,28 @@ export default function SuperAdminProfile() {
       return;
     }
     setKeyAccountsImporting(true);
+    setKeyAccountsImportProgress({
+      percent: 0,
+      processedRows: 0,
+      totalRows: 0,
+      status: "pending",
+    });
     try {
-      const result = await importKeyAccountsFromExcel(file, {
-        sheet: keyAccountsSheetName.trim() || undefined,
-        ...(keyAccountsAssignedManagerProfileId != null
-          ? { assignedManagerProfileId: keyAccountsAssignedManagerProfileId }
-          : {}),
+      const result = await importKeyAccountsFromExcel(
+        file,
+        {
+          sheet: keyAccountsSheetName.trim() || undefined,
+          ...(keyAccountsAssignedManagerProfileId != null
+            ? { assignedManagerProfileId: keyAccountsAssignedManagerProfileId }
+            : {}),
+        },
+        (progress) => setKeyAccountsImportProgress(progress)
+      );
+      setKeyAccountsImportProgress({
+        percent: 100,
+        processedRows: result.stats.totalRows,
+        totalRows: result.stats.totalRows,
+        status: "completed",
       });
       const s = result.stats;
       toast.success("Key accounts import completed", {
@@ -258,8 +281,11 @@ export default function SuperAdminProfile() {
       await fetchPendingExecutives();
     } catch (err: unknown) {
       toast.error("Import failed", { description: err instanceof Error ? err.message : undefined });
+      setKeyAccountsImportProgress(null);
     } finally {
       setKeyAccountsImporting(false);
+      // Keep the final 100% state visible briefly, then clear it.
+      setTimeout(() => setKeyAccountsImportProgress(null), 4000);
     }
   };
 
@@ -1286,9 +1312,39 @@ export default function SuperAdminProfile() {
                 }}
               >
                 {keyAccountsImporting ? (
-                  <div className="flex flex-col items-center gap-2 text-slate-600">
+                  <div className="flex flex-col items-center gap-3 text-slate-600">
                     <Loader2 className="h-8 w-8 animate-spin text-mtc-blue" />
-                    <span className="text-sm font-medium">Importing…</span>
+                    <span className="text-sm font-medium">
+                      {keyAccountsImportProgress?.status === "pending"
+                        ? "Uploading & preparing…"
+                        : "Importing rows…"}
+                    </span>
+                    <div className="w-full max-w-md space-y-2">
+                      <Progress value={keyAccountsImportProgress?.percent ?? 0} />
+                      <div className="flex items-center justify-between text-xs text-slate-500">
+                        <span>
+                          {keyAccountsImportProgress?.totalRows
+                            ? `${keyAccountsImportProgress.processedRows.toLocaleString()} / ${keyAccountsImportProgress.totalRows.toLocaleString()} rows`
+                            : "Counting rows…"}
+                        </span>
+                        <span className="font-semibold tabular-nums text-slate-700">
+                          {Math.min(100, Math.max(0, Math.round(keyAccountsImportProgress?.percent ?? 0)))}%
+                        </span>
+                      </div>
+                    </div>
+                    <span className="text-[11px] text-slate-400">
+                      You can leave this page — the import continues on the server.
+                    </span>
+                  </div>
+                ) : keyAccountsImportProgress && keyAccountsImportProgress.status === "completed" ? (
+                  <div className="flex flex-col items-center gap-3 text-slate-600">
+                    <CheckCircle className="h-8 w-8 text-emerald-500" />
+                    <span className="text-sm font-medium text-slate-800">
+                      Import completed — {keyAccountsImportProgress.totalRows.toLocaleString()} rows processed
+                    </span>
+                    <div className="w-full max-w-md">
+                      <Progress value={100} />
+                    </div>
                   </div>
                 ) : (
                   <div className="flex flex-col items-center gap-2 text-slate-600">

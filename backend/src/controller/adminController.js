@@ -22,7 +22,11 @@ const {
 } = require("../services/contactPersonService");
 const { Op } = require("sequelize");
 const { sequelize } = require("../config/database");
-const { runKeyAccountsImport } = require("../services/keyAccountsExcelImportService");
+const {
+  runKeyAccountsImport,
+  countKeyAccountsRows,
+} = require("../services/keyAccountsExcelImportService");
+const keyAccountsImportJobs = require("../services/keyAccountsImportJobs");
 
 // ── Helper: resolve a Manager profile id from a persons.id ──────────
 // persons.managerId stores persons.id values, but executive_staff.manager_id
@@ -2534,6 +2538,16 @@ exports.completeImportedExecutiveOnboarding = async (req, res) => {
 };
 
 /** Super-admin: full key-accounts import from uploaded .xlsx (same behavior as CLI with all include flags). */
+// POST /admin/imports/key-accounts
+//
+// Large imports easily exceed the reverse-proxy's idle timeout (504 Gateway
+// Time-out). Instead of running the import inline, we:
+//   1) validate the request synchronously,
+//   2) pre-count rows so the UI can size a progress bar,
+//   3) register an in-memory job and kick off the import in the background,
+//   4) return 202 Accepted immediately with the job id.
+// The frontend then polls GET /admin/imports/key-accounts/jobs/:jobId to
+// render 0–100% and pick up the final stats.
 exports.importKeyAccountsFromExcelUpload = async (req, res) => {
   try {
     if (!req.file || !req.file.buffer) {
@@ -2559,48 +2573,112 @@ exports.importKeyAccountsFromExcelUpload = async (req, res) => {
       assignedManagerProfileId = mid;
     }
 
-    const result = await runKeyAccountsImport({
-      workbookBuffer: req.file.buffer,
-      sheet,
-      dryRun: false,
-      createMissingExecutives: true,
-      includeAccounts: true,
-      includeServices: true,
-      includeContracts: true,
-      ...(assignedManagerProfileId != null ? { assignedManagerProfileId } : {}),
-    });
-
-    const maxUnresolved = 50;
-    return res.status(200).json({
-      status: "Success",
-      message: "Import completed",
-      sheetName: result.sheetName,
-      stats: result.stats,
-      createdExecutivesCount: result.createdExecutives.length,
-      unresolvedSample: result.unresolved.slice(0, maxUnresolved),
-      unresolvedTotal: result.unresolved.length,
-    });
-  } catch (error) {
-    console.error("Key accounts Excel import error:", error);
-    const msg = typeof error.message === "string" ? error.message : "Import failed";
-
-    const isClientError =
-      msg.includes("Could not find") ||
-      msg.includes("No rows found") ||
-      msg.includes("Sheet not found") ||
-      msg.includes("Missing or empty workbook") ||
-      msg.includes("Only Excel");
-
-    if (isClientError) {
+    // Pre-flight: count rows so we can return a real `totalRows` in the 202.
+    // This parses the workbook once; the background worker parses it again to
+    // run the actual import. For the typical key-accounts file this is cheap
+    // compared to the per-row DB work that dominates import time.
+    let preflight;
+    try {
+      preflight = countKeyAccountsRows({ workbookBuffer: req.file.buffer, sheet });
+    } catch (err) {
+      const msg = typeof err.message === "string" ? err.message : "Could not read workbook";
       return res.status(400).json({ status: "Failed", message: msg });
     }
 
-    const detail =
-      error.rowContext != null
-        ? `${msg} (row: ${error.rowContext.corporateNumber} / ${error.rowContext.corporateName})`
-        : msg;
-    return res.status(500).json({ status: "Failed", message: detail });
+    const job = keyAccountsImportJobs.createJob({
+      totalRows: preflight.totalRows,
+      sheetName: preflight.sheetName,
+      requestedBy: req.user?.userId ?? null,
+    });
+
+    // Keep the buffer in a local so the closure doesn't pin `req`.
+    const workbookBuffer = req.file.buffer;
+    const finalAssignedManagerProfileId = assignedManagerProfileId;
+
+    // Respond first, then run the import in the background. Using
+    // `setImmediate` ensures the HTTP response is flushed before the heavy
+    // work starts on the next tick of the event loop.
+    res.status(202).json({
+      status: "Accepted",
+      message: "Import started",
+      jobId: job.jobId,
+      sheetName: job.sheetName,
+      totalRows: job.totalRows,
+    });
+
+    setImmediate(() => {
+      keyAccountsImportJobs.setJob(job.jobId, { status: "running" });
+      runKeyAccountsImport({
+        workbookBuffer,
+        sheet,
+        dryRun: false,
+        createMissingExecutives: true,
+        includeAccounts: true,
+        includeServices: true,
+        includeContracts: true,
+        ...(finalAssignedManagerProfileId != null
+          ? { assignedManagerProfileId: finalAssignedManagerProfileId }
+          : {}),
+        onProgressRow: (processed) => {
+          keyAccountsImportJobs.recordProgress(job.jobId, processed);
+        },
+      })
+        .then((result) => {
+          const maxUnresolved = 50;
+          keyAccountsImportJobs.setJob(job.jobId, {
+            status: "completed",
+            percent: 100,
+            processedRows: result.stats.totalRows,
+            stats: result.stats,
+            sheetName: result.sheetName,
+            createdExecutivesCount: result.createdExecutives.length,
+            unresolvedSample: result.unresolved.slice(0, maxUnresolved),
+            unresolvedTotal: result.unresolved.length,
+            message: "Import completed",
+            finishedAt: Date.now(),
+          });
+        })
+        .catch((error) => {
+          console.error("Key accounts Excel import error:", error);
+          const msg = typeof error.message === "string" ? error.message : "Import failed";
+          const detail =
+            error.rowContext != null
+              ? `${msg} (row: ${error.rowContext.corporateNumber} / ${error.rowContext.corporateName})`
+              : msg;
+          keyAccountsImportJobs.setJob(job.jobId, {
+            status: "failed",
+            error: detail,
+            finishedAt: Date.now(),
+          });
+        });
+    });
+  } catch (error) {
+    console.error("Key accounts Excel import error (request setup):", error);
+    const msg = typeof error.message === "string" ? error.message : "Import failed";
+    return res.status(500).json({ status: "Failed", message: msg });
   }
+};
+
+// GET /admin/imports/key-accounts/jobs/:jobId
+//
+// Returns the live state of an import job so the frontend can render
+// progress and pick up the final stats once the job completes.
+exports.getKeyAccountsImportJob = (req, res) => {
+  const jobId = String(req.params.jobId || "").trim();
+  if (!jobId) {
+    return res.status(400).json({ status: "Failed", message: "Missing jobId" });
+  }
+  const job = keyAccountsImportJobs.getJob(jobId);
+  if (!job) {
+    return res.status(404).json({
+      status: "Failed",
+      message: "Import job not found or expired",
+    });
+  }
+  return res.status(200).json({
+    status: "Success",
+    job,
+  });
 };
 
 // ── Helper: generate a readable but secure temporary password ────
