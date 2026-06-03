@@ -35,9 +35,11 @@ import {
   assignContactPersonToMyCorporate,
   removeContactPersonFromMyCorporate,
   createContactPersonForMyCorporate,
+  getMyProfile,
   type ExecutiveAccountRecord,
   type ExpiringContractRecord as ExecutiveExpiringContractRecord,
   type ExecutiveContactPersonPayload,
+  type UserProfile,
 } from "../api/authApi";
 import { getAllTickets, type TicketRecord } from "../api/ticketApi";
 import { Mail, Phone } from "lucide-react";
@@ -147,6 +149,12 @@ export default function Corporates() {
   const [expiryFilterMonths, setExpiryFilterMonths] = useState<0 | 1 | 3 | 6 | 12>(0);
   const [alphabetFilter, setAlphabetFilter] = useState<string>("all");
   const [executiveFilter, setExecutiveFilter] = useState<string>("all");
+  // Logged-in user's department ("EBU" / "Key Accounts" / null for super-admin).
+  // Loaded once on mount and used to scope the executive filter dropdown.
+  const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+  useEffect(() => {
+    getMyProfile().then(setUserProfile).catch(() => {});
+  }, []);
   const [currentListPage, setCurrentListPage] = useState(1);
 
   // === Mock data state (non-manager roles) ===
@@ -1061,9 +1069,39 @@ export default function Corporates() {
 
   // Manager/supervisor should only see executives under their own team.
   const currentManagerPerson = managers.find((m) => m.email === currentUser?.email);
+
+  // Department scoping for the executive filter dropdown. EBU admins/managers
+  // must not see Key Account executives (and vice versa). We derive an
+  // executive's department from its assigned manager's department (a
+  // PersonRecord.department lookup via Person.id, which matches
+  // PersonRecord.managerId on executives). Super-admins (no department) see
+  // everyone, mirroring the backend rule on corporates.
+  const myDepartment: "EBU" | "Key Accounts" | null =
+    userProfile?.department === "EBU"
+      ? "EBU"
+      : userProfile?.department === "Key Accounts"
+      ? "Key Accounts"
+      : null;
+
+  const managerDepartmentByPersonId = useMemo(() => {
+    const map = new Map<number, string | null>();
+    for (const m of managers) {
+      map.set(m.id, m.department ?? null);
+    }
+    return map;
+  }, [managers]);
+
+  const departmentScopedExecutives = useMemo(() => {
+    if (!myDepartment) return executives;
+    return executives.filter((e) => {
+      if (e.managerId == null) return false; // orphans hidden from departmented users
+      return managerDepartmentByPersonId.get(e.managerId) === myDepartment;
+    });
+  }, [executives, managerDepartmentByPersonId, myDepartment]);
+
   const assignmentExecutives = (isManager && currentManagerPerson)
-    ? executives.filter((e) => e.managerId === currentManagerPerson.id)
-    : executives;
+    ? departmentScopedExecutives.filter((e) => e.managerId === currentManagerPerson.id)
+    : departmentScopedExecutives;
 
   const selectedCorporateExecPersonId = useMemo(() => {
     if (!selectedCorporate) return "";

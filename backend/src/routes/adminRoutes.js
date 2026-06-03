@@ -28,6 +28,17 @@ router.get(
   superAdminOnly,
   adminController.getKeyAccountsImportJob
 );
+router.post(
+  "/imports/ebu",
+  superAdminOnly,
+  keyAccountsImportUpload.single("file"),
+  adminController.importEbuFromExcelUpload
+);
+router.get(
+  "/imports/ebu/jobs/:jobId",
+  superAdminOnly,
+  adminController.getEbuImportJob
+);
 router.put("/executives/:executivePersonId/promote-supervisor", adminController.promoteExecutiveToSupervisor);
 router.put("/executives/:supervisorPersonId/demote-executive", adminController.demoteSupervisorToExecutive);
 

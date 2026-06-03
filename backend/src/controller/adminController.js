@@ -26,7 +26,16 @@ const {
   runKeyAccountsImport,
   countKeyAccountsRows,
 } = require("../services/keyAccountsExcelImportService");
+const {
+  runEbuImport,
+  countEbuRows,
+} = require("../services/ebuExcelImportService");
 const keyAccountsImportJobs = require("../services/keyAccountsImportJobs");
+const {
+  resolveRequesterDepartment,
+  filterCorporatesByRequesterDepartment,
+  buildCorporateDepartmentMap,
+} = require("../services/corporateSegmentScope");
 
 // ── Helper: resolve a Manager profile id from a persons.id ──────────
 // persons.managerId stores persons.id values, but executive_staff.manager_id
@@ -230,8 +239,15 @@ exports.getCorporatesWithoutContactPersons = async (req, res) => {
       if (Number.isInteger(link.corporateId)) takenCorporateIds.add(link.corporateId);
     }
 
-    const available = corporates.filter((corporate) => !takenCorporateIds.has(corporate.corporateId));
-    return res.status(200).json({ status: "Success", corporates: available });
+    const available = corporates
+      .filter((corporate) => !takenCorporateIds.has(corporate.corporateId))
+      .map((corporate) => corporate.toJSON());
+
+    // Department scoping: hide corporates outside the requester's segment.
+    const requesterDepartment = await resolveRequesterDepartment(req.user);
+    const scoped = await filterCorporatesByRequesterDepartment(available, requesterDepartment);
+
+    return res.status(200).json({ status: "Success", corporates: scoped });
   } catch (error) {
     console.error("Get corporates without contact persons error:", error);
     return res.status(500).json({ status: "Failed", message: "Internal server error" });
@@ -895,7 +911,14 @@ exports.getCorporates = async (req, res) => {
     }
 
     const corporates = await Corporate.findAll({ where, order: [["created_at", "DESC"]] });
-    const plain = corporates.map((c) => c.toJSON());
+    const allPlain = corporates.map((c) => c.toJSON());
+
+    // Department scoping: managers/supervisors/admins/executives see only
+    // corporates in their own segment ("Key Accounts" vs "EBU"). Users with no
+    // resolvable department (super-admins) bypass the filter. Orphan corporates
+    // with no resolvable segment are hidden from departmented users.
+    const requesterDepartment = await resolveRequesterDepartment(req.user);
+    const plain = await filterCorporatesByRequesterDepartment(allPlain, requesterDepartment);
     const corporateIds = plain.map((c) => c.corporateId);
 
     if (corporateIds.length > 0) {
@@ -2287,7 +2310,62 @@ exports.getPendingImportedExecutives = async (req, res) => {
       accountCounts.map((row) => [row.executiveId, Number(row.count) || 0])
     );
 
-    const result = executives.map((exec) => ({
+    // Department scoping: EBU admin only sees EBU placeholders, Key Accounts
+    // admin only sees KAM placeholders. Super-admins (no department) see all.
+    // Department is derived from ExecutiveStaff.managerId -> Manager.department;
+    // if no managerId, fall back to any linked corporate's department via the
+    // existing corporateSegmentScope helper. Orphans (no resolvable segment)
+    // are hidden from departmented admins.
+    const requesterDepartment = await resolveRequesterDepartment(req.user);
+
+    let visibleExecutives = executives;
+    if (requesterDepartment) {
+      const managerIdSet = new Set();
+      for (const exec of executives) {
+        if (exec.managerId != null) managerIdSet.add(exec.managerId);
+      }
+      const managerDeptMap = new Map();
+      if (managerIdSet.size) {
+        const managers = await Manager.findAll({
+          where: { managerId: { [Op.in]: Array.from(managerIdSet) } },
+          attributes: ["managerId", "department"],
+        });
+        for (const m of managers) {
+          managerDeptMap.set(m.managerId, m.department || null);
+        }
+      }
+
+      const execsNeedingCorporateFallback = executives.filter(
+        (exec) =>
+          exec.managerId == null ||
+          !managerDeptMap.get(exec.managerId)
+      );
+      const fallbackExecIds = execsNeedingCorporateFallback.map((e) => e.executiveId);
+      const corporateDeptByExecId = new Map();
+      if (fallbackExecIds.length) {
+        const linkedCorporates = await Corporate.findAll({
+          where: { executiveId: { [Op.in]: fallbackExecIds } },
+          attributes: ["corporateId", "managerId", "executiveId"],
+        });
+        const corporateDeptMap = await buildCorporateDepartmentMap(linkedCorporates);
+        for (const corp of linkedCorporates) {
+          const dept = corporateDeptMap.get(corp.corporateId);
+          if (!dept) continue;
+          if (!corporateDeptByExecId.has(corp.executiveId)) {
+            corporateDeptByExecId.set(corp.executiveId, dept);
+          }
+        }
+      }
+
+      visibleExecutives = executives.filter((exec) => {
+        const fromManager = exec.managerId != null ? managerDeptMap.get(exec.managerId) : null;
+        const fromCorporate = corporateDeptByExecId.get(exec.executiveId) || null;
+        const execDepartment = fromManager || fromCorporate || null;
+        return execDepartment === requesterDepartment;
+      });
+    }
+
+    const result = visibleExecutives.map((exec) => ({
       executiveId: exec.executiveId,
       firstName: exec.firstName,
       lastName: exec.lastName,
@@ -2556,21 +2634,37 @@ exports.importKeyAccountsFromExcelUpload = async (req, res) => {
 
     const sheet = req.body && req.body.sheet != null ? String(req.body.sheet).trim() : "";
 
-    let assignedManagerProfileId = null;
     const rawMgr = req.body && req.body.managerId;
-    if (rawMgr != null && String(rawMgr).trim() !== "") {
-      const mid = Number(String(rawMgr).trim());
-      if (!Number.isInteger(mid) || mid <= 0) {
-        return res.status(400).json({ status: "Failed", message: "managerId must be a positive integer" });
-      }
-      const managerRow = await Manager.findByPk(mid);
-      if (!managerRow) {
-        return res.status(400).json({
-          status: "Failed",
-          message: "Invalid manager selection — use a portal manager id from GET /admin/managers",
-        });
-      }
-      assignedManagerProfileId = mid;
+    if (rawMgr == null || String(rawMgr).trim() === "") {
+      return res
+        .status(400)
+        .json({ status: "Failed", message: "Manager selection is required" });
+    }
+    const assignedManagerProfileId = Number(String(rawMgr).trim());
+    if (!Number.isInteger(assignedManagerProfileId) || assignedManagerProfileId <= 0) {
+      return res
+        .status(400)
+        .json({ status: "Failed", message: "managerId must be a positive integer" });
+    }
+    const managerRow = await Manager.findByPk(assignedManagerProfileId);
+    if (!managerRow) {
+      return res.status(400).json({
+        status: "Failed",
+        message: "Invalid manager selection — use a portal manager id from GET /admin/managers",
+      });
+    }
+    if (managerRow.department !== "Key Accounts") {
+      return res.status(400).json({
+        status: "Failed",
+        message: "Selected manager is not in Key Accounts",
+      });
+    }
+    const requesterDepartment = await resolveRequesterDepartment(req.user);
+    if (requesterDepartment && requesterDepartment !== "Key Accounts") {
+      return res.status(403).json({
+        status: "Failed",
+        message: "Only Key Accounts admins can run the Key Accounts import",
+      });
     }
 
     // Pre-flight: count rows so we can return a real `totalRows` in the 202.
@@ -2664,6 +2758,150 @@ exports.importKeyAccountsFromExcelUpload = async (req, res) => {
 // Returns the live state of an import job so the frontend can render
 // progress and pick up the final stats once the job completes.
 exports.getKeyAccountsImportJob = (req, res) => {
+  const jobId = String(req.params.jobId || "").trim();
+  if (!jobId) {
+    return res.status(400).json({ status: "Failed", message: "Missing jobId" });
+  }
+  const job = keyAccountsImportJobs.getJob(jobId);
+  if (!job) {
+    return res.status(404).json({
+      status: "Failed",
+      message: "Import job not found or expired",
+    });
+  }
+  return res.status(200).json({
+    status: "Success",
+    job,
+  });
+};
+
+// POST /admin/imports/ebu
+//
+// EBU corporate import. Mirrors the Key Accounts importer flow (202 + async
+// job + polling) but uses the EBU sheet structure and a different segment
+// (corporates/accounts stamped as `ebu`). The job registry is shared with
+// the KAM importer; the parallel status route below keeps the API surface
+// segmented.
+exports.importEbuFromExcelUpload = async (req, res) => {
+  try {
+    if (!req.file || !req.file.buffer) {
+      return res.status(400).json({ status: "Failed", message: "No file uploaded" });
+    }
+
+    const sheet = req.body && req.body.sheet != null ? String(req.body.sheet).trim() : "";
+
+    const rawMgr = req.body && req.body.managerId;
+    if (rawMgr == null || String(rawMgr).trim() === "") {
+      return res
+        .status(400)
+        .json({ status: "Failed", message: "Manager selection is required" });
+    }
+    const assignedManagerProfileId = Number(String(rawMgr).trim());
+    if (!Number.isInteger(assignedManagerProfileId) || assignedManagerProfileId <= 0) {
+      return res
+        .status(400)
+        .json({ status: "Failed", message: "managerId must be a positive integer" });
+    }
+    const managerRow = await Manager.findByPk(assignedManagerProfileId);
+    if (!managerRow) {
+      return res.status(400).json({
+        status: "Failed",
+        message: "Invalid manager selection — use a portal manager id from GET /admin/managers",
+      });
+    }
+    if (managerRow.department !== "EBU") {
+      return res.status(400).json({
+        status: "Failed",
+        message: "Selected manager is not in EBU",
+      });
+    }
+    const requesterDepartment = await resolveRequesterDepartment(req.user);
+    if (requesterDepartment && requesterDepartment !== "EBU") {
+      return res.status(403).json({
+        status: "Failed",
+        message: "Only EBU admins can run the EBU import",
+      });
+    }
+
+    let preflight;
+    try {
+      preflight = countEbuRows({ workbookBuffer: req.file.buffer, sheet });
+    } catch (err) {
+      const msg = typeof err.message === "string" ? err.message : "Could not read workbook";
+      return res.status(400).json({ status: "Failed", message: msg });
+    }
+
+    const job = keyAccountsImportJobs.createJob({
+      totalRows: preflight.totalRows,
+      sheetName: preflight.sheetName,
+      requestedBy: req.user?.userId ?? null,
+    });
+
+    const workbookBuffer = req.file.buffer;
+    const finalAssignedManagerProfileId = assignedManagerProfileId;
+
+    res.status(202).json({
+      status: "Accepted",
+      message: "Import started",
+      jobId: job.jobId,
+      sheetName: job.sheetName,
+      totalRows: job.totalRows,
+    });
+
+    setImmediate(() => {
+      keyAccountsImportJobs.setJob(job.jobId, { status: "running" });
+      runEbuImport({
+        workbookBuffer,
+        sheet,
+        dryRun: false,
+        createMissingExecutives: true,
+        assignedManagerProfileId: finalAssignedManagerProfileId,
+        onProgressRow: (processed) => {
+          keyAccountsImportJobs.recordProgress(job.jobId, processed);
+        },
+      })
+        .then((result) => {
+          const maxUnresolved = 50;
+          keyAccountsImportJobs.setJob(job.jobId, {
+            status: "completed",
+            percent: 100,
+            processedRows: result.stats.totalRows,
+            stats: result.stats,
+            sheetName: result.sheetName,
+            createdExecutivesCount: result.createdExecutives.length,
+            unresolvedSample: result.unresolved.slice(0, maxUnresolved),
+            unresolvedTotal: result.unresolved.length,
+            message: "Import completed",
+            finishedAt: Date.now(),
+          });
+        })
+        .catch((error) => {
+          console.error("EBU Excel import error:", error);
+          const msg = typeof error.message === "string" ? error.message : "Import failed";
+          const detail =
+            error.rowContext != null
+              ? `${msg} (row: ${error.rowContext.corporateNumber} / ${error.rowContext.corporateName})`
+              : msg;
+          keyAccountsImportJobs.setJob(job.jobId, {
+            status: "failed",
+            error: detail,
+            finishedAt: Date.now(),
+          });
+        });
+    });
+  } catch (error) {
+    console.error("EBU Excel import error (request setup):", error);
+    const msg = typeof error.message === "string" ? error.message : "Import failed";
+    return res.status(500).json({ status: "Failed", message: msg });
+  }
+};
+
+// GET /admin/imports/ebu/jobs/:jobId
+//
+// Parallel status endpoint for the EBU importer. The underlying job registry
+// is the same in-memory map used by the KAM importer; the dedicated path keeps
+// the EBU API surface self-contained.
+exports.getEbuImportJob = (req, res) => {
   const jobId = String(req.params.jobId || "").trim();
   if (!jobId) {
     return res.status(400).json({ status: "Failed", message: "Missing jobId" });

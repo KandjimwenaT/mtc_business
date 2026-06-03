@@ -17,6 +17,7 @@ import {
   getExecutives, getCorporatesWithoutContactPersons,
   createAccount, getAccounts, createContract, createService, getAccountServices, getAccountContracts,
   getPendingImportedExecutives, completeImportedExecutive, importKeyAccountsFromExcel,
+  importEbuFromExcel,
   getManagers,
   type PersonPayload, type PersonRecord, type PortalUser,
   type ExecutiveRecord,
@@ -98,6 +99,12 @@ export default function SuperAdminProfile() {
   const [pendingExecutives, setPendingExecutives] = useState<PendingImportedExecutive[]>([]);
   const [loadingPendingExecutives, setLoadingPendingExecutives] = useState(false);
   const [selectedPendingExec, setSelectedPendingExec] = useState<PendingImportedExecutive | null>(null);
+  // Department-aware importer mode. EBU admins always see the EBU importer,
+  // Key Accounts admins always see the KAM importer; super-admins (no
+  // department) can switch between the two via the chooser at the top of the
+  // tab. `null` means "let the profile decide", which the derivation below
+  // converts to a concrete `"kam" | "ebu"` once the profile has loaded.
+  const [importMode, setImportMode] = useState<"kam" | "ebu" | null>(null);
   const [keyAccountsImportDragging, setKeyAccountsImportDragging] = useState(false);
   const [keyAccountsImporting, setKeyAccountsImporting] = useState(false);
   const [keyAccountsImportProgress, setKeyAccountsImportProgress] = useState<{
@@ -174,6 +181,74 @@ export default function SuperAdminProfile() {
   ];
 
   const selectedManager = managerList.find((m) => m.id === createUserForm.managerId);
+
+  // Department-aware importer wiring. EBU admin -> EBU importer; Key Accounts
+  // admin -> KAM importer; super-admin (no department) -> use the manual
+  // `importMode` toggle. Default the toggle to KAM for backwards compatibility.
+  const effectiveImportMode: "kam" | "ebu" =
+    userProfile?.department === "EBU"
+      ? "ebu"
+      : userProfile?.department === "Key Accounts"
+      ? "kam"
+      : importMode ?? "kam";
+
+  const importDepartmentLabel: "EBU" | "Key Accounts" =
+    effectiveImportMode === "ebu" ? "EBU" : "Key Accounts";
+
+  // Only show managers in the matching department in the dropdown so admins
+  // cannot accidentally pick a manager from the other segment.
+  const filteredImportManagers = keyAccountsImportManagers.filter(
+    (m) => m.department === importDepartmentLabel
+  );
+
+  // Onboarding-modal scoping. Departmented admins (EBU/Key Accounts) should
+  // only see managers and existing executives from their own segment when
+  // completing onboarding for a pending imported executive. Super-admins (no
+  // department) see everything as before.
+  const isDepartmentedAdmin = !!userProfile?.department;
+
+  // PersonRecord.department lives directly on the row, so the manager dropdown
+  // can be filtered without a join.
+  const onboardingManagerOptions = isDepartmentedAdmin
+    ? managerList.filter((m) => m.department === importDepartmentLabel)
+    : managerList;
+
+  // ExecutiveRecord has no department field. Derive it via
+  // executive.managerId -> Manager.department using the same managers list
+  // we already loaded for the import dropdown.
+  const managerDepartmentById = useMemo(() => {
+    const map = new Map<number, string | null>();
+    for (const m of keyAccountsImportManagers) {
+      map.set(m.managerId, m.department ?? null);
+    }
+    return map;
+  }, [keyAccountsImportManagers]);
+
+  const onboardingExistingExecutiveOptions = (() => {
+    const onboarded = executiveList.filter((ex) => !!ex.userId);
+    if (!isDepartmentedAdmin) return onboarded;
+    return onboarded.filter((ex) => {
+      if (ex.managerId == null) return false; // orphans hidden from departmented admins
+      return managerDepartmentById.get(ex.managerId) === importDepartmentLabel;
+    });
+  })();
+
+  // Reset the manager selection whenever the effective mode changes; the
+  // previously chosen manager almost certainly doesn't belong to the new
+  // department.
+  useEffect(() => {
+    setKeyAccountsAssignedManagerProfileId(undefined);
+  }, [effectiveImportMode]);
+
+  // The EBU sheet ships with a sheet named "Update " (with a trailing space).
+  // Pre-fill the sheet input for EBU mode the first time the user lands on it
+  // so the file uploads work without manual entry. Leave KAM untouched.
+  useEffect(() => {
+    if (effectiveImportMode === "ebu" && keyAccountsSheetName.trim() === "") {
+      setKeyAccountsSheetName("Update ");
+    }
+  }, [effectiveImportMode]);
+
   // ── Fetch portal users when User Management tab is active ───────
   const fetchPortalUsers = useCallback(async () => {
     setLoadingPortalUsers(true);
@@ -244,6 +319,10 @@ export default function SuperAdminProfile() {
       toast.error("Please upload an Excel .xlsx file");
       return;
     }
+    if (keyAccountsAssignedManagerProfileId == null) {
+      toast.error("Please select a manager to link corporates to before importing");
+      return;
+    }
     setKeyAccountsImporting(true);
     setKeyAccountsImportProgress({
       percent: 0,
@@ -256,9 +335,7 @@ export default function SuperAdminProfile() {
         file,
         {
           sheet: keyAccountsSheetName.trim() || undefined,
-          ...(keyAccountsAssignedManagerProfileId != null
-            ? { assignedManagerProfileId: keyAccountsAssignedManagerProfileId }
-            : {}),
+          assignedManagerProfileId: keyAccountsAssignedManagerProfileId,
         },
         (progress) => setKeyAccountsImportProgress(progress)
       );
@@ -287,6 +364,66 @@ export default function SuperAdminProfile() {
       // Keep the final 100% state visible briefly, then clear it.
       setTimeout(() => setKeyAccountsImportProgress(null), 4000);
     }
+  };
+
+  const runEbuImportForFile = async (file: File | null | undefined) => {
+    if (!file) return;
+    const name = file.name.toLowerCase();
+    if (!name.endsWith(".xlsx")) {
+      toast.error("Please upload an Excel .xlsx file");
+      return;
+    }
+    if (keyAccountsAssignedManagerProfileId == null) {
+      toast.error("Please select an EBU manager to link corporates to before importing");
+      return;
+    }
+    setKeyAccountsImporting(true);
+    setKeyAccountsImportProgress({
+      percent: 0,
+      processedRows: 0,
+      totalRows: 0,
+      status: "pending",
+    });
+    try {
+      const result = await importEbuFromExcel(
+        file,
+        {
+          sheet: keyAccountsSheetName.trim() || undefined,
+          assignedManagerProfileId: keyAccountsAssignedManagerProfileId,
+        },
+        (progress) => setKeyAccountsImportProgress(progress)
+      );
+      setKeyAccountsImportProgress({
+        percent: 100,
+        processedRows: result.stats.totalRows,
+        totalRows: result.stats.totalRows,
+        status: "completed",
+      });
+      const s = result.stats;
+      toast.success("EBU import completed", {
+        description: `Sheet “${result.sheetName}”: corporates created ${s.created}, updated ${s.updated}; accounts +${s.accountsCreated} / ~${s.accountsUpdated}; services +${s.servicesCreated}. New placeholder executives: ${result.createdExecutivesCount}.`,
+      });
+      if (result.unresolvedTotal > 0) {
+        toast.message(`${result.unresolvedTotal} row(s) had no matching CSE`, {
+          description:
+            "Those rows were imported with the manager only. Add the executive later or correct the CSE Name in the file.",
+        });
+      }
+      await fetchPendingExecutives();
+    } catch (err: unknown) {
+      toast.error("Import failed", { description: err instanceof Error ? err.message : undefined });
+      setKeyAccountsImportProgress(null);
+    } finally {
+      setKeyAccountsImporting(false);
+      setTimeout(() => setKeyAccountsImportProgress(null), 4000);
+    }
+  };
+
+  const runActiveImportForFile = (file: File | null | undefined) => {
+    if (effectiveImportMode === "ebu") {
+      return runEbuImportForFile(file);
+    }
+    return runKeyAccountsImportForFile(file);
   };
 
   useEffect(() => {
@@ -1211,21 +1348,60 @@ export default function SuperAdminProfile() {
       {/* PENDING IMPORTED EXECUTIVES (placeholders from Excel import) */}
       {activeTab === "pendingExecutives" && (
         <div className="space-y-6">
+          {/* Super-admin chooser: only visible when the logged-in admin has no
+              department (true super-admins). Departmented admins see only
+              their own importer with no chooser. */}
+          {userProfile && !userProfile.department && (
+            <div className="flex items-center gap-2">
+              <span className="text-xs text-slate-500">Import mode:</span>
+              <Button
+                size="sm"
+                variant={effectiveImportMode === "kam" ? "default" : "outline"}
+                onClick={() => setImportMode("kam")}
+                disabled={keyAccountsImporting}
+              >
+                Key Accounts
+              </Button>
+              <Button
+                size="sm"
+                variant={effectiveImportMode === "ebu" ? "default" : "outline"}
+                onClick={() => setImportMode("ebu")}
+                disabled={keyAccountsImporting}
+              >
+                EBU
+              </Button>
+            </div>
+          )}
           <Card>
             <CardHeader>
               <CardTitle className="text-base flex items-center gap-2">
                 <FileSpreadsheet className="h-5 w-5 text-mtc-blue" />
-                Import key accounts from Excel
+                {effectiveImportMode === "ebu"
+                  ? "Import EBU corporates from Excel"
+                  : "Import key accounts from Excel"}
               </CardTitle>
               <p className="text-xs text-slate-500 mt-1">
-                Upload the same .xlsx format as the backend import script. This creates or updates key-account corporates,
-                linked customer accounts, services (when MSISDN is present), and contracts. Missing account managers become placeholder executives
-                with @import.local emails — complete onboarding for them in the table below.
+                {effectiveImportMode === "ebu" ? (
+                  <>
+                    Upload the EBU customer list (.xlsx). Each row becomes a service under
+                    an account scoped to its site; corporates are created or updated as
+                    type <span className="font-mono">ebu</span>. Rows missing a CSE Name are
+                    imported with only the chosen manager as the owner.
+                  </>
+                ) : (
+                  <>
+                    Upload the same .xlsx format as the backend import script. This creates or updates key-account corporates,
+                    linked customer accounts, services (when MSISDN is present), and contracts. Missing account managers become placeholder executives
+                    with @import.local emails — complete onboarding for them in the table below.
+                  </>
+                )}
               </p>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="space-y-2 max-w-md">
-                <Label htmlFor="key-accounts-manager">Link corporates to manager (optional)</Label>
+                <Label htmlFor="key-accounts-manager">
+                  Link corporates to {importDepartmentLabel} manager <span className="text-red-500">*</span>
+                </Label>
                 <Select
                   id="key-accounts-manager"
                   value={keyAccountsAssignedManagerProfileId?.toString() ?? ""}
@@ -1236,8 +1412,8 @@ export default function SuperAdminProfile() {
                   }
                   disabled={keyAccountsImporting}
                 >
-                  <option value="">Infer from each executive&apos;s portal record</option>
-                  {keyAccountsImportManagers.map((m) => (
+                  <option value="">Select a {importDepartmentLabel} manager...</option>
+                  {filteredImportManagers.map((m) => (
                     <option key={m.managerId} value={m.managerId}>
                       {m.firstName} {m.lastName}
                       {m.department ? ` — ${m.department}` : ""} (ID&nbsp;{m.managerId})
@@ -1245,10 +1421,14 @@ export default function SuperAdminProfile() {
                   ))}
                 </Select>
                 <p className="text-xs text-slate-500">
-                  When chosen, corporates and <span className="font-mono">executive_staff</span> use that portal manager’s{' '}
-                  <span className="font-mono">managers.manager_id</span>. Customer accounts resolve the matching{' '}
-                  <span className="font-mono">persons.id</span> (manager Person by email); if none exists yet,{' '}
-                  <span className="font-mono">accounts.manager_id</span> is left empty to satisfy the DB foreign key.
+                  Required. Every imported corporate, account and placeholder executive will
+                  be linked to this {importDepartmentLabel} manager so it shows up under their
+                  segment.
+                  {filteredImportManagers.length === 0 && (
+                    <span className="block mt-1 text-amber-600">
+                      No {importDepartmentLabel} managers found. Create one in User Management first.
+                    </span>
+                  )}
                 </p>
               </div>
               <div className="space-y-2 max-w-md">
@@ -1268,7 +1448,7 @@ export default function SuperAdminProfile() {
                 className="hidden"
                 onChange={(e) => {
                   const f = e.target.files?.[0];
-                  void runKeyAccountsImportForFile(f);
+                  void runActiveImportForFile(f);
                   e.target.value = "";
                 }}
               />
@@ -1300,7 +1480,7 @@ export default function SuperAdminProfile() {
                   e.stopPropagation();
                   setKeyAccountsImportDragging(false);
                   const f = e.dataTransfer.files?.[0];
-                  void runKeyAccountsImportForFile(f);
+                  void runActiveImportForFile(f);
                 }}
                 className={`rounded-xl border-2 border-dashed px-6 py-10 text-center transition-colors ${
                   keyAccountsImportDragging
@@ -1364,10 +1544,17 @@ export default function SuperAdminProfile() {
             <div>
               <CardTitle className="text-base flex items-center gap-2">
                 <UserCheck className="h-5 w-5 text-mtc-blue" />
-                Pending Imported Executives
+                {userProfile?.department
+                  ? `${importDepartmentLabel} — Pending Imported Executives`
+                  : "Pending Imported Executives"}
               </CardTitle>
               <p className="text-xs text-slate-500 mt-1">
                 Placeholder executive records created during the corporate import. Add their real email and assign a manager to give them portal access. Existing corporate and account links are preserved.
+                {userProfile?.department && (
+                  <span className="block mt-1">
+                    Showing only executives scoped to the <span className="font-semibold">{importDepartmentLabel}</span> segment.
+                  </span>
+                )}
               </p>
             </div>
             <Button size="sm" variant="outline" onClick={fetchPendingExecutives} disabled={loadingPendingExecutives}>
@@ -1495,7 +1682,7 @@ export default function SuperAdminProfile() {
                     }
                   >
                     <option value="">Select Executive...</option>
-                    {executiveList.filter((ex) => !!ex.userId).map((ex) => (
+                    {onboardingExistingExecutiveOptions.map((ex) => (
                       <option key={ex.executiveId} value={ex.executiveId}>
                         {ex.firstName} {ex.lastName} — {ex.email}
                       </option>
@@ -1503,6 +1690,16 @@ export default function SuperAdminProfile() {
                   </Select>
                   <p className="text-xs text-slate-500">
                     Only executives with completed onboarding and portal login are listed.
+                    {isDepartmentedAdmin && (
+                      <span className="block mt-1">
+                        Scoped to the <span className="font-semibold">{importDepartmentLabel}</span> segment.
+                      </span>
+                    )}
+                    {isDepartmentedAdmin && onboardingExistingExecutiveOptions.length === 0 && (
+                      <span className="block mt-1 text-amber-600">
+                        No {importDepartmentLabel} executives with portal access yet.
+                      </span>
+                    )}
                   </p>
                 </div>
               ) : (
@@ -1559,13 +1756,25 @@ export default function SuperAdminProfile() {
                   }
                 >
                   <option value="">Select Manager...</option>
-                  {managerList.map((m) => (
+                  {onboardingManagerOptions.map((m) => (
                     <option key={m.id} value={m.id}>
                       {m.firstName} {m.lastName}{m.department ? ` — ${m.department}` : ""}
                     </option>
                   ))}
                 </Select>
-                <p className="text-xs text-slate-500">Only managers who already have portal access can be selected.</p>
+                <p className="text-xs text-slate-500">
+                  Only managers who already have portal access can be selected.
+                  {isDepartmentedAdmin && (
+                    <span className="block mt-1">
+                      Scoped to the <span className="font-semibold">{importDepartmentLabel}</span> segment.
+                    </span>
+                  )}
+                  {isDepartmentedAdmin && onboardingManagerOptions.length === 0 && (
+                    <span className="block mt-1 text-amber-600">
+                      No {importDepartmentLabel} managers found.
+                    </span>
+                  )}
+                </p>
               </div>
                 </>
               )}

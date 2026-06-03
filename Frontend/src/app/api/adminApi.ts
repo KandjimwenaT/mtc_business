@@ -499,28 +499,40 @@ interface KeyAccountsImportJobStatus {
   finishedAt: number | null;
 }
 
+// EBU import shares the same job/progress/stats shape as the KAM import, so
+// we expose convenience aliases for clarity at the call site.
+export type EbuImportProgress = KeyAccountsImportProgress;
+export type EbuImportResponse = KeyAccountsImportResponse;
+export type EbuImportStats = KeyAccountsImportStats;
+
 /**
- * Upload the spreadsheet, then poll the backend for progress until the
- * import completes. The backend returns 202 Accepted with a `jobId`
- * immediately to avoid reverse-proxy 504 timeouts on large files.
+ * Shared upload + poll helper used by both the Key Accounts and EBU importers.
+ * The backend returns 202 Accepted with a `jobId` immediately so we don't
+ * hit reverse-proxy timeouts on large files; we then poll until the job
+ * reports completed/failed.
  */
-export const importKeyAccountsFromExcel = async (
-  file: File,
-  options?: { sheet?: string; assignedManagerProfileId?: number },
-  onProgress?: (progress: KeyAccountsImportProgress) => void
-): Promise<KeyAccountsImportResponse> => {
+async function runExcelImportJob(args: {
+  startUrl: string;
+  statusUrlPrefix: string;
+  file: File;
+  sheet?: string;
+  assignedManagerProfileId?: number;
+  onProgress?: (progress: KeyAccountsImportProgress) => void;
+}): Promise<KeyAccountsImportResponse> {
+  const { startUrl, statusUrlPrefix, file, sheet, assignedManagerProfileId, onProgress } = args;
+
   const form = new FormData();
   form.append("file", file);
-  if (options?.sheet?.trim()) form.append("sheet", options.sheet.trim());
+  if (sheet?.trim()) form.append("sheet", sheet.trim());
   if (
-    options?.assignedManagerProfileId != null &&
-    Number.isInteger(options.assignedManagerProfileId) &&
-    options.assignedManagerProfileId > 0
+    assignedManagerProfileId != null &&
+    Number.isInteger(assignedManagerProfileId) &&
+    assignedManagerProfileId > 0
   ) {
-    form.append("managerId", String(options.assignedManagerProfileId));
+    form.append("managerId", String(assignedManagerProfileId));
   }
 
-  const startRes = await fetch(`${API_BASE_URL}/admin/imports/key-accounts`, {
+  const startRes = await fetch(startUrl, {
     method: "POST",
     headers: authHeadersMultipart(),
     body: form,
@@ -537,7 +549,6 @@ export const importKeyAccountsFromExcel = async (
     throw new Error("Server did not return an import job id");
   }
 
-  // Initial 0% tick so the UI can render the progress bar right away.
   onProgress?.({
     percent: 0,
     processedRows: 0,
@@ -545,25 +556,19 @@ export const importKeyAccountsFromExcel = async (
     status: "pending",
   });
 
-  // Adaptive polling: start snappy (2s) for fast feedback on small imports,
-  // but back off if the API rate limiter (429) pushes back so very long
-  // imports still complete cleanly. Cap at 10s.
   const minIntervalMs = 2000;
   const maxIntervalMs = 10000;
   let intervalMs = minIntervalMs;
-  // Safety cap: ~2 hours of polling at the max interval.
   const maxPolls = 1200;
 
   for (let i = 0; i < maxPolls; i += 1) {
     await new Promise((resolve) => setTimeout(resolve, intervalMs));
     let pollRes: Response;
     try {
-      pollRes = await fetch(
-        `${API_BASE_URL}/admin/imports/key-accounts/jobs/${encodeURIComponent(jobId)}`,
-        { headers: authHeaders() }
-      );
+      pollRes = await fetch(`${statusUrlPrefix}${encodeURIComponent(jobId)}`, {
+        headers: authHeaders(),
+      });
     } catch (err) {
-      // Transient network blip — keep polling.
       continue;
     }
 
@@ -586,7 +591,6 @@ export const importKeyAccountsFromExcel = async (
       );
     }
 
-    // Recover toward the snappy interval after a successful poll.
     intervalMs = minIntervalMs;
 
     const job = (pollData as { job?: KeyAccountsImportJobStatus }).job;
@@ -621,7 +625,43 @@ export const importKeyAccountsFromExcel = async (
   }
 
   throw new Error("Import timed out while waiting for the server to finish");
-};
+}
+
+/**
+ * Upload the Key Accounts spreadsheet, then poll the backend for progress
+ * until the import completes.
+ */
+export const importKeyAccountsFromExcel = async (
+  file: File,
+  options?: { sheet?: string; assignedManagerProfileId?: number },
+  onProgress?: (progress: KeyAccountsImportProgress) => void
+): Promise<KeyAccountsImportResponse> =>
+  runExcelImportJob({
+    startUrl: `${API_BASE_URL}/admin/imports/key-accounts`,
+    statusUrlPrefix: `${API_BASE_URL}/admin/imports/key-accounts/jobs/`,
+    file,
+    sheet: options?.sheet,
+    assignedManagerProfileId: options?.assignedManagerProfileId,
+    onProgress,
+  });
+
+/**
+ * Upload the EBU customer list, then poll the backend for progress until the
+ * import completes. `assignedManagerProfileId` is required server-side.
+ */
+export const importEbuFromExcel = async (
+  file: File,
+  options: { sheet?: string; assignedManagerProfileId: number },
+  onProgress?: (progress: EbuImportProgress) => void
+): Promise<EbuImportResponse> =>
+  runExcelImportJob({
+    startUrl: `${API_BASE_URL}/admin/imports/ebu`,
+    statusUrlPrefix: `${API_BASE_URL}/admin/imports/ebu/jobs/`,
+    file,
+    sheet: options.sheet,
+    assignedManagerProfileId: options.assignedManagerProfileId,
+    onProgress,
+  });
 
 // ── Customer accounts ─────────────────────────────────────────────
 
