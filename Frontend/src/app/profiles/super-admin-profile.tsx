@@ -850,12 +850,12 @@ export default function SuperAdminProfile() {
 
   return (
     <div className="space-y-6 animate-in fade-in duration-500 slide-in-from-bottom-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h2 className="text-2xl font-bold tracking-tight text-slate-900">Super Admin Portal</h2>
+          <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900">Super Admin Portal</h2>
           <p className="text-sm text-slate-500">System administration, user management, and global settings</p>
         </div>
-        <Badge className="text-sm px-3 py-1 bg-slate-900 text-white border-transparent">Super Admin</Badge>
+        <Badge className="text-sm px-3 py-1 bg-slate-900 text-white border-transparent w-fit">Super Admin</Badge>
       </div>
 
       <div className="flex border-b border-slate-200 overflow-x-auto">
@@ -885,7 +885,7 @@ export default function SuperAdminProfile() {
             <Card className="md:col-span-2">
               <CardHeader><CardTitle className="text-base">System Health</CardTitle></CardHeader>
               <CardContent>
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
                   {[
                     { label: "Total Users", value: "42", color: "text-mtc-blue" },
                     { label: "Active Sessions", value: "18", color: "text-green-600" },
@@ -893,7 +893,7 @@ export default function SuperAdminProfile() {
                     { label: "Audit Entries (24h)", value: "1,247", color: "text-amber-600" },
                   ].map((m) => (
                     <div key={m.label} className="text-center p-4 rounded-lg bg-slate-50 border border-slate-100">
-                      <span className={`text-2xl font-bold ${m.color}`}>{m.value}</span>
+                      <span className={`text-xl sm:text-2xl font-bold ${m.color}`}>{m.value}</span>
                       <p className="text-xs text-slate-500 mt-1">{m.label}</p>
                     </div>
                   ))}
@@ -1205,17 +1205,17 @@ export default function SuperAdminProfile() {
 
           {/* ── PORTAL USERS TABLE ───────────────────────────── */}
           <Card>
-            <CardHeader className="flex flex-row items-center justify-between">
+            <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <CardTitle className="text-base flex items-center gap-2"><Users className="h-5 w-5 text-mtc-blue" /> Portal Users</CardTitle>
-              <div className="flex gap-2">
-                <div className="relative">
+              <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
+                <div className="relative w-full sm:w-auto">
                   <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-slate-500" />
-                  <Input className="pl-9 w-56 h-9 text-sm" placeholder="Search portal users..." value={searchUsers} onChange={(e) => setSearchUsers(e.target.value)} />
+                  <Input className="pl-9 w-full sm:w-56 h-9 text-sm" placeholder="Search portal users..." value={searchUsers} onChange={(e) => setSearchUsers(e.target.value)} />
                 </div>
-                <Button size="sm" variant="outline" onClick={fetchPortalUsers} disabled={loadingPortalUsers}>
+                <Button size="sm" variant="outline" onClick={fetchPortalUsers} disabled={loadingPortalUsers} className="w-full sm:w-auto">
                   <RefreshCw className={`h-4 w-4 mr-1 ${loadingPortalUsers ? "animate-spin" : ""}`} /> Refresh
                 </Button>
-                <Button size="sm" onClick={() => setShowPortalAccess(true)}>
+                <Button size="sm" onClick={() => setShowPortalAccess(true)} className="w-full sm:w-auto">
                   <Key className="h-4 w-4 mr-1" /> Create Portal Access
                 </Button>
               </div>
@@ -1630,22 +1630,22 @@ export default function SuperAdminProfile() {
 
       {/* ── COMPLETE PENDING EXECUTIVE ONBOARDING MODAL ─────── */}
       {selectedPendingExec && (
-        <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 backdrop-blur-sm overflow-y-auto py-8 px-4">
+        <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 backdrop-blur-sm overflow-y-auto py-4 sm:py-8 px-4">
           <div className="bg-white rounded-xl shadow-2xl w-full max-w-xl animate-in fade-in slide-in-from-bottom-4">
-            <div className="flex items-start justify-between p-6 border-b border-slate-200">
-              <div>
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between p-4 sm:p-6 border-b border-slate-200">
+              <div className="min-w-0">
                 <h2 className="text-xl font-bold text-slate-900 flex items-center gap-2">
-                  <UserCheck className="h-5 w-5 text-mtc-blue" />
+                  <UserCheck className="h-5 w-5 text-mtc-blue shrink-0" />
                   Complete Onboarding
                 </h2>
-                <p className="text-sm text-slate-500 mt-0.5">
+                <p className="text-sm text-slate-500 mt-0.5 break-words">
                   {selectedPendingExec.firstName} {selectedPendingExec.lastName} · {selectedPendingExec.linkedCorporatesCount} corporate{selectedPendingExec.linkedCorporatesCount === 1 ? "" : "s"}, {selectedPendingExec.linkedAccountsCount} account{selectedPendingExec.linkedAccountsCount === 1 ? "" : "s"} already linked
                 </p>
               </div>
               <button
                 onClick={closeOnboardPendingExec}
                 disabled={submittingOnboarding}
-                className="rounded-lg p-1.5 hover:bg-slate-100 text-slate-500 hover:text-slate-900 transition-colors disabled:opacity-50"
+                className="rounded-lg p-1.5 hover:bg-slate-100 text-slate-500 hover:text-slate-900 transition-colors disabled:opacity-50 self-end sm:self-auto"
               >
                 <X className="h-5 w-5" />
               </button>
@@ -1780,11 +1780,11 @@ export default function SuperAdminProfile() {
               )}
             </div>
 
-            <div className="flex justify-end gap-2 p-4 border-t border-slate-200 bg-slate-50 rounded-b-xl">
-              <Button variant="outline" onClick={closeOnboardPendingExec} disabled={submittingOnboarding}>
+            <div className="flex flex-col-reverse gap-2 p-4 border-t border-slate-200 bg-slate-50 rounded-b-xl sm:flex-row sm:justify-end">
+              <Button variant="outline" onClick={closeOnboardPendingExec} disabled={submittingOnboarding} className="w-full sm:w-auto">
                 Cancel
               </Button>
-              <Button onClick={handleCompletePendingExec} disabled={submittingOnboarding}>
+              <Button onClick={handleCompletePendingExec} disabled={submittingOnboarding} className="w-full sm:w-auto">
                 {submittingOnboarding ? (
                   <><Loader2 className="h-4 w-4 mr-1 animate-spin" /> Onboarding...</>
                 ) : (
@@ -1800,20 +1800,20 @@ export default function SuperAdminProfile() {
 
       {/* ── ACCOUNT DETAIL MODAL ─────────────────────────────── */}
       {detailAccount && (
-        <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 backdrop-blur-sm overflow-y-auto py-8 px-4">
+        <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 backdrop-blur-sm overflow-y-auto py-4 sm:py-8 px-4">
           <div className="bg-white rounded-xl shadow-2xl w-full max-w-4xl animate-in fade-in slide-in-from-bottom-4">
             {/* Header */}
-            <div className="flex items-start justify-between p-6 border-b border-slate-200">
-              <div>
-                <h2 className="text-xl font-bold text-slate-900 flex items-center gap-2">
-                  <Building2 className="h-5 w-5 text-mtc-blue" />
-                  {detailAccount.accountName}
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between p-4 sm:p-6 border-b border-slate-200">
+              <div className="min-w-0">
+                <h2 className="text-xl font-bold text-slate-900 flex items-center gap-2 break-words">
+                  <Building2 className="h-5 w-5 text-mtc-blue shrink-0" />
+                  <span className="break-words">{detailAccount.accountName}</span>
                 </h2>
-                <p className="text-sm text-slate-500 mt-0.5 font-mono">{detailAccount.accountNumber}</p>
+                <p className="text-sm text-slate-500 mt-0.5 font-mono break-all">{detailAccount.accountNumber}</p>
               </div>
-              <div className="flex items-center gap-3">
+              <div className="flex flex-wrap items-center gap-2 sm:gap-3">
                 <Badge variant={detailAccount.isActive ? "success" : "danger"}>{detailAccount.isActive ? "Active" : "Inactive"}</Badge>
-                <button onClick={handleCloseDetail} className="rounded-lg p-1.5 hover:bg-slate-100 text-slate-500 hover:text-slate-900 transition-colors">
+                <button onClick={handleCloseDetail} className="rounded-lg p-1.5 hover:bg-slate-100 text-slate-500 hover:text-slate-900 transition-colors ml-auto sm:ml-0">
                   <X className="h-5 w-5" />
                 </button>
               </div>
@@ -1831,7 +1831,7 @@ export default function SuperAdminProfile() {
                   <h3 className="text-sm font-semibold text-slate-500 uppercase tracking-wider mb-3 flex items-center gap-2">
                     <Building2 className="h-4 w-4" /> Account Details
                   </h3>
-                  <div className="grid grid-cols-2 md:grid-cols-3 gap-4 p-4 rounded-lg bg-slate-50 border border-slate-100">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 p-4 rounded-lg bg-slate-50 border border-slate-100">
                     <div><p className="text-xs text-slate-400">Account Type</p><p className="text-sm font-medium text-slate-900 mt-0.5">{detailAccount.accountType}</p></div>
                     <div><p className="text-xs text-slate-400">Industry</p><p className="text-sm font-medium text-slate-900 mt-0.5">{detailAccount.industry || "—"}</p></div>
                     <div><p className="text-xs text-slate-400">Created</p><p className="text-sm font-medium text-slate-900 mt-0.5">{new Date(detailAccount.created_at).toLocaleDateString()}</p></div>
@@ -1876,7 +1876,7 @@ export default function SuperAdminProfile() {
                             <span className="font-semibold text-slate-800">{c.contractType}</span>
                             {c.srNumber && <span className="text-xs font-mono text-mtc-blue bg-blue-50 px-2 py-0.5 rounded">{c.srNumber}</span>}
                           </div>
-                          <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 text-sm">
                             <div><p className="text-xs text-slate-400">Start Date</p><p className="font-medium">{c.contractStartDate ? new Date(c.contractStartDate).toLocaleDateString() : "—"}</p></div>
                             <div><p className="text-xs text-slate-400">End Date</p><p className="font-medium">{c.contractEndDate ? new Date(c.contractEndDate).toLocaleDateString() : "—"}</p></div>
                             <div><p className="text-xs text-slate-400">Effective Date</p><p className="font-medium">{c.contractEffectiveDate ? new Date(c.contractEffectiveDate).toLocaleDateString() : "—"}</p></div>
@@ -1901,8 +1901,8 @@ export default function SuperAdminProfile() {
                   {detailServices.length === 0 ? (
                     <p className="text-sm text-slate-400 italic">No service lines on this account.</p>
                   ) : (
-                    <div className="rounded-lg border border-slate-200 overflow-hidden">
-                      <table className="w-full text-sm">
+                    <div className="rounded-lg border border-slate-200 overflow-x-auto">
+                      <table className="w-full min-w-[480px] text-sm">
                         <thead className="bg-slate-50">
                           <tr className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
                             <th className="text-left px-4 py-2.5">MSISDN</th>

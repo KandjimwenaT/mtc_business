@@ -135,9 +135,9 @@ export function CustomerAccount() {
   };
 
   return (
-    <div className="p-8">
-      <div className="mb-8">
-        <h1 className="text-3xl mb-1">Customer Portal</h1>
+    <div className="p-4 sm:p-6 lg:p-8">
+      <div className="mb-6 sm:mb-8">
+        <h1 className="text-2xl sm:text-3xl mb-1">Customer Portal</h1>
         <p className="text-gray-600">
           Welcome back, {contactName}
         </p>
@@ -337,7 +337,8 @@ export function CustomerAccount() {
           <CardTitle>Scheduled Visits</CardTitle>
         </CardHeader>
         <CardContent>
-          <table className="w-full text-sm">
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[640px] text-sm">
             <thead className="text-slate-500">
               <tr className="border-b">
                 <th className="text-left py-2">Visit ID</th>
@@ -365,6 +366,7 @@ export function CustomerAccount() {
               )}
             </tbody>
           </table>
+          </div>
         </CardContent>
       </Card>
 
@@ -373,7 +375,8 @@ export function CustomerAccount() {
           <CardTitle>My Tickets</CardTitle>
         </CardHeader>
         <CardContent>
-          <table className="w-full text-sm">
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[560px] text-sm">
             <thead className="text-slate-500">
               <tr className="border-b">
                 <th className="text-left py-2">Ticket ID</th>
@@ -409,6 +412,7 @@ export function CustomerAccount() {
               )}
             </tbody>
           </table>
+          </div>
           <div className="pt-4 text-center">
             <Link to="/customerTickets" className="text-mtc-blue font-medium hover:underline">
               View All Tickets
@@ -419,7 +423,7 @@ export function CustomerAccount() {
 
       {/* Main Content Tabs */}
       <Tabs defaultValue="details" className="space-y-6">
-        <TabsList>
+        <TabsList className="w-full flex-wrap h-auto">
           <TabsTrigger value="details">Account Details</TabsTrigger>
           <TabsTrigger value="services">Services & Lines</TabsTrigger>
           <TabsTrigger value="contracts">Contracts</TabsTrigger>

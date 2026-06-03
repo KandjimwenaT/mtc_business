@@ -497,6 +497,27 @@ const ForgotPassword: React.FC = () => {
         .otp-timer-expired {
           color: #c62828;
         }
+
+        @media (max-width: 520px) {
+          .forgot-container {
+            padding: 24px 16px;
+          }
+          .forgot-card {
+            padding: 24px 16px;
+          }
+          .forgot-header {
+            margin-bottom: 18px;
+          }
+          .forgot-brand {
+            font-size: 1.5rem;
+          }
+          .forgot-title {
+            font-size: 1.15rem;
+          }
+          .otp-grid {
+            gap: 8px;
+          }
+        }
       `}</style>
     </div>
   );

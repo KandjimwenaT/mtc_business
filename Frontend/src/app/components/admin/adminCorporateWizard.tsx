@@ -66,14 +66,14 @@ export default function AdminCorporateWizard(props: Props) {
   if (!show) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 backdrop-blur-sm overflow-y-auto py-8 px-4">
+    <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 backdrop-blur-sm overflow-y-auto py-4 sm:py-8 px-4">
       <div className="bg-white rounded-xl shadow-2xl w-full max-w-4xl animate-in fade-in slide-in-from-bottom-4">
-        <div className="flex items-start justify-between p-6 border-b border-slate-200">
-          <div>
-            <h2 className="text-xl font-bold text-slate-900">
+        <div className="flex items-start justify-between p-4 sm:p-6 border-b border-slate-200">
+          <div className="min-w-0">
+            <h2 className="text-lg sm:text-xl font-bold text-slate-900 break-words">
               {wizardStep === 1 ? "Create Corporate" : "Add Account to Corporate"}
             </h2>
-            <p className="text-sm text-slate-500 mt-1">
+            <p className="text-sm text-slate-500 mt-1 break-words">
               {wizardStep === 1
                 ? "Corporate details"
                 : `Step ${wizardStep - 1} of 3: ${
@@ -439,9 +439,10 @@ export default function AdminCorporateWizard(props: Props) {
           )}
         </div>
 
-        <div className="flex justify-between px-6 py-4 border-t border-slate-200">
+        <div className="flex flex-col-reverse gap-2 px-4 sm:px-6 py-4 border-t border-slate-200 sm:flex-row sm:justify-between">
           <Button
             variant="outline"
+            className="w-full sm:w-auto"
             onClick={() => {
               if (wizardStep === 1 || wizardStep === 2) resetCreateWizard();
               else setWizardStep((s) => s - 1);
@@ -450,6 +451,7 @@ export default function AdminCorporateWizard(props: Props) {
             {wizardStep === 1 || wizardStep === 2 ? "Cancel" : "Back"}
           </Button>
           <Button
+            className="w-full sm:w-auto"
             onClick={() => {
               if (wizardStep === 1) handleCreateCorporateStep();
               else if (wizardStep === 2) handleCreateAccountStep();

@@ -217,22 +217,22 @@ export default function PortalUserHierarchyModal({
   }, [person, personById, adminPersons, executivePersons, gmPersons, managerPersons, supervisorPersons]);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 backdrop-blur-sm overflow-y-auto py-8 px-4">
+    <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 backdrop-blur-sm overflow-y-auto py-4 sm:py-8 px-4">
       <div className="bg-white rounded-xl shadow-2xl w-full max-w-4xl animate-in fade-in slide-in-from-bottom-4">
-        <CardHeader className="flex flex-row items-start justify-between p-6 border-b border-slate-200">
-          <div>
-            <CardTitle className="text-xl flex items-center gap-2">
-              <Users className="h-5 w-5 text-mtc-blue" />
-              {hierarchy?.title ?? "User Hierarchy"}
+        <CardHeader className="flex flex-row items-start justify-between p-4 sm:p-6 border-b border-slate-200">
+          <div className="min-w-0">
+            <CardTitle className="text-lg sm:text-xl flex items-center gap-2 break-words">
+              <Users className="h-5 w-5 text-mtc-blue shrink-0" />
+              <span className="break-words">{hierarchy?.title ?? "User Hierarchy"}</span>
             </CardTitle>
             <p className="text-sm text-slate-500 mt-1">Role: {user.role}</p>
           </div>
-          <Button variant="ghost" size="sm" onClick={onClose} aria-label="Close">
+          <Button variant="ghost" size="sm" onClick={onClose} aria-label="Close" className="shrink-0">
             <X className="h-4 w-4" />
           </Button>
         </CardHeader>
 
-        <CardContent className="p-6 space-y-6">
+        <CardContent className="p-4 sm:p-6 space-y-6">
           {loading && (
             <div className="flex items-center justify-center py-10 text-slate-500">
               <Loader2 className="h-6 w-6 animate-spin mr-2" />
@@ -249,7 +249,7 @@ export default function PortalUserHierarchyModal({
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="pt-0">
-                  <div className="grid gap-3 md:grid-cols-3 text-sm">
+                  <div className="grid gap-3 sm:grid-cols-2 md:grid-cols-3 text-sm">
                     <div>
                       <span className="text-slate-500 block">Name</span>
                       <span className="font-medium">{user.firstName} {user.lastName}</span>

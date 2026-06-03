@@ -1012,9 +1012,9 @@ export function VisitCalendar() {
             {selectedVisit.status === 'pending' && selectedVisit.execRescheduleStatus !== 'pending_approval' && (
               <>
                 {!showDeclineForm && !showRescheduleForm ? (
-                  <div className="flex gap-3 pt-2">
+                  <div className="flex flex-col gap-2 pt-2 sm:flex-row sm:gap-3">
                     <Button
-                      className="bg-green-600 hover:bg-green-700 text-white flex-1"
+                      className="bg-green-600 hover:bg-green-700 text-white sm:flex-1"
                       onClick={() => handleApprove(selectedVisit.visitId)}
                     >
                       <CheckCircle className="h-4 w-4 mr-2" />
@@ -1022,7 +1022,7 @@ export function VisitCalendar() {
                     </Button>
                     <Button
                       variant="outline"
-                      className="border-purple-200 text-purple-600 hover:bg-purple-50 flex-1"
+                      className="border-purple-200 text-purple-600 hover:bg-purple-50 sm:flex-1"
                       onClick={() => setShowRescheduleForm(true)}
                     >
                       <CalendarClock className="h-4 w-4 mr-2" />
@@ -1030,7 +1030,7 @@ export function VisitCalendar() {
                     </Button>
                     <Button
                       variant="outline"
-                      className="border-red-200 text-red-600 hover:bg-red-50 flex-1"
+                      className="border-red-200 text-red-600 hover:bg-red-50 sm:flex-1"
                       onClick={() => setShowDeclineForm(true)}
                     >
                       <XCircle className="h-4 w-4 mr-2" />
@@ -1069,7 +1069,7 @@ export function VisitCalendar() {
                 ) : (
                   <div className="space-y-3 pt-2">
                     <p className="text-sm font-medium text-slate-700">Propose a new date & time</p>
-                    <div className="grid grid-cols-3 gap-3">
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
                       <div>
                         <label className="text-xs text-slate-500">Date</label>
                         <input
@@ -1138,7 +1138,7 @@ export function VisitCalendar() {
             <CardTitle className="text-xl">
               {format(currentDate, 'MMMM yyyy')}
             </CardTitle>
-            <div className="flex items-center gap-4">
+            <div className="flex flex-wrap items-center gap-2 sm:gap-4">
               <Tabs value={view} onValueChange={(v) => setView(v as 'week' | 'month')}>
                 <TabsList>
                   <TabsTrigger value="week">Week</TabsTrigger>
@@ -1161,7 +1161,8 @@ export function VisitCalendar() {
         </CardHeader>
         <CardContent>
           {view === 'week' ? (
-            <div className="grid grid-cols-7 gap-2">
+            <div className="overflow-x-auto -mx-4 px-4 sm:mx-0 sm:px-0">
+              <div className="grid grid-cols-7 gap-2 min-w-[560px]">
               {weekDays.map((day, index) => {
                 const dayVisits = getVisitsForDate(day);
                 const isToday = isSameDay(day, new Date());
@@ -1192,9 +1193,11 @@ export function VisitCalendar() {
                   </div>
                 );
               })}
+              </div>
             </div>
           ) : (
-            <div>
+            <div className="overflow-x-auto -mx-4 px-4 sm:mx-0 sm:px-0">
+              <div className="min-w-[560px]">
               <div className="grid grid-cols-7 gap-2 mb-2">
                 {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map(day => (
                   <div key={day} className="text-center text-xs font-medium text-slate-500 py-2">{day}</div>
@@ -1230,6 +1233,7 @@ export function VisitCalendar() {
                     </div>
                   );
                 })}
+              </div>
               </div>
             </div>
           )}

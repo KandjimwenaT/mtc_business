@@ -251,8 +251,8 @@ const Login: React.FC = () => {
           position: relative;
         }
         .login-logo-img {
-          width: 100px;
-          height: 100px;
+          width: 100%;
+          height: 100%;
           object-fit: contain;
         }
         .login-logo-text {
@@ -471,8 +471,20 @@ const Login: React.FC = () => {
           }
 
         @media (max-width: 520px) {
+          .login-container {
+            padding: 24px 16px;
+          }
           .login-card {
             padding: 28px 20px;
+          }
+          .login-header {
+            margin-bottom: 20px;
+          }
+          .login-title {
+            font-size: 1.5rem;
+          }
+          .login-subtitle {
+            font-size: 0.875rem;
           }
         }
       `}</style>

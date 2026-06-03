@@ -1132,9 +1132,9 @@ export default function Corporates() {
 
   return (
     <div className="space-y-6 animate-in fade-in duration-500 slide-in-from-bottom-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h2 className="text-2xl font-bold tracking-tight text-slate-900">Corporates & Accounts</h2>
+          <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900">Corporates & Accounts</h2>
           <p className="text-sm text-slate-500">
             {canManageCorporates
               ? "Review accounts, assign executives, and approve customer portal access."
@@ -1144,7 +1144,7 @@ export default function Corporates() {
           </p>
         </div>
         {isAdmin && (
-          <Button onClick={() => {
+          <Button className="w-full sm:w-auto" onClick={() => {
             resetCreateWizard();
             setShowCreateCorporateWizard(true);
           }}>
@@ -1154,7 +1154,7 @@ export default function Corporates() {
         )}
       </div>
       {isSupervisor && (
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Button
             variant={supervisorView === "executive" ? "primary" : "outline"}
             onClick={() => setSupervisorView("executive")}
@@ -1178,8 +1178,8 @@ export default function Corporates() {
         </div>
       )}
 
-      <div className="flex gap-4 mb-4">
-         <div className="relative flex-1 max-w-md">
+      <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center sm:gap-4 mb-4">
+         <div className="relative w-full sm:flex-1 sm:max-w-md">
             <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-slate-500" />
             <Input
               className="pl-9"
@@ -1192,7 +1192,7 @@ export default function Corporates() {
            <Select
              value={executiveFilter}
              onChange={(e) => setExecutiveFilter(e.target.value)}
-             className="w-64"
+             className="w-full sm:w-64"
            >
              <option value="all">All Executives</option>
              <option value="unassigned">Unassigned</option>
@@ -1215,7 +1215,7 @@ export default function Corporates() {
            <Select
              value={String(expiryFilterMonths)}
              onChange={(e) => setExpiryFilterMonths(Number(e.target.value) as 0 | 1 | 3 | 6 | 12)}
-             className="w-64"
+             className="w-full sm:w-64"
            >
              <option value="0">All Contract Timelines</option>
              <option value="1">Expiring within 1 month</option>
@@ -1350,7 +1350,7 @@ export default function Corporates() {
                       </div>
                     </CardHeader>
                     <CardContent className="p-0">
-                      <div className="grid grid-cols-2 md:grid-cols-3 divide-x divide-slate-200 border-b border-slate-200">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 divide-y sm:divide-y-0 sm:divide-x divide-slate-200 border-b border-slate-200">
                         <div className="p-4 text-center">
                           <div className="text-sm text-slate-500 mb-1">Contact Person</div>
                           <div className={`font-semibold ${isAccountContactMissing(selectedExecAccount) ? "text-amber-700 italic" : "text-slate-900"}`}>{formatContactName(selectedExecAccount)}</div>
@@ -1550,8 +1550,8 @@ export default function Corporates() {
                       ) : execDetailServices.length === 0 ? (
                         <p className="text-sm text-slate-400 italic">No service lines on this account.</p>
                       ) : ( 
-                        <div className="rounded-lg border border-slate-200 overflow-hidden">
-                          <table className="w-full text-sm">
+                        <div className="rounded-lg border border-slate-200 overflow-x-auto">
+                          <table className="w-full min-w-[480px] text-sm">
                             <thead className="bg-slate-50">
                               <tr className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
                                 <th className="text-left px-4 py-2.5">MSISDN</th>
@@ -1927,7 +1927,7 @@ export default function Corporates() {
                           )}
                         </div>
                       )}
-                      <div className="grid grid-cols-2 md:grid-cols-4 divide-x divide-slate-200 border-b border-slate-200">
+                      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 divide-y sm:divide-y-0 sm:divide-x divide-slate-200 border-b border-slate-200">
                         <div className="p-4 text-center">
                           <div className="text-sm text-slate-500 mb-1">Assigned Executive</div>
                           <div className="font-semibold text-slate-900">
@@ -2108,7 +2108,7 @@ export default function Corporates() {
                       </div>
                     </CardHeader>
                     <CardContent className="p-0">
-                      <div className="grid grid-cols-3 divide-x divide-slate-200 border-b border-slate-200">
+                      <div className="grid grid-cols-1 sm:grid-cols-3 divide-y sm:divide-y-0 sm:divide-x divide-slate-200 border-b border-slate-200">
                         <div className="p-4 text-center">
                           <div className="text-sm text-slate-500 mb-1">Contact Person</div>
                           <div className={`font-semibold ${isAccountContactMissing(selectedAccount) ? "text-amber-700 italic" : "text-slate-900"}`}>{formatContactName(selectedAccount)}</div>
@@ -2131,7 +2131,7 @@ export default function Corporates() {
                         <h4 className="font-medium text-slate-900 mb-4 flex items-center gap-2">
                           <Users className="h-4 w-4 text-slate-500" /> Account Information
                         </h4>
-                        <div className="grid grid-cols-2 md:grid-cols-3 gap-4 text-sm">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 text-sm">
                           <div><p className="text-xs text-slate-400">Account Type</p><p className="font-medium text-slate-900 mt-0.5">{selectedAccount!.accountType}</p></div>
                           <div><p className="text-xs text-slate-400">Industry</p><p className="font-medium text-slate-900 mt-0.5">{selectedAccount!.industry || "—"}</p></div>
                           <div><p className="text-xs text-slate-400">Created</p><p className="font-medium text-slate-900 mt-0.5">{new Date(selectedAccount!.created_at).toLocaleDateString()}</p></div>
@@ -2208,7 +2208,7 @@ export default function Corporates() {
                  </div>
                </CardHeader>
                <CardContent className="p-0">
-                 <div className="grid grid-cols-3 divide-x divide-slate-200 border-b border-slate-200">
+                 <div className="grid grid-cols-1 sm:grid-cols-3 divide-y sm:divide-y-0 sm:divide-x divide-slate-200 border-b border-slate-200">
                    <div className="p-4 text-center">
                      <div className="text-sm text-slate-500 mb-1">Assigned Executive</div>
                      <div className="font-semibold text-slate-900">{selectedCorp.exec}</div>
@@ -2260,18 +2260,18 @@ export default function Corporates() {
 
       {/* ═══════════ MANAGER: Account Detail + Assign/Approve Modal ═══════════ */}
       {detailAccount && (
-        <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 backdrop-blur-sm overflow-y-auto py-8 px-4">
+        <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 backdrop-blur-sm overflow-y-auto py-4 sm:py-8 px-4">
           <div className="bg-white rounded-xl shadow-2xl w-full max-w-4xl animate-in fade-in slide-in-from-bottom-4">
             {/* Header */}
-            <div className="flex items-start justify-between p-6 border-b border-slate-200">
-              <div>
-                <h2 className="text-xl font-bold text-slate-900 flex items-center gap-2">
-                  <Building2 className="h-5 w-5 text-mtc-blue" />
-                  {detailAccount.accountName}
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between p-4 sm:p-6 border-b border-slate-200">
+              <div className="min-w-0">
+                <h2 className="text-xl font-bold text-slate-900 flex items-center gap-2 break-words">
+                  <Building2 className="h-5 w-5 text-mtc-blue shrink-0" />
+                  <span className="break-words">{detailAccount.accountName}</span>
                 </h2>
-                <p className="text-sm text-slate-500 mt-0.5 font-mono">{detailAccount.accountNumber}</p>
+                <p className="text-sm text-slate-500 mt-0.5 font-mono break-all">{detailAccount.accountNumber}</p>
               </div>
-              <div className="flex items-center gap-3">
+              <div className="flex flex-wrap items-center gap-2 sm:gap-3">
                 <Badge variant={detailAccount.approvalStatus === "approved" ? "success" : detailAccount.approvalStatus === "rejected" ? "danger" : "warning"}>
                   {detailAccount.approvalStatus === "approved" ? "Approved" : detailAccount.approvalStatus === "rejected" ? "Rejected" : "Pending Approval"}
                 </Badge>
@@ -2281,7 +2281,7 @@ export default function Corporates() {
                     <AlertTriangle className="h-3 w-3" /> Profile Incomplete
                   </Badge>
                 )}
-                <button onClick={handleCloseDetail} className="rounded-lg p-1.5 hover:bg-slate-100 text-slate-500 hover:text-slate-900 transition-colors">
+                <button onClick={handleCloseDetail} className="rounded-lg p-1.5 hover:bg-slate-100 text-slate-500 hover:text-slate-900 transition-colors ml-auto sm:ml-0">
                   <X className="h-5 w-5" />
                 </button>
               </div>
@@ -2299,7 +2299,7 @@ export default function Corporates() {
                   <h3 className="text-sm font-semibold text-slate-500 uppercase tracking-wider mb-3 flex items-center gap-2">
                     <Building2 className="h-4 w-4" /> Account Details
                   </h3>
-                  <div className="grid grid-cols-2 md:grid-cols-3 gap-4 p-4 rounded-lg bg-slate-50 border border-slate-100">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 p-4 rounded-lg bg-slate-50 border border-slate-100">
                     <div><p className="text-xs text-slate-400">Account Type</p><p className="text-sm font-medium text-slate-900 mt-0.5">{detailAccount.accountType}</p></div>
                     <div><p className="text-xs text-slate-400">Industry</p><p className="text-sm font-medium text-slate-900 mt-0.5">{detailAccount.industry || "—"}</p></div>
                     <div><p className="text-xs text-slate-400">Created</p><p className="text-sm font-medium text-slate-900 mt-0.5">{new Date(detailAccount.created_at).toLocaleDateString()}</p></div>
@@ -2498,8 +2498,8 @@ export default function Corporates() {
                   {detailServices.length === 0 ? (
                     <p className="text-sm text-slate-400 italic">No service lines on this account.</p>
                   ) : (
-                    <div className="rounded-lg border border-slate-200 overflow-hidden">
-                      <table className="w-full text-sm">
+                    <div className="rounded-lg border border-slate-200 overflow-x-auto">
+                      <table className="w-full min-w-[640px] text-sm">
                         <thead className="bg-slate-50">
                           <tr className="text-xs font-semibold text-slate-500 uppercase tracking-wider">
                             <th className="text-left px-4 py-2.5">MSISDN</th>
@@ -2622,7 +2622,7 @@ export default function Corporates() {
                 />
               </div>
 
-              <div className="rounded-lg border border-slate-200 overflow-y-auto flex-1">
+              <div className="rounded-lg border border-slate-200 overflow-auto flex-1">
                 {execAccountManagers.length === 0 ? (
                   <div className="p-6 text-sm text-slate-500 text-center space-y-3">
                     <div>
@@ -2648,7 +2648,7 @@ export default function Corporates() {
                       : "All existing contact persons are already linked to this corporate."}
                   </div>
                 ) : (
-                  <table className="w-full text-sm">
+                  <table className="w-full min-w-[640px] text-sm">
                     <thead className="bg-slate-50 sticky top-0">
                       <tr className="text-left text-slate-500">
                         <th className="px-4 py-2.5">Name</th>
@@ -2872,7 +2872,7 @@ export default function Corporates() {
                 />
               </div>
 
-              <div className="rounded-lg border border-slate-200 overflow-y-auto flex-1">
+              <div className="rounded-lg border border-slate-200 overflow-auto flex-1">
                 {accountManagers.length === 0 ? (
                   <div className="p-6 text-sm text-slate-500 text-center space-y-3">
                     <div>No contact persons exist yet.</div>
@@ -2895,7 +2895,7 @@ export default function Corporates() {
                       : "All existing contact persons are already linked to this corporate."}
                   </div>
                 ) : (
-                  <table className="w-full text-sm">
+                  <table className="w-full min-w-[640px] text-sm">
                     <thead className="bg-slate-50 sticky top-0">
                       <tr className="text-left text-slate-500">
                         <th className="px-4 py-2.5">Name</th>
@@ -3008,7 +3008,7 @@ export default function Corporates() {
               </Button>
             </CardHeader>
             <CardContent className="pt-6 space-y-4">
-              <div className="grid grid-cols-2 gap-4 text-sm">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
                 <div>
                   <span className="text-slate-500 block mb-1">Account ID</span>
                   <span className="font-medium text-slate-900">{showAccountDetail.id}</span>

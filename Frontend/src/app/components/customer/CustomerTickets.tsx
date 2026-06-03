@@ -259,18 +259,18 @@ export default function CustomerTickets() {
 
   return (
     <div className="space-y-6 animate-in fade-in duration-500 slide-in-from-bottom-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h2 className="text-2xl font-bold tracking-tight text-slate-900">My Tickets</h2>
+          <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900">My Tickets</h2>
           <p className="text-sm text-slate-500">
             Submit and track service requests &amp; complaints
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
           <Button
             variant={showFilterPanel ? "default" : "outline"}
             onClick={() => setShowFilterPanel(!showFilterPanel)}
-            className="flex items-center gap-2"
+            className="flex items-center justify-center gap-2 w-full sm:w-auto"
           >
             <Filter className="h-4 w-4" /> Filter
           </Button>
@@ -279,7 +279,7 @@ export default function CustomerTickets() {
               if (!showCreate) resetCreateForm();
               setShowCreate(!showCreate);
             }}
-            className="flex items-center gap-2"
+            className="flex items-center justify-center gap-2 w-full sm:w-auto"
           >
             <Plus className="h-4 w-4" /> New Ticket
           </Button>
@@ -588,9 +588,9 @@ export default function CustomerTickets() {
                 </div>
               </div>
 
-              <div className="flex items-center justify-between mt-6 bg-slate-50 p-4 rounded border border-slate-200">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between mt-6 bg-slate-50 p-4 rounded border border-slate-200">
                 <div className="flex items-center gap-2 text-slate-600">
-                  <Clock className="h-5 w-5" />
+                  <Clock className="h-5 w-5 shrink-0" />
                   <span className="text-sm font-medium">
                     Estimated SLA based on selections:{" "}
                     <strong className="text-slate-900">
@@ -600,7 +600,7 @@ export default function CustomerTickets() {
                     </strong>
                   </span>
                 </div>
-                <Button type="submit" disabled={submitting} className="flex items-center gap-2">
+                <Button type="submit" disabled={submitting} className="flex items-center justify-center gap-2 w-full sm:w-auto">
                   {submitting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}
                   {submitting ? "Submitting..." : "Submit Ticket"}
                 </Button>
@@ -619,8 +619,8 @@ export default function CustomerTickets() {
 
       {/* Tickets table */}
       <Card>
-        <div className="flex items-center gap-4 p-4 border-b border-slate-200">
-          <div className="relative flex-1 max-w-sm">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-4 p-4 border-b border-slate-200">
+          <div className="relative w-full sm:flex-1 sm:max-w-sm">
             <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-slate-500" />
             <Input
               className="pl-9"
@@ -629,7 +629,7 @@ export default function CustomerTickets() {
               onChange={(e) => setSearchQuery(e.target.value)}
             />
           </div>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             <button
               onClick={() => setCategoryFilter("all")}
               className={`cursor-pointer rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${

@@ -68,10 +68,10 @@ export function CustomerRating() {
   ];
   
   return (
-    <div className="p-8">
+    <div className="p-4 sm:p-6 lg:p-8">
       <div className="max-w-3xl mx-auto">
-        <div className="mb-8">
-          <h1 className="text-3xl mb-2">Customer Service Rating</h1>
+        <div className="mb-6 sm:mb-8">
+          <h1 className="text-2xl sm:text-3xl mb-2">Customer Service Rating</h1>
           <p className="text-gray-600">Share your feedback about your recent engagement with our team</p>
         </div>
         
@@ -156,7 +156,7 @@ export function CustomerRating() {
                 {/* Rating Stars */}
                 <div className="space-y-2">
                   <Label>Overall Rating</Label>
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-1 sm:gap-2">
                     {[1, 2, 3, 4, 5].map((star) => (
                       <button
                         key={star}
@@ -167,7 +167,7 @@ export function CustomerRating() {
                         className="transition-transform hover:scale-110"
                       >
                         <Star
-                          className={`size-10 ${
+                          className={`size-8 sm:size-10 ${
                             star <= (hoverRating || rating)
                               ? 'fill-yellow-400 text-yellow-400'
                               : 'text-gray-300'
@@ -176,7 +176,7 @@ export function CustomerRating() {
                       </button>
                     ))}
                     {rating > 0 && (
-                      <span className="ml-2 text-gray-600">
+                      <span className="ml-1 sm:ml-2 text-gray-600 w-full sm:w-auto">
                         {rating} out of 5 stars
                       </span>
                     )}
@@ -217,10 +217,11 @@ export function CustomerRating() {
                 </div>
                 
                 {/* Submit Button */}
-                <div className="flex justify-end pt-4">
+                <div className="flex flex-col sm:flex-row sm:justify-end pt-4">
                   <Button 
                     type="submit" 
                     size="lg"
+                    className="w-full sm:w-auto"
                     disabled={!selectedAccount || !selectedEngagement || !rating || !category || !feedback}
                   >
                     <Send className="size-4 mr-2" />

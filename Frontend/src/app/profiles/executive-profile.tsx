@@ -53,12 +53,12 @@ export default function ExecutiveProfile() {
 
   return (
     <div className="space-y-6 animate-in fade-in duration-500 slide-in-from-bottom-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h2 className="text-2xl font-bold tracking-tight text-slate-900">Executive Portal</h2>
+          <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900">Executive Portal</h2>
           <p className="text-sm text-slate-500">Field operations, visit tracking, and customer engagement</p>
         </div>
-        <Badge variant="default" className="text-sm px-3 py-1">Executive</Badge>
+        <Badge variant="default" className="text-sm px-3 py-1 w-fit">Executive</Badge>
       </div>
 
       <div className="flex border-b border-slate-200 overflow-x-auto">
@@ -165,7 +165,7 @@ export default function ExecutiveProfile() {
       {/* TICKET ACCESS */}
       {activeTab === "tickets" && (
         <Card>
-          <CardHeader className="flex flex-row items-center justify-between">
+          <CardHeader className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <CardTitle className="text-base">My Assigned Tickets</CardTitle>
             <p className="text-sm text-slate-500">View, comment, and assign to Back Office</p>
           </CardHeader>
@@ -194,7 +194,7 @@ export default function ExecutiveProfile() {
                   <TableCell>{t.status}</TableCell>
                   <TableCell><Badge variant={t.sla as any}>{t.sla === "breached" ? "Breached" : t.sla === "danger" ? "At Risk" : "Warning"}</Badge></TableCell>
                   <TableCell className="text-right">
-                    <div className="flex gap-1 justify-end">
+                    <div className="flex flex-col sm:flex-row gap-1 sm:justify-end">
                       <Button variant="ghost" size="sm"><Eye className="h-4 w-4 mr-1" /> View</Button>
                       <Button variant="ghost" size="sm"><MessageSquare className="h-4 w-4 mr-1" /> Comment</Button>
                       <Button variant="outline" size="sm" onClick={() => toast.success("Assigned to Back Office", { description: `${t.id} routed to Back Office queue.` })}>

@@ -96,12 +96,12 @@ export default function ManagementProfile() {
 
   return (
     <div className="space-y-6 animate-in fade-in duration-500 slide-in-from-bottom-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h2 className="text-2xl font-bold tracking-tight text-slate-900">Manager / Supervisor Portal</h2>
+          <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900">Manager / Supervisor Portal</h2>
           <p className="text-sm text-slate-500">Executive management, SLA configuration, and template administration</p>
         </div>
-        <Badge variant="default" className="text-sm px-3 py-1 bg-mtc-blue-dark text-white border-transparent">Manager / Supervisor</Badge>
+        <Badge variant="default" className="text-sm px-3 py-1 bg-mtc-blue-dark text-white border-transparent w-fit">Manager / Supervisor</Badge>
       </div>
 
       <div className="flex border-b border-slate-200 overflow-x-auto">
@@ -298,9 +298,9 @@ export default function ManagementProfile() {
       {/* CONTROL CARD TEMPLATE BUILDER */}
       {activeTab === "templates" && (
         <Card>
-          <CardHeader className="flex flex-row items-center justify-between">
+          <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <CardTitle className="text-base flex items-center gap-2"><FileText className="h-5 w-5 text-mtc-blue" /> Control Card Template Builder</CardTitle>
-            <Button size="sm" variant="outline" onClick={() => {
+            <Button size="sm" variant="outline" className="w-full sm:w-auto" onClick={() => {
               setTemplateSections(prev => [...prev, { id: prev.length + 10, name: "New Section", type: "textarea", required: false }]);
               toast.success("Section added");
             }}>
@@ -312,9 +312,9 @@ export default function ManagementProfile() {
 
             <div className="space-y-3">
               {templateSections.map((section, idx) => (
-                <div key={section.id} className="flex items-center gap-3 p-4 rounded-lg border border-slate-200 bg-white hover:bg-slate-50">
+                <div key={section.id} className="flex flex-col sm:flex-row sm:items-center gap-3 p-4 rounded-lg border border-slate-200 bg-white hover:bg-slate-50">
                   <span className="flex items-center justify-center h-7 w-7 rounded-full bg-mtc-blue text-white text-xs font-bold shrink-0">{idx + 1}</span>
-                  <div className="flex-1 grid grid-cols-3 gap-3 items-center">
+                  <div className="flex-1 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3 items-center">
                     <Input className="h-8 text-sm" value={section.name} onChange={(e) => {
                       setTemplateSections(prev => prev.map(s => s.id === section.id ? { ...s, name: e.target.value } : s));
                     }} />
@@ -601,7 +601,7 @@ export default function ManagementProfile() {
 
           {/* Scorecards Table */}
           <Card>
-            <CardHeader className="flex flex-row items-center justify-between">
+            <CardHeader className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <CardTitle className="text-base">Monthly Performance Scorecards</CardTitle>
               <button
                 onClick={() => setActiveTab("assign")}

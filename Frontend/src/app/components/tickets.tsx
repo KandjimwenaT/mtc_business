@@ -112,20 +112,20 @@ export default function Tickets() {
 
   return (
     <div className="space-y-6 animate-in fade-in duration-500 slide-in-from-bottom-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h2 className="text-2xl font-bold tracking-tight text-slate-900">Tickets & Complaints</h2>
+          <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900">Tickets & Complaints</h2>
           <p className="text-sm text-slate-500">
             {isSupervisor && supervisorView === "executive"
               ? "My assigned executive tickets"
               : "Customer tickets linked to your assigned executives"}
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {canCreateTicket && (
             <Button
               variant="default"
-              className="bg-blue-600 text-white hover:bg-blue-700"
+              className="bg-blue-600 text-white hover:bg-blue-700 w-full sm:w-auto"
               onClick={() => setShowCreateForm((prev) => !prev)}
             >
               {showCreateForm ? "Hide Create Ticket" : "Create Ticket"}
@@ -134,7 +134,7 @@ export default function Tickets() {
           <Button
             variant={showFilterPanel ? "default" : "outline"}
             onClick={() => setShowFilterPanel(!showFilterPanel)}
-            className="flex items-center gap-2"
+            className="flex items-center gap-2 w-full sm:w-auto"
           >
             <Filter className="h-4 w-4" /> Filter
           </Button>
@@ -151,7 +151,7 @@ export default function Tickets() {
         />
       )}
       {isSupervisor && (
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <Button
             variant={supervisorView === "executive" ? "default" : "outline"}
             onClick={() => setSupervisorView("executive")}
@@ -175,7 +175,7 @@ export default function Tickets() {
         </div>
       )}
 
-      <div className="grid gap-4 md:grid-cols-3">
+      <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5">
         <Card>
           <CardContent className="pt-6">
             <div className="text-sm font-medium text-slate-500">Total</div>

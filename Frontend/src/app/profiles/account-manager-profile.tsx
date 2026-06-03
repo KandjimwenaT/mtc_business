@@ -90,12 +90,12 @@ export default function AccountManagerProfile() {
 
   return (
     <div className="space-y-6 animate-in fade-in duration-500 slide-in-from-bottom-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h2 className="text-2xl font-bold tracking-tight text-slate-900">Account Manager Portal</h2>
+          <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900">Account Manager Portal</h2>
           <p className="text-sm text-slate-500">Manage your profile, accounts, and customer interactions</p>
         </div>
-        <Badge variant="default" className="text-sm px-3 py-1">Account Manager</Badge>
+        <Badge variant="default" className="text-sm px-3 py-1 w-fit">Account Manager</Badge>
       </div>
 
       {/* Tab Navigation */}
@@ -169,7 +169,7 @@ export default function AccountManagerProfile() {
               </div>
               <div className="border-t border-slate-200 pt-4">
                 <h4 className="text-sm font-semibold text-slate-700 mb-3">Performance Summary</h4>
-                <div className="grid grid-cols-3 gap-4">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                   <MetricCard label="Avg Rating" value="4.3" color="text-mtc-blue" />
                   <MetricCard label="Accounts" value="12" color="text-slate-900" />
                   <MetricCard label="Open Tickets" value="8" color="text-red-600" />
@@ -183,9 +183,9 @@ export default function AccountManagerProfile() {
       {/* REQUESTS & COMPLAINTS */}
       {activeTab === "requests" && (
         <Card>
-          <CardHeader className="flex flex-row items-center justify-between">
+          <CardHeader className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <CardTitle className="text-base">My Requests & Complaints (Read-Only SLA View)</CardTitle>
-            <div className="flex gap-2">
+            <div className="flex flex-wrap gap-2">
               <Badge variant="warning">3 Warning</Badge>
               <Badge variant="danger">1 Breached</Badge>
             </div>
@@ -416,25 +416,25 @@ function VisitConfirmationCard({ visit }: { visit: { id: number; corp: string; d
   return (
     <Card className={confirmed ? "border-green-200 bg-green-50/30" : ""}>
       <CardContent className="pt-6">
-        <div className="flex items-start justify-between">
-          <div className="space-y-2">
-            <div className="flex items-center gap-3">
+        <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+          <div className="space-y-2 min-w-0">
+            <div className="flex flex-wrap items-center gap-2 sm:gap-3">
               <h4 className="font-semibold text-slate-900">{visit.corp}</h4>
               {confirmed && <Badge variant="success"><CheckCircle className="h-3 w-3 mr-1" /> Confirmed</Badge>}
             </div>
-            <div className="grid grid-cols-2 gap-x-8 gap-y-1 text-sm">
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-8 gap-y-1 text-sm">
               <div className="flex items-center gap-2 text-slate-600">
                 <Clock className="h-3.5 w-3.5" /> {visit.date}
               </div>
               <div className="flex items-center gap-2 text-slate-600">
                 <MapPin className="h-3.5 w-3.5" /> {visit.location}
               </div>
-              <div className="flex items-center gap-2 text-slate-600 col-span-2">
+              <div className="flex items-center gap-2 text-slate-600 sm:col-span-2">
                 <FileText className="h-3.5 w-3.5" /> {visit.agenda}
               </div>
             </div>
           </div>
-          <div className="flex gap-2">
+          <div className="flex gap-2 shrink-0">
             {!confirmed ? (
               <Button
                 size="sm"

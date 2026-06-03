@@ -4,9 +4,9 @@ import { Home, ArrowLeft } from "lucide-react";
 
 export default function NotFound() {
   return (
-    <div className="flex flex-col items-center justify-center py-20 text-center animate-in fade-in duration-500">
-      <div className="text-7xl font-bold text-slate-200 mb-4">404</div>
-      <h2 className="text-2xl font-bold text-slate-900 mb-2">Page Not Found</h2>
+    <div className="flex flex-col items-center justify-center py-12 sm:py-20 px-4 text-center animate-in fade-in duration-500">
+      <div className="text-6xl sm:text-7xl font-bold text-slate-200 mb-4">404</div>
+      <h2 className="text-xl sm:text-2xl font-bold text-slate-900 mb-2">Page Not Found</h2>
       <p className="text-slate-500 mb-8 max-w-md">
         The page you're looking for doesn't exist or has been moved. 
         Please check the URL or return to the login page.

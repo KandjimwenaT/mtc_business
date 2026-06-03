@@ -291,7 +291,7 @@ export default function ExecutiveDashboard() {
   return (
     <div className="space-y-6 animate-in fade-in duration-500 slide-in-from-bottom-4">
       <div>
-        <h2 className="text-2xl font-bold tracking-tight text-slate-900">Executive Dashboard</h2>
+        <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900">Executive Dashboard</h2>
         <p className="text-sm text-slate-500">Manage your corporate portfolio</p>
       </div>
 
@@ -314,44 +314,44 @@ export default function ExecutiveDashboard() {
           </div>
           <div>
             <p className="text-xs text-slate-500">Contact</p>
-            <p className="font-semibold text-mtc-blue">{managerEmail}</p>
+            <p className="font-semibold text-mtc-blue break-all">{managerEmail}</p>
           </div>
         </CardContent>
       </Card>
 
-      <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-5">
+      <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
         <Card>
           <CardContent className="pt-6">
             <p className="text-sm font-medium text-slate-500">My Corporates</p>
-            <div className="mt-2 text-3xl font-bold text-slate-900">{corporateCount}</div>
+            <div className="mt-2 text-2xl sm:text-3xl font-bold text-slate-900">{corporateCount}</div>
             <p className="text-xs text-slate-400">{totalLines} total lines</p>
           </CardContent>
         </Card>
         <Card>
           <CardContent className="pt-6">
             <p className="text-sm font-medium text-slate-500">Open Tickets</p>
-            <div className="mt-2 text-3xl font-bold text-slate-900">{openTicketsCount}</div>
+            <div className="mt-2 text-2xl sm:text-3xl font-bold text-slate-900">{openTicketsCount}</div>
             <p className="text-xs text-slate-400">{breachedSlaCount} breached SLA</p>
           </CardContent>
         </Card>
         <Card>
           <CardContent className="pt-6">
             <p className="text-sm font-medium text-slate-500">Pending Visits</p>
-            <div className="mt-2 text-3xl font-bold text-slate-900">{pendingVisitsCount}</div>
+            <div className="mt-2 text-2xl sm:text-3xl font-bold text-slate-900">{pendingVisitsCount}</div>
             <p className="text-xs text-slate-400">Next: {nextVisitDate || "N/A"}</p>
           </CardContent>
         </Card>
         <Card>
           <CardContent className="pt-6">
             <p className="text-sm font-medium text-slate-500">Avg Rating / SLAs</p>
-            <div className="mt-2 text-3xl font-bold text-slate-900">{avgRating > 0 ? avgRating.toFixed(1) : "N/A"}</div>
+            <div className="mt-2 text-2xl sm:text-3xl font-bold text-slate-900">{avgRating > 0 ? avgRating.toFixed(1) : "N/A"}</div>
             <p className="text-xs text-slate-400">Breached SLAs: {breachedSlaCount}</p>
           </CardContent>
         </Card>
         <Card>
           <CardContent className="pt-6">
             <p className="text-sm font-medium text-slate-500">Monthly Spending</p>
-            <div className="mt-2 text-3xl font-bold text-slate-900">
+            <div className="mt-2 text-xl sm:text-2xl lg:text-3xl font-bold text-slate-900 break-words">
               {`N$ ${Number(monthlySpendingTotal || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
             </div>
             <p className="text-xs text-slate-400">
@@ -362,12 +362,12 @@ export default function ExecutiveDashboard() {
       </div>
 
       <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-7">
-        <Card className="col-span-4">
+        <Card className="lg:col-span-4">
           <CardHeader>
             <CardTitle>Ticketing Volume</CardTitle>
           </CardHeader>
           <CardContent className="pl-2">
-            <div className="h-[300px]">
+            <div className="h-[220px] sm:h-[300px]">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={ticketsChartData}>
                   <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
@@ -385,12 +385,12 @@ export default function ExecutiveDashboard() {
           </CardContent>
         </Card>
         
-        <Card className="col-span-3">
+        <Card className="lg:col-span-3">
           <CardHeader>
             <CardTitle>SLA Health Distribution</CardTitle>
           </CardHeader>
           <CardContent>
-             <div className="h-[300px] flex items-center justify-center relative min-h-[300px] min-w-[300px]">
+             <div className="h-[220px] sm:h-[300px] flex items-center justify-center relative w-full min-w-0">
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
                   <Pie
@@ -427,7 +427,7 @@ export default function ExecutiveDashboard() {
           <CardTitle>Monthly Spending Trend</CardTitle>
         </CardHeader>
         <CardContent className="pl-2">
-          <div className="h-[280px]">
+          <div className="h-[220px] sm:h-[280px]">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={spendingTrend.map((point) => ({ month: point.month, total: Number(point.total || 0) }))}>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />

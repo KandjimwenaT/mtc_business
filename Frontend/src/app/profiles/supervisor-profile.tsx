@@ -36,12 +36,12 @@ export default function SupervisorProfile() {
 
   return (
     <div className="space-y-6 animate-in fade-in duration-500 slide-in-from-bottom-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h2 className="text-2xl font-bold tracking-tight text-slate-900">Supervisor Portal</h2>
+          <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900">Supervisor Portal</h2>
           <p className="text-sm text-slate-500">Team oversight, escalation management, and performance monitoring</p>
         </div>
-        <Badge variant="warning" className="text-sm px-3 py-1">Supervisor</Badge>
+        <Badge variant="warning" className="text-sm px-3 py-1 w-fit">Supervisor</Badge>
       </div>
 
       <div className="flex border-b border-slate-200 overflow-x-auto">
@@ -127,14 +127,14 @@ export default function SupervisorProfile() {
           ].map((req) => (
             <Card key={req.id} className={req.status === "pending" ? "border-amber-200" : "border-green-200 bg-green-50/20"}>
               <CardContent className="pt-6">
-                <div className="flex items-start justify-between mb-3">
-                  <div className="flex items-center gap-3">
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between mb-3">
+                  <div className="flex flex-wrap items-center gap-2 sm:gap-3">
                     <h4 className="font-semibold text-slate-900">{req.corp}</h4>
                     <Badge variant={req.status === "pending" ? "warning" : "success"}>{req.status === "pending" ? "Pending Approval" : "Approved"}</Badge>
                     <span className="text-xs text-slate-500">{req.id}</span>
                   </div>
                 </div>
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm mb-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 text-sm mb-3">
                   <div><span className="text-slate-500 block">Executive</span><span className="font-medium">{req.exec}</span></div>
                   <div><span className="text-slate-500 block">Reason</span><span className="font-medium">{req.reason}</span></div>
                   <div><span className="text-slate-500 block">Date Change</span><span className="font-medium">{req.date}</span></div>
@@ -162,9 +162,9 @@ export default function SupervisorProfile() {
       {/* L1 ESCALATION INBOX */}
       {activeTab === "escalations" && (
         <Card>
-          <CardHeader className="flex flex-row items-center justify-between">
+          <CardHeader className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <CardTitle className="text-base flex items-center gap-2"><ArrowUpCircle className="h-5 w-5 text-red-500" /> Level-1 Escalation Inbox</CardTitle>
-            <Badge variant="danger">5 Active</Badge>
+            <Badge variant="danger" className="w-fit">5 Active</Badge>
           </CardHeader>
           <Table>
             <TableHeader>
@@ -194,7 +194,7 @@ export default function SupervisorProfile() {
                   <TableCell>{e.time}</TableCell>
                   <TableCell><span className="text-red-600 font-mono font-medium">{e.overdue}</span></TableCell>
                   <TableCell className="text-right">
-                    <div className="flex gap-1 justify-end">
+                    <div className="flex flex-col sm:flex-row gap-1 sm:justify-end">
                       <Button variant="ghost" size="sm"><Eye className="h-4 w-4 mr-1" /> View</Button>
                       <Button size="sm" onClick={() => toast.success(`${e.id} actioned`, { description: "Resolution logged and customer notified." })}>
                         Resolve

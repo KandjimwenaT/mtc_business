@@ -36,12 +36,12 @@ export default function BackOfficeProfile() {
 
   return (
     <div className="space-y-6 animate-in fade-in duration-500 slide-in-from-bottom-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h2 className="text-2xl font-bold tracking-tight text-slate-900">Back-Office Admin Portal</h2>
+          <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900">Back-Office Admin Portal</h2>
           <p className="text-sm text-slate-500">Ticket processing, customer approvals, and account management</p>
         </div>
-        <Badge variant="neutral" className="text-sm px-3 py-1">Back Office</Badge>
+        <Badge variant="neutral" className="text-sm px-3 py-1 w-fit">Back Office</Badge>
       </div>
 
       <div className="flex border-b border-slate-200 overflow-x-auto">
@@ -102,9 +102,9 @@ export default function BackOfficeProfile() {
       {/* ASSIGNED TICKETS */}
       {activeTab === "tickets" && (
         <Card>
-          <CardHeader className="flex flex-row items-center justify-between">
+          <CardHeader className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <CardTitle className="text-base flex items-center gap-2"><Inbox className="h-5 w-5 text-mtc-blue" /> Assigned Tickets Queue</CardTitle>
-            <Badge variant="warning">14 Pending</Badge>
+            <Badge variant="warning" className="w-fit">14 Pending</Badge>
           </CardHeader>
           <Table>
             <TableHeader>
@@ -167,14 +167,14 @@ export default function BackOfficeProfile() {
           ].map((req) => (
             <Card key={req.id} className={req.status === "approved" ? "border-green-200 bg-green-50/20" : ""}>
               <CardContent className="pt-6">
-                <div className="flex items-start justify-between">
-                  <div className="space-y-3 flex-1">
-                    <div className="flex items-center gap-3">
+                <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+                  <div className="space-y-3 flex-1 min-w-0">
+                    <div className="flex flex-wrap items-center gap-2 sm:gap-3">
                       <h4 className="font-semibold text-slate-900">{req.company}</h4>
                       <Badge variant={req.status === "pending" ? "warning" : "success"}>{req.status === "pending" ? "Pending Review" : "Approved"}</Badge>
                       <span className="text-xs text-slate-500">{req.id}</span>
                     </div>
-                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 text-sm">
                       <div><span className="text-slate-500 block">Contact</span><span className="font-medium">{req.contact}</span></div>
                       <div><span className="text-slate-500 block">Phone</span><span className="font-medium">{req.phone}</span></div>
                       <div><span className="text-slate-500 block">Est. Lines</span><span className="font-medium">{req.lines}</span></div>

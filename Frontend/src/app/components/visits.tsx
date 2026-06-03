@@ -108,12 +108,12 @@ export default function Visits() {
 
   return (
     <div className="space-y-6 animate-in fade-in duration-500 slide-in-from-bottom-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h2 className="text-2xl font-bold tracking-tight text-slate-900">Visits & Engagements</h2>
+          <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900">Visits & Engagements</h2>
           <p className="text-sm text-slate-500">Manage client visits, control cards, and feedback ratings.</p>
         </div>
-        <Button className="flex items-center gap-2" onClick={() => setShowSchedule(!showSchedule)}>
+        <Button className="flex items-center justify-center gap-2 w-full sm:w-auto" onClick={() => setShowSchedule(!showSchedule)}>
           <Plus className="h-4 w-4" /> Schedule Visit
         </Button>
       </div>
@@ -208,7 +208,7 @@ export default function Visits() {
                   <TableCell className="font-medium">{req.requestedDate}</TableCell>
                   <TableCell className="text-sm text-slate-500 max-w-xs truncate">{req.reason}</TableCell>
                   <TableCell className="text-right">
-                    <div className="flex justify-end gap-2">
+                    <div className="flex flex-col sm:flex-row sm:justify-end gap-1 sm:gap-2">
                       <Button
                         size="sm"
                         variant="outline"
@@ -272,12 +272,12 @@ export default function Visits() {
 
       {activeTab === "upcoming" && (
         <div className="space-y-4">
-          <div className="flex justify-between items-center mb-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:justify-between sm:items-center mb-4">
             <h3 className="text-lg font-medium">Scheduled for this week</h3>
-            <div className="relative">
+            <div className="relative w-full sm:w-auto">
               <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-slate-500" />
               <Input
-                className="pl-9 w-64"
+                className="pl-9 w-full sm:w-64"
                 placeholder="Search visits..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
@@ -382,20 +382,20 @@ export default function Visits() {
                   </Select>
                 </div>
 
-                <div className="col-span-2 space-y-2">
+                <div className="col-span-1 md:col-span-2 space-y-2">
                   <Label>Next Actions *</Label>
-                  <div className="flex gap-2">
+                  <div className="flex flex-col sm:flex-row gap-2">
                     <Select className="flex-1">
                       <option>Send Proposal</option>
                       <option>Schedule Technical Survey</option>
                       <option>Follow up call in 1 week</option>
                       <option>Close Engagement</option>
                     </Select>
-                    <Input type="date" className="w-40" />
+                    <Input type="date" className="w-full sm:w-40" />
                   </div>
                 </div>
 
-                <div className="col-span-2 space-y-2">
+                <div className="col-span-1 md:col-span-2 space-y-2">
                   <Label>Brief Notes (Optional)</Label>
                   <textarea 
                     className="flex min-h-[60px] w-full rounded-md border border-slate-300 bg-transparent px-3 py-2 text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-mtc-blue"
@@ -490,7 +490,7 @@ export default function Visits() {
               </Button>
             </CardHeader>
             <CardContent className="pt-6 space-y-4">
-              <div className="grid grid-cols-2 gap-4 text-sm">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
                 <div>
                   <span className="text-slate-500 block mb-1">Visit Date</span>
                   <span className="font-medium text-slate-900">{showViewCard.date}</span>

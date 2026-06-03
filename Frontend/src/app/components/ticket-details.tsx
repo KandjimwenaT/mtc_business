@@ -271,17 +271,17 @@ export default function TicketDetails() {
   return (
     <div className="space-y-6 animate-in fade-in duration-500 slide-in-from-right-4">
       <div className="flex items-center gap-4 border-b border-slate-200 pb-4">
-        <Button variant="ghost" size="sm" className="rounded-full h-8 w-8 p-0" onClick={() => navigate("/tickets")}>
+        <Button variant="ghost" size="sm" className="rounded-full h-8 w-8 p-0 shrink-0" onClick={() => navigate("/tickets")}>
           <ArrowLeft className="h-4 w-4" />
         </Button>
-        <div className="flex-1">
-          <div className="flex items-center gap-3">
-            <h2 className="text-2xl font-bold tracking-tight text-slate-900">{ticket.ticketNumber}</h2>
+        <div className="flex-1 min-w-0">
+          <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+            <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900 break-words">{ticket.ticketNumber}</h2>
             <Badge variant={slaInfo.label === "Breached" ? "danger" : "success"} className="uppercase px-2 py-1">
               {slaInfo.label}
             </Badge>
           </div>
-          <p className="text-sm text-slate-500">{ticket.corporateName || ticket.accountName || "Corporate"} • {ticket.type} / {ticket.category}</p>
+          <p className="text-sm text-slate-500 break-words">{ticket.corporateName || ticket.accountName || "Corporate"} • {ticket.type} / {ticket.category}</p>
         </div>
       </div>
 
@@ -305,7 +305,7 @@ export default function TicketDetails() {
               <div className="h-3 w-full bg-slate-100 rounded-full overflow-hidden">
                 <div className={`h-full ${slaInfo.label === "Breached" ? "bg-slate-900" : "bg-green-500"} rounded-full transition-all duration-500`} style={{ width: `${slaInfo.progress}%` }} />
               </div>
-              <div className="flex justify-between text-xs text-slate-400 mt-2">
+              <div className="grid grid-cols-2 gap-1 text-[10px] text-slate-400 mt-2 sm:flex sm:justify-between sm:text-xs">
                 <span>Created</span>
                 <span>Warning (12h)</span>
                 <span>At Risk (18h)</span>
@@ -319,7 +319,7 @@ export default function TicketDetails() {
               <CardTitle className="text-lg">Ticket Details</CardTitle>
             </CardHeader>
             <CardContent className="space-y-6">
-              <div className="grid grid-cols-2 gap-y-4 gap-x-6 text-sm">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-y-4 gap-x-6 text-sm">
                 <div>
                   <span className="text-slate-500 block mb-1">Corporate</span>
                   <span className="font-medium text-slate-900 block">{ticket.corporateName || "—"}</span>

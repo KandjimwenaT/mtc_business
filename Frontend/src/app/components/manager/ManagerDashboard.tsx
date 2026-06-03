@@ -133,7 +133,7 @@ function StatCard({
           <p className="text-sm font-medium text-slate-500">{label}</p>
           <Icon className={cn("h-5 w-5 shrink-0 text-slate-400", iconClassName)} />
         </div>
-        <div className="text-3xl font-bold text-slate-900 mt-2 tabular-nums">{value}</div>
+        <div className="text-2xl sm:text-3xl font-bold text-slate-900 mt-2 tabular-nums break-words">{value}</div>
         <p className={cn("text-xs mt-1", subClassName ?? "text-slate-400")}>{sub}</p>
       </CardContent>
     </Card>
@@ -156,7 +156,7 @@ function TrendStatCard({
           <p className="text-sm font-medium text-slate-500">{label}</p>
           <TrendingUp className="h-4 w-4 shrink-0 text-emerald-600" aria-hidden />
         </div>
-        <div className="text-3xl font-bold text-slate-900 mt-2 tabular-nums">{value}</div>
+        <div className="text-2xl sm:text-3xl font-bold text-slate-900 mt-2 tabular-nums break-words">{value}</div>
         <p className="text-xs mt-1 font-medium text-emerald-600">{sub}</p>
       </CardContent>
     </Card>
@@ -473,7 +473,7 @@ export default function ManagerDashboard() {
   return (
     <div className="space-y-8 animate-in fade-in duration-500 slide-in-from-bottom-4">
       <div>
-        <h1 className="text-2xl font-bold tracking-tight text-slate-900">Management Dashboard</h1>
+        <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900">Management Dashboard</h1>
         <p className="text-sm text-slate-500 mt-1">{departmentSubtitle}</p>
       </div>
 
@@ -558,7 +558,7 @@ export default function ManagerDashboard() {
             <CardTitle>Ticketing Volume</CardTitle>
           </CardHeader>
           <CardContent className="pl-2">
-            <div className="h-[300px]">
+            <div className="h-[220px] sm:h-[300px]">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={ticketsChartData}>
                   <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
@@ -585,7 +585,7 @@ export default function ManagerDashboard() {
             <CardTitle>SLA Health Distribution</CardTitle>
           </CardHeader>
           <CardContent>
-            <div className="h-[300px] flex items-center justify-center relative min-h-[300px] min-w-[240px]">
+            <div className="h-[220px] sm:h-[300px] flex items-center justify-center relative w-full min-w-0">
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
                   <Pie
@@ -621,7 +621,7 @@ export default function ManagerDashboard() {
           <CardTitle>Monthly Spending Trend</CardTitle>
         </CardHeader>
         <CardContent className="pl-2">
-          <div className="h-[280px]">
+          <div className="h-[220px] sm:h-[280px]">
             <ResponsiveContainer width="100%" height="100%">
               <LineChart data={spendingTrend.map((p) => ({ month: p.month, total: Number(p.total || 0) }))}>
                 <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />

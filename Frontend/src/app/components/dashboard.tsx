@@ -135,8 +135,8 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-6 animate-in fade-in duration-500 slide-in-from-bottom-4">
-      <div className="flex items-center justify-between">
-        <h2 className="text-2xl font-bold tracking-tight text-slate-900">Overview</h2>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900">Overview</h2>
       </div>
 
       {role === "manager" ? (
@@ -268,12 +268,12 @@ export default function Dashboard() {
       )}
 
       <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-7">
-        <Card className="col-span-4">
+        <Card className="lg:col-span-4">
           <CardHeader>
             <CardTitle>Ticketing Volume</CardTitle>
           </CardHeader>
           <CardContent className="pl-2">
-            <div className="h-[300px]">
+            <div className="h-[220px] sm:h-[300px]">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={ticketsData}>
                   <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#e2e8f0" />
@@ -291,12 +291,12 @@ export default function Dashboard() {
           </CardContent>
         </Card>
         
-        <Card className="col-span-3">
+        <Card className="lg:col-span-3">
           <CardHeader>
             <CardTitle>SLA Health Distribution</CardTitle>
           </CardHeader>
           <CardContent>
-             <div className="h-[300px] flex items-center justify-center relative min-h-[300px] min-w-[300px]">
+             <div className="h-[220px] sm:h-[300px] flex items-center justify-center relative w-full min-w-0">
               <ResponsiveContainer width="100%" height="100%">
                 <PieChart>
                   <Pie

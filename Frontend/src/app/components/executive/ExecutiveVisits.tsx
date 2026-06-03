@@ -868,12 +868,12 @@ export default function ExecutiveVisits() {
 
   return (
     <div className="space-y-6 animate-in fade-in duration-500 slide-in-from-bottom-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h2 className="text-2xl font-bold tracking-tight text-slate-900">Visits & Engagements</h2>
+          <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900">Visits & Engagements</h2>
           <p className="text-sm text-slate-500">Manage client visits, control cards, and feedback ratings.</p>
         </div>
-        <Button className="flex items-center gap-2" onClick={() => setShowSchedule(!showSchedule)}>
+        <Button className="flex items-center justify-center gap-2 w-full sm:w-auto" onClick={() => setShowSchedule(!showSchedule)}>
           <Plus className="h-4 w-4" /> Schedule Visit
         </Button>
       </div>
@@ -1177,7 +1177,7 @@ export default function ExecutiveVisits() {
             <CardTitle className="text-xl">
               {format(calendarDate, "MMMM yyyy")}
             </CardTitle>
-            <div className="flex items-center gap-4">
+            <div className="flex flex-wrap items-center gap-2 sm:gap-4">
               <div className="flex rounded-md border border-slate-200 overflow-hidden">
                 <button
                   onClick={() => setCalendarView("week")}
@@ -1198,7 +1198,8 @@ export default function ExecutiveVisits() {
         </CardHeader>
         <CardContent>
           {calendarView === "week" ? (
-            <div className="grid grid-cols-7 gap-2">
+            <div className="overflow-x-auto -mx-4 px-4 sm:mx-0 sm:px-0">
+              <div className="grid grid-cols-7 gap-2 min-w-[560px]">
               {weekDays.map((day, index) => {
                 const dayVisits = getVisitsForDate(day);
                 const isToday = isSameDay(day, new Date());
@@ -1226,9 +1227,11 @@ export default function ExecutiveVisits() {
                   </div>
                 );
               })}
+              </div>
             </div>
           ) : (
-            <div>
+            <div className="overflow-x-auto -mx-4 px-4 sm:mx-0 sm:px-0">
+              <div className="min-w-[560px]">
               <div className="grid grid-cols-7 gap-2 mb-2">
                 {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map(day => (
                   <div key={day} className="text-center text-xs font-medium text-slate-500 py-2">{day}</div>
@@ -1259,6 +1262,7 @@ export default function ExecutiveVisits() {
                     </div>
                   );
                 })}
+              </div>
               </div>
             </div>
           )}
@@ -1397,7 +1401,7 @@ export default function ExecutiveVisits() {
         <span className="flex items-center gap-1.5"><span className="h-2.5 w-2.5 rounded-full bg-red-500" /> Declined</span>
       </div>
 
-      <div className="flex border-b border-slate-200">
+      <div className="flex border-b border-slate-200 overflow-x-auto whitespace-nowrap">
         <button
           onClick={() => setActiveTab("upcoming")}
           className={`py-3 px-6 text-sm font-medium border-b-2 transition-colors ${activeTab === "upcoming" ? "border-mtc-blue text-mtc-blue" : "border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300"}`}
@@ -1431,12 +1435,12 @@ export default function ExecutiveVisits() {
 
       {activeTab === "upcoming" && (
         <div className="space-y-4">
-          <div className="flex justify-between items-center mb-4">
+          <div className="flex flex-col gap-3 sm:flex-row sm:justify-between sm:items-center mb-4">
             <h3 className="text-lg font-medium">Upcoming Visits ({upcomingVisits.length})</h3>
-            <div className="relative">
+            <div className="relative w-full sm:w-auto">
               <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-slate-500" />
               <Input
-                className="pl-9 w-64"
+                className="pl-9 w-full sm:w-64"
                 placeholder="Search visits..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}

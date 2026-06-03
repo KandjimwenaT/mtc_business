@@ -35,12 +35,12 @@ export default function GMCRMProfile() {
 
   return (
     <div className="space-y-6 animate-in fade-in duration-500 slide-in-from-bottom-4">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h2 className="text-2xl font-bold tracking-tight text-slate-900">GM CRM Portal</h2>
+          <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900">GM CRM Portal</h2>
           <p className="text-sm text-slate-500">Strategic oversight, critical escalations, and final resolutions</p>
         </div>
-        <Badge className="text-sm px-3 py-1 bg-mtc-navy text-white border-transparent">GM CRM</Badge>
+        <Badge className="text-sm px-3 py-1 bg-mtc-navy text-white border-transparent w-fit">GM CRM</Badge>
       </div>
 
       <div className="flex border-b border-slate-200 overflow-x-auto">
@@ -239,15 +239,15 @@ export default function GMCRMProfile() {
           ].map((item) => (
             <Card key={item.id} className="border-red-200">
               <CardHeader className="bg-red-50 border-b border-red-200 py-4">
-                <div className="flex items-center justify-between">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                   <CardTitle className="text-base flex items-center gap-2">
                     <Zap className="h-4 w-4 text-red-600" /> {item.id} — {item.corp}
                   </CardTitle>
-                  <Badge variant="danger">Awaiting GM Decision</Badge>
+                  <Badge variant="danger" className="w-fit">Awaiting GM Decision</Badge>
                 </div>
               </CardHeader>
               <CardContent className="pt-6 space-y-4">
-                <div className="grid grid-cols-2 gap-4 text-sm">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 text-sm">
                   <div><span className="text-slate-500 block">Issue</span><p className="font-medium text-slate-900">{item.issue}</p></div>
                   <div><span className="text-slate-500 block">Escalation Path</span><p className="font-medium">{item.escalation}</p></div>
                   <div><span className="text-slate-500 block">Assigned Executive</span><p className="font-medium">{item.assignedExec}</p></div>
@@ -283,9 +283,9 @@ export default function GMCRMProfile() {
                   </div>
                 </div>
 
-                <div className="flex gap-2 justify-end pt-4 border-t border-slate-200">
-                  <Button variant="outline">Save as Draft</Button>
-                  <Button onClick={() => toast.success(`${item.id} resolved`, { description: `Final resolution issued for ${item.corp}. All stakeholders notified.` })}>
+                <div className="flex flex-col-reverse gap-2 pt-4 border-t border-slate-200 sm:flex-row sm:justify-end">
+                  <Button variant="outline" className="w-full sm:w-auto">Save as Draft</Button>
+                  <Button className="w-full sm:w-auto" onClick={() => toast.success(`${item.id} resolved`, { description: `Final resolution issued for ${item.corp}. All stakeholders notified.` })}>
                     <CheckCircle className="h-4 w-4 mr-1" /> Issue Final Resolution
                   </Button>
                 </div>

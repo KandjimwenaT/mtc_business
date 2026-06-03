@@ -508,9 +508,9 @@ export default function ManagerVisits() {
         </div>
       )}
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h2 className="text-2xl font-bold tracking-tight text-slate-900">Visits & Engagements</h2>
+          <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900">Visits & Engagements</h2>
           <p className="text-sm text-slate-500">Oversee executive visit schedules, reschedule requests, customer feedback, and control cards.</p>
         </div>
       </div>
@@ -561,20 +561,20 @@ export default function ManagerVisits() {
       {activeTab === "schedule" && (
         <div className="space-y-6">
           {/* Filters */}
-          <div className="flex flex-wrap gap-3 items-center">
-            <div className="relative flex-1 min-w-[200px] max-w-xs">
+          <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+            <div className="relative w-full sm:flex-1 sm:min-w-[200px] sm:max-w-xs">
               <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-slate-500" />
               <Input className="pl-9" placeholder="Search by corporate or executive..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} />
             </div>
-            <Select className="w-48" value={execFilter} onChange={(e) => setExecFilter(e.target.value)}>
+            <Select className="w-full sm:w-48" value={execFilter} onChange={(e) => setExecFilter(e.target.value)}>
               <option value="">All Executives</option>
               {executiveNames.map((n) => <option key={n} value={n}>{n}</option>)}
             </Select>
-            <Select className="w-40" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
+            <Select className="w-full sm:w-40" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)}>
               <option value="">All Statuses</option>
               {Object.entries(statusConfig).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
             </Select>
-            <div className="flex items-center gap-1 ml-auto">
+            <div className="flex items-center gap-1 sm:ml-auto">
               <Button variant={calendarView === "week" ? "primary" : "outline"} size="sm" onClick={() => setCalendarView("week")}>Week</Button>
               <Button variant={calendarView === "month" ? "primary" : "outline"} size="sm" onClick={() => setCalendarView("month")}>Month</Button>
             </div>
@@ -593,6 +593,8 @@ export default function ManagerVisits() {
               <Button variant="ghost" size="sm" onClick={() => navCalendar(1)}><ChevronRight className="h-4 w-4" /></Button>
             </CardHeader>
             <CardContent className="p-0">
+              <div className="overflow-x-auto -mx-4 px-4 sm:mx-0 sm:px-0">
+                <div className="min-w-[560px]">
               {/* Day headers */}
               <div className="grid grid-cols-7 border-b border-slate-200">
                 {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((d) => (
@@ -634,6 +636,8 @@ export default function ManagerVisits() {
                     </div>
                   );
                 })}
+              </div>
+                </div>
               </div>
             </CardContent>
           </Card>
@@ -714,28 +718,30 @@ export default function ManagerVisits() {
           )}
           <Card>
             <CardContent className="py-4">
-              <div className="flex flex-wrap items-end gap-3">
-                <div className="min-w-[220px]">
+              <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-end">
+                <div className="w-full sm:min-w-[220px] sm:w-auto">
                   <label className="text-xs text-slate-500 mb-1 block">Executive</label>
                   <Select value={previousExecFilter} onChange={(e) => setPreviousExecFilter(e.target.value)}>
                     <option value="">All Executives</option>
                     {executiveNames.map((n) => <option key={n} value={n}>{n}</option>)}
                   </Select>
                 </div>
-                <div>
+                <div className="w-full sm:w-auto">
                   <label className="text-xs text-slate-500 mb-1 block">From</label>
                   <Input type="date" value={previousDateFrom} onChange={(e) => setPreviousDateFrom(e.target.value)} />
                 </div>
-                <div>
+                <div className="w-full sm:w-auto">
                   <label className="text-xs text-slate-500 mb-1 block">To</label>
                   <Input type="date" value={previousDateTo} onChange={(e) => setPreviousDateTo(e.target.value)} />
                 </div>
-                <Button variant="outline" size="sm" onClick={() => { setPreviousExecFilter(""); setPreviousDateFrom(""); setPreviousDateTo(""); }}>
-                  Clear
-                </Button>
-                <Button size="sm" onClick={exportPreviousVisits}>
-                  <Download className="h-4 w-4 mr-1" /> Export
-                </Button>
+                <div className="flex flex-col gap-2 sm:flex-row sm:gap-2">
+                  <Button variant="outline" size="sm" onClick={() => { setPreviousExecFilter(""); setPreviousDateFrom(""); setPreviousDateTo(""); }}>
+                    Clear
+                  </Button>
+                  <Button size="sm" onClick={exportPreviousVisits}>
+                    <Download className="h-4 w-4 mr-1" /> Export
+                  </Button>
+                </div>
               </div>
             </CardContent>
           </Card>
@@ -769,7 +775,7 @@ export default function ManagerVisits() {
                           {isOverdueVisit(v) ? <Badge variant="danger">Overdue</Badge> : <Badge variant={sc.variant}>{sc.label}</Badge>}
                         </TableCell>
                         <TableCell className="text-right">
-                          <div className="flex justify-end gap-2">
+                          <div className="flex flex-col sm:flex-row sm:justify-end gap-1 sm:gap-2">
                             <Button size="sm" variant="outline" onClick={() => handleViewFeedbackForVisit(v)}>
                               <MessageSquare className="h-3.5 w-3.5 mr-1" /> View Customer Feedback
                             </Button>
@@ -784,12 +790,12 @@ export default function ManagerVisits() {
                 )}
               </TableBody>
             </Table>
-            <div className="p-4 border-t border-slate-200 flex items-center justify-between">
+            <div className="p-4 border-t border-slate-200 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <span className="text-xs text-slate-500">
                 Showing {(previousPage - 1) * PAGE_SIZE + (paginatedPreviousVisits.length > 0 ? 1 : 0)}-
                 {(previousPage - 1) * PAGE_SIZE + paginatedPreviousVisits.length} of {filteredPreviousVisits.length}
               </span>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 justify-between sm:justify-end">
                 <Button variant="outline" size="sm" onClick={() => setPreviousPage((p) => Math.max(1, p - 1))} disabled={previousPage === 1}>
                   Previous
                 </Button>
@@ -1027,12 +1033,12 @@ export default function ManagerVisits() {
                 )}
               </TableBody>
             </Table>
-            <div className="p-4 border-t border-slate-200 flex items-center justify-between">
+            <div className="p-4 border-t border-slate-200 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <span className="text-xs text-slate-500">
                 Showing {(feedbackPage - 1) * PAGE_SIZE + (paginatedFeedbackVisits.length > 0 ? 1 : 0)}-
                 {(feedbackPage - 1) * PAGE_SIZE + paginatedFeedbackVisits.length} of {feedbackVisits.length}
               </span>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 justify-between sm:justify-end">
                 <Button variant="outline" size="sm" onClick={() => setFeedbackPage((p) => Math.max(1, p - 1))} disabled={feedbackPage === 1}>
                   Previous
                 </Button>
@@ -1050,16 +1056,16 @@ export default function ManagerVisits() {
       {activeTab === "controlCards" && (
         <div className="space-y-6">
           {/* Filters */}
-          <div className="flex flex-wrap gap-3 items-center">
-            <div className="relative flex-1 min-w-[200px] max-w-xs">
+          <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-center">
+            <div className="relative w-full sm:flex-1 sm:min-w-[200px] sm:max-w-xs">
               <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-slate-500" />
               <Input className="pl-9" placeholder="Search by corporate..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} />
             </div>
-            <Select className="w-48" value={execFilter} onChange={(e) => setExecFilter(e.target.value)}>
+            <Select className="w-full sm:w-48" value={execFilter} onChange={(e) => setExecFilter(e.target.value)}>
               <option value="">All Executives</option>
               {executiveNames.map((n) => <option key={n} value={n}>{n}</option>)}
             </Select>
-            <Select className="w-44" value={healthFilter} onChange={(e) => setHealthFilter(e.target.value)}>
+            <Select className="w-full sm:w-44" value={healthFilter} onChange={(e) => setHealthFilter(e.target.value)}>
               <option value="">All Health Statuses</option>
               <option value="green">Green</option>
               <option value="amber">Amber</option>
@@ -1116,12 +1122,12 @@ export default function ManagerVisits() {
                 )}
               </TableBody>
             </Table>
-            <div className="p-4 border-t border-slate-200 flex items-center justify-between">
+            <div className="p-4 border-t border-slate-200 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
               <span className="text-xs text-slate-500">
                 Showing {(controlCardsPage - 1) * PAGE_SIZE + (paginatedControlCards.length > 0 ? 1 : 0)}-
                 {(controlCardsPage - 1) * PAGE_SIZE + paginatedControlCards.length} of {filteredCards.length}
               </span>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 justify-between sm:justify-end">
                 <Button variant="outline" size="sm" onClick={() => setControlCardsPage((p) => Math.max(1, p - 1))} disabled={controlCardsPage === 1}>
                   Previous
                 </Button>

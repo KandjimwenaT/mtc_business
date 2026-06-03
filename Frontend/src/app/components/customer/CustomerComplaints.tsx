@@ -94,13 +94,13 @@ export function CustomerComplaints() {
   };
 
   return (
-    <div className="p-8">
-      <div className="mb-8 flex items-center justify-between">
+    <div className="p-4 sm:p-6 lg:p-8">
+      <div className="mb-6 sm:mb-8 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-3xl mb-2">Issues & Complaints</h1>
+          <h1 className="text-2xl sm:text-3xl mb-2">Issues & Complaints</h1>
           <p className="text-gray-600">Log and track your service issues and complaints</p>
         </div>
-        <Button onClick={() => setShowForm(!showForm)} className="bg-[#3B8FC7] hover:bg-[#2C6A99]">
+        <Button onClick={() => setShowForm(!showForm)} className="bg-[#3B8FC7] hover:bg-[#2C6A99] w-full sm:w-auto">
           <FileText className="size-4 mr-2" />
           {showForm ? 'Cancel' : 'Log New Complaint'}
         </Button>
@@ -174,8 +174,8 @@ export function CustomerComplaints() {
                     className="resize-none"
                   />
                 </div>
-                <div className="flex justify-end pt-4">
-                  <Button type="submit" className="bg-[#3B8FC7] hover:bg-[#2C6A99]" disabled={submitting}>
+                <div className="flex flex-col sm:flex-row sm:justify-end pt-4">
+                  <Button type="submit" className="bg-[#3B8FC7] hover:bg-[#2C6A99] w-full sm:w-auto" disabled={submitting}>
                     {submitting ? <Loader2 className="size-4 mr-2 animate-spin" /> : <Send className="size-4 mr-2" />}
                     {submitting ? 'Submitting...' : 'Submit Complaint'}
                   </Button>
@@ -216,16 +216,16 @@ export function CustomerComplaints() {
           <div className="grid grid-cols-1 gap-4">
             {accountComplaints.map((complaint) => (
               <Card key={complaint.complaintId} className="hover:shadow-md transition-shadow">
-                <CardContent className="p-6">
+                <CardContent className="p-4 sm:p-6">
                   <div className="flex items-start justify-between mb-4">
-                    <div className="flex-1">
-                      <div className="flex items-center gap-2 mb-2">
-                        <h3 className="text-lg">{complaint.title}</h3>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex flex-wrap items-center gap-2 mb-2">
+                        <h3 className="text-lg break-words">{complaint.title}</h3>
                         {getStatusBadge(complaint.status)}
                         {getPriorityBadge(complaint.priority)}
                       </div>
-                      <p className="text-sm text-gray-600 mb-3">{complaint.description}</p>
-                      <div className="flex items-center gap-4 text-sm text-gray-500">
+                      <p className="text-sm text-gray-600 mb-3 break-words">{complaint.description}</p>
+                      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm text-gray-500">
                         <span className="flex items-center gap-1">
                           <Clock className="size-4" />
                           Submitted {format(new Date(complaint.createdAt), 'MMM dd, yyyy')}
