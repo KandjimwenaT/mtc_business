@@ -675,7 +675,7 @@ export function VisitCalendar() {
       await respondToVisit(visitId, { action: 'approve' });
       setSelectedVisit(null);
       toast.success('Visit approved', {
-        description: 'The executive has been notified of your approval.',
+        description: 'The executive has been notified. Calendar invites are being sent to everyone on the meeting.',
       });
       await fetchVisits();
     } catch (err: unknown) {

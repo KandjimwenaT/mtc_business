@@ -18,6 +18,7 @@ const { Op } = require("sequelize");
 const Manager = require("../models/Manager");
 const Person = require("../models/Person");
 const ExecutiveStaff = require("../models/ExecutiveStaff");
+const { departmentsMatch } = require("./departmentSegment");
 
 async function resolveRequesterDepartment(user) {
   if (!user) return null;
@@ -173,7 +174,7 @@ async function filterCorporatesByRequesterDepartment(corporates, requesterDepart
   const departmentMap = await buildCorporateDepartmentMap(corporates);
   return corporates.filter((corp) => {
     const dept = departmentMap.get(corp?.corporateId);
-    return dept === requesterDepartment;
+    return departmentsMatch(dept, requesterDepartment);
   });
 }
 

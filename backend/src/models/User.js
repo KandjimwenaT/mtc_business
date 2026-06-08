@@ -43,6 +43,26 @@ const User = sequelize.define(
       allowNull: false,
       defaultValue: "executive_staff",
     },
+    msGraphRefreshTokenEnc: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+      field: "ms_graph_refresh_token_enc",
+    },
+    msGraphAccessTokenEnc: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+      field: "ms_graph_access_token_enc",
+    },
+    msGraphTokenExpiresAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+      field: "ms_graph_token_expires_at",
+    },
+    msGraphConnectedAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+      field: "ms_graph_connected_at",
+    },
   },
   {
     tableName: "users",

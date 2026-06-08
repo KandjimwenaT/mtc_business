@@ -57,6 +57,8 @@ export interface ManagerRecord {
   email: string;
   phone: string | null;
   department: string | null;
+  /** Linked Person.type: "manager" | "supervisor" | null if no directory row */
+  personType?: string | null;
 }
 
 export interface ExecutiveRecord {

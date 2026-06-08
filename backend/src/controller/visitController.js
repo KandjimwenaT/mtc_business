@@ -19,6 +19,8 @@ const {
   createVisitActionItemTicket,
   sendTicketCreationNotifications,
 } = require("./ticketController");
+const { resolveAttendeeRecipients } = require("../services/visitRecipientService");
+const { syncVisitCalendarInvites } = require("../services/visitCalendarInviteService");
 
 const VISIT_ACTION_REQUEST_TYPES = new Set([
   "request_meeting", "new_product_request", "new_line", "plan_change", "line_suspension", "line_activation",
@@ -64,56 +66,15 @@ function ticketDetailsFromVisitActionItem(actionItem, visit) {
   return { category, type, title, description, sourceContextNote };
 }
 
-/**
- * For each attendee name selected on the schedule-visit form, look up the matching
- * teammate (Manager or ExecutiveStaff) under the organizer's line manager and
- * return their email + portal user-id (if any). Names that don't match a real
- * teammate are skipped — keeps notifications/emails from going to wrong people.
- */
-async function resolveAttendeeRecipients(organizerExec, attendeeNames) {
-  if (!organizerExec?.managerId || !Array.isArray(attendeeNames) || attendeeNames.length === 0) {
-    return [];
-  }
-
-  const normalize = (s) => String(s || "").trim().replace(/\s+/g, " ").toLowerCase();
-  const requested = new Set(attendeeNames.map(normalize).filter(Boolean));
-  if (requested.size === 0) return [];
-
-  const recipients = new Map();
-
-  const manager = await Manager.findByPk(organizerExec.managerId);
-  if (manager) {
-    const managerName = `${manager.firstName || ""} ${manager.lastName || ""}`.trim();
-    if (managerName && requested.has(normalize(managerName))) {
-      recipients.set(`manager_${manager.managerId}`, {
-        userId: manager.userId || null,
-        email: manager.email || null,
-        fullName: managerName,
-      });
-    }
-  }
-
-  const peers = await ExecutiveStaff.findAll({
-    where: { managerId: organizerExec.managerId },
-    attributes: ["executiveId", "userId", "firstName", "lastName", "email"],
-  });
-
-  for (const peer of peers) {
-    if (peer.executiveId === organizerExec.executiveId) continue;
-    const peerName = `${peer.firstName || ""} ${peer.lastName || ""}`.trim();
-    if (peerName && requested.has(normalize(peerName))) {
-      recipients.set(`exec_${peer.executiveId}`, {
-        userId: peer.userId || null,
-        email: peer.email || null,
-        fullName: peerName,
-      });
-    }
-  }
-
-  return Array.from(recipients.values());
-}
-
 const hasExecutiveScope = (role) => ["executive_staff", "supervisor"].includes(role);
+
+async function pushVisitCalendarSync(visit, options = {}) {
+  try {
+    await syncVisitCalendarInvites(visit, options);
+  } catch (err) {
+    console.error(`Visit calendar sync failed (${visit?.visitNumber}):`, err?.message || err);
+  }
+}
 
 // Generate next visit number: VIS-00001
 async function generateVisitNumber() {
@@ -522,6 +483,22 @@ exports.respondToVisit = async (req, res) => {
     await visit.update(updates);
     await visit.reload();
 
+    if (action === "approve") {
+      const execRow = await ExecutiveStaff.findByPk(visit.executiveId, { attributes: ["userId"] });
+      if (execRow?.userId) {
+        await createForUserIds([execRow.userId], {
+          type: "visit",
+          title: `Visit Approved - ${visit.visitNumber}`,
+          message: `${visit.accountName} approved your visit on ${visit.visitDate} at ${visit.startTime}. Calendar invites are being sent.`,
+          priority: "normal",
+          metadata: { visitId: visit.visitId, visitNumber: visit.visitNumber },
+        });
+      }
+      await pushVisitCalendarSync(visit);
+    } else if (action === "decline") {
+      await pushVisitCalendarSync(visit, { cancel: true });
+    }
+
     return res.status(200).json({ status: "Success", visit });
   } catch (error) {
     console.error("Respond to visit error:", error);
@@ -626,6 +603,8 @@ exports.approveReschedule = async (req, res) => {
         managerApprovedAt: new Date(),
         status: "confirmed",
       });
+      await visit.reload();
+      await pushVisitCalendarSync(visit);
     } else {
       await visit.update({
         execRescheduleStatus: "rejected",
@@ -712,6 +691,7 @@ exports.updateVisit = async (req, res) => {
         rescheduleEndTime: null,
       });
       await visit.reload();
+      await pushVisitCalendarSync(visit);
       return res.status(200).json({ status: "Success", visit });
     }
 
@@ -723,6 +703,11 @@ exports.updateVisit = async (req, res) => {
       }
       await visit.update({ status });
       await visit.reload();
+      if (status === "confirmed") {
+        await pushVisitCalendarSync(visit);
+      } else if (status === "cancelled") {
+        await pushVisitCalendarSync(visit, { cancel: true });
+      }
       return res.status(200).json({ status: "Success", visit });
     }
 

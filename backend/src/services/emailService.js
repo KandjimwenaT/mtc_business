@@ -1031,4 +1031,59 @@ EmailService.prototype.sendVisitInvitationEmail = async function (email, name, v
   }
 };
 
+/**
+ * Calendar invite (.ics) for approved/confirmed visits — works with Outlook / Teams.
+ */
+EmailService.prototype.sendVisitCalendarInviteEmail = async function (email, name, visit, icsContent, { cancel = false } = {}) {
+  const subject = cancel
+    ? `Cancelled: ${visit?.purpose || "Visit"} — ${visit?.accountName || ""} (${visit?.visitDate || ""})`
+    : `Calendar invite: ${visit?.purpose || "Visit"} — ${visit?.accountName || ""} (${visit?.visitDate || ""})`;
+  const dashboardUrl = `${process.env.FRONTEND_URL || "http://localhost:5173"}/dashboard`;
+
+  const mailOptions = {
+    from: {
+      name: "MTC Business",
+      address: process.env.EMAIL_FROM || "noreply@mtcbusiness.com",
+    },
+    to: email,
+    subject,
+    html: `
+      <p>Hello ${name || "there"},</p>
+      <p>${
+        cancel
+          ? `The visit <strong>${visit?.visitNumber || ""}</strong> with ${visit?.accountName || "the customer"} has been <strong>cancelled</strong>.`
+          : `Your meeting <strong>${visit?.visitNumber || ""}</strong> with ${visit?.accountName || "the customer"} is <strong>confirmed</strong>. Open the attached calendar invite to add it to Outlook or Microsoft Teams.`
+      }</p>
+      <p><strong>Date:</strong> ${visit?.visitDate || "—"} ${visit?.startTime || ""} – ${visit?.endTime || ""}</p>
+      <p><a href="${dashboardUrl}">Open MTC Business portal</a></p>
+    `,
+    text: cancel
+      ? `Visit ${visit?.visitNumber} cancelled.`
+      : `Visit ${visit?.visitNumber} confirmed. Open the attached .ics file to add to your calendar.`,
+    alternatives: [
+      {
+        contentType: "text/calendar; charset=utf-8; method=PUBLISH",
+        content: icsContent,
+      },
+    ],
+    icalEvent: {
+      filename: `visit-${visit?.visitNumber || "invite"}.ics`,
+      method: cancel ? "CANCEL" : "REQUEST",
+      content: icsContent,
+    },
+  };
+
+  try {
+    if (!this.transporter) {
+      console.log(`📧 Calendar invite (.ics) would be sent to: ${email} (${visit?.visitNumber})`);
+      return { success: true, messageId: "console-log" };
+    }
+    const result = await this.transporter.sendMail(mailOptions);
+    return { success: true, messageId: result.messageId };
+  } catch (error) {
+    console.error("Visit calendar invite email error:", error);
+    throw error;
+  }
+};
+
 module.exports = new EmailService();

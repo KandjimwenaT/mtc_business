@@ -202,6 +202,22 @@ const Visit = sequelize.define(
       allowNull: true,
       field: "start_geo_longitude",
     },
+    graphEventId: {
+      type: DataTypes.STRING,
+      allowNull: true,
+      field: "graph_event_id",
+    },
+    calendarSequence: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 0,
+      field: "calendar_sequence",
+    },
+    calendarLastSyncedAt: {
+      type: DataTypes.DATE,
+      allowNull: true,
+      field: "calendar_last_synced_at",
+    },
   },
   {
     tableName: "visits",

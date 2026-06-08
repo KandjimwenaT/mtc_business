@@ -1,27 +1,90 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { toast } from "sonner";
 import {
   Button, Card, CardContent, CardHeader, CardTitle, Input, Select, Label, Badge,
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow
 } from "../components/ui-components";;
 import {
-  User, Mail, Phone, Briefcase, Users, ArrowRightLeft, FileText, Clock,
-  Settings, Plus, Trash2, X, CheckCircle, ArrowUp, Edit, Shield, Loader2
+  Mail, Phone, Briefcase, FileText, Clock,
+  Settings, Plus, Trash2, X, CheckCircle, ArrowUp, Edit, Shield, Loader2, UserPlus, Key
 } from "lucide-react";
 import { getMyProfile } from "../api/authApi";
 import type { UserProfile } from "../api/authApi";
 import ProfileEditSection from "../components/profile-edit-section";
+import { getAllTickets, type TicketRecord } from "../api/ticketApi";
+import { getManagerVisits, type VisitRecord } from "../api/visitApi";
 import {
   getCorporates,
   getPersonsByType,
-  reassignCorporateExecutive,
+  getExecutives,
+  createPerson,
+  createPortalAccess,
   promoteExecutiveToSupervisor,
   demoteSupervisorToExecutive,
   type CorporateRecord,
   type PersonRecord,
+  type ExecutiveRecord,
 } from "../api/adminApi";
 
-type Tab = "profile" | "performance" | "assign" | "templates" | "sla" | "upgrade" | "settings";
+type Tab = "profile" | "performance" | "templates" | "sla" | "upgrade" | "settings";
+
+function monthKey(iso: string): string {
+  if (!iso) return "";
+  return iso.slice(0, 7);
+}
+
+function visitExecutedWithReport(v: Pick<VisitRecord, "status">) {
+  return v.status === "completed" || v.status === "follow_up_pending";
+}
+
+function formatTrend(current: number, previous: number): string {
+  if (previous <= 0) return current > 0 ? "New this period" : "No prior data";
+  const pct = Math.round(((current - previous) / previous) * 100);
+  const sign = pct >= 0 ? "+" : "";
+  return `${sign}${pct}% vs last month`;
+}
+
+function avgResponseHours(tickets: TicketRecord[]): number | null {
+  const resolved = tickets.filter(
+    (t) => ["resolved", "closed"].includes(t.status) && t.resolvedAt
+  );
+  if (!resolved.length) return null;
+  const totalMs = resolved.reduce(
+    (sum, t) => sum + (new Date(t.resolvedAt!).getTime() - new Date(t.createdAt).getTime()),
+    0
+  );
+  return totalMs / resolved.length / (1000 * 60 * 60);
+}
+
+function formatHours(hours: number | null): string {
+  if (hours === null) return "—";
+  if (hours < 1) return `${Math.round(hours * 60)}m`;
+  return `${hours.toFixed(1)}h`;
+}
+
+function computePerformanceScore(
+  satisfaction: number | null,
+  done: number,
+  scheduled: number,
+  resolved: number
+): number {
+  const satScore = satisfaction != null ? (satisfaction / 5) * 40 : 0;
+  const visitScore =
+    scheduled > 0 ? (done / scheduled) * 40 : done > 0 ? 40 : 0;
+  const resolveScore = (Math.min(resolved, 30) / 30) * 20;
+  return Math.round(satScore + visitScore + resolveScore);
+}
+
+type ExecutiveScorecard = {
+  executiveId: number;
+  name: string;
+  done: number;
+  scheduled: number;
+  satisfaction: number | null;
+  avgResponse: string;
+  resolved: number;
+  score: number;
+};
 
 export default function ManagementProfile() {
   const [activeTab, setActiveTab] = useState<Tab>("profile");
@@ -30,48 +93,252 @@ export default function ManagementProfile() {
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [managerCorporates, setManagerCorporates] = useState<CorporateRecord[]>([]);
   const [managerExecutives, setManagerExecutives] = useState<PersonRecord[]>([]);
-  const [reassigningCorporateId, setReassigningCorporateId] = useState<number | null>(null);
-  const [executiveReassignPick, setExecutiveReassignPick] = useState<Record<number, string>>({});
+  const [tickets, setTickets] = useState<TicketRecord[]>([]);
+  const [visits, setVisits] = useState<VisitRecord[]>([]);
+  const [executiveProfiles, setExecutiveProfiles] = useState<ExecutiveRecord[]>([]);
+  const [teamDataLoading, setTeamDataLoading] = useState(false);
   const [promotingExecutiveId, setPromotingExecutiveId] = useState<number | null>(null);
   const [demotingSupervisorId, setDemotingSupervisorId] = useState<number | null>(null);
+  const [createExecutiveForm, setCreateExecutiveForm] = useState({
+    firstName: "",
+    lastName: "",
+    email: "",
+    phone: "",
+    region: "",
+  });
+  const [showCreateExecutiveConfirm, setShowCreateExecutiveConfirm] = useState(false);
+  const [creatingExecutive, setCreatingExecutive] = useState(false);
+
+  const isManagerOrSupervisor =
+    profile?.role === "manager" || profile?.role === "supervisor";
+
+  const loadManagerTeamData = async (currentProfile: UserProfile) => {
+    setTeamDataLoading(true);
+    try {
+      const [allCorporates, allExecutives, allSupervisors, ticketsRes, visitsRes, execProfilesRes] =
+        await Promise.all([
+          getCorporates(),
+          getPersonsByType("executive_staff"),
+          getPersonsByType("supervisor"),
+          getAllTickets().catch(() => [] as TicketRecord[]),
+          getManagerVisits().catch(() => [] as VisitRecord[]),
+          getExecutives().catch(() => [] as ExecutiveRecord[]),
+        ]);
+
+      const corporatesForManager = allCorporates.filter(
+        (c) =>
+          c.managerId === currentProfile.roleProfileId ||
+          c.managerId === currentProfile.personId
+      );
+      const executivesForManager = [...allExecutives, ...allSupervisors].filter(
+        (e) =>
+          e.managerId === currentProfile.roleProfileId ||
+          e.managerId === currentProfile.personId
+      );
+
+      setManagerCorporates(corporatesForManager);
+      setManagerExecutives(executivesForManager);
+      setTickets(ticketsRes);
+      setVisits(visitsRes);
+      setExecutiveProfiles(execProfilesRes);
+    } finally {
+      setTeamDataLoading(false);
+    }
+  };
 
   useEffect(() => {
     getMyProfile().then(setProfile).catch(() => toast.error("Failed to load profile"));
   }, []);
 
   useEffect(() => {
-    if (!profile || (profile.role !== "manager" && profile.role !== "supervisor")) return;
+    if (!profile || !isManagerOrSupervisor) return;
 
-    const loadAssignData = async () => {
-      try {
-        const [allCorporates, allExecutives, allSupervisors] = await Promise.all([
-          getCorporates(),
-          getPersonsByType("executive_staff"),
-          getPersonsByType("supervisor"),
-        ]);
+    loadManagerTeamData(profile).catch(() => toast.error("Failed to load team data"));
+  }, [profile, isManagerOrSupervisor]);
 
-        // Support both manager profile id and person id mappings
-        const corporatesForManager = allCorporates.filter(
-          (c) => c.managerId === profile.roleProfileId || c.managerId === profile.personId
-        );
-        const executivesForManager = [...allExecutives, ...allSupervisors].filter(
-          (e) => e.managerId === profile.roleProfileId || e.managerId === profile.personId
-        );
+  const resetCreateExecutiveForm = () => {
+    setCreateExecutiveForm({
+      firstName: "",
+      lastName: "",
+      email: "",
+      phone: "",
+      region: "",
+    });
+  };
 
-        setManagerCorporates(corporatesForManager);
-        setManagerExecutives(executivesForManager);
-      } catch {
-        toast.error("Failed to load assignment data");
+  const handleCreateExecutiveSubmit = () => {
+    const firstName = createExecutiveForm.firstName.trim();
+    const lastName = createExecutiveForm.lastName.trim();
+    const email = createExecutiveForm.email.trim();
+
+    if (!firstName || !lastName || !email) {
+      toast.error("Please fill in all required fields");
+      return;
+    }
+    if (!profile?.personId) {
+      toast.error("Your manager profile is not fully set up. Please contact an administrator.");
+      return;
+    }
+
+    setCreateExecutiveForm((f) => ({ ...f, firstName, lastName, email }));
+    setShowCreateExecutiveConfirm(true);
+  };
+
+  const handleConfirmCreateExecutive = async () => {
+    if (!profile?.personId) return;
+
+    const firstName = createExecutiveForm.firstName.trim();
+    const lastName = createExecutiveForm.lastName.trim();
+    const email = createExecutiveForm.email.trim();
+    const phone = createExecutiveForm.phone.trim();
+
+    setCreatingExecutive(true);
+    try {
+      const createResponse = await createPerson({
+        firstName,
+        lastName,
+        email,
+        phone: phone || undefined,
+        type: "executive_staff",
+        region: createExecutiveForm.region || undefined,
+        managerId: profile.personId,
+      });
+
+      if (!createResponse.person?.id) {
+        throw new Error("Executive record was created but no person ID was returned");
       }
-    };
 
-    loadAssignData();
-  }, [profile]);
+      const response = await createPortalAccess(createResponse.person.id, "executive_staff");
+      const tempPassword = (response.user as { password?: string } | undefined)?.password;
+
+      toast.success("Executive created", {
+        description: tempPassword
+          ? `Email delivery may have failed. Temp password: ${tempPassword}`
+          : `Credentials sent to ${email}`,
+      });
+
+      setShowCreateExecutiveConfirm(false);
+      resetCreateExecutiveForm();
+      await loadManagerTeamData(profile);
+    } catch (err: unknown) {
+      toast.error("Failed to create executive", {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    } finally {
+      setCreatingExecutive(false);
+    }
+  };
 
   const displayName = profile ? `${profile.firstName} ${profile.lastName}` : "Loading...";
   const initials = profile ? `${profile.firstName[0]}${profile.lastName[0]}` : "..";
   const eligibleExecutives = managerExecutives.filter((person) => person.type !== "supervisor");
   const supervisorGroups = managerExecutives.filter((person) => person.type === "supervisor");
+
+  const performanceData = useMemo(() => {
+    const managerProfileId = profile?.roleProfileId ?? null;
+    if (managerProfileId == null) {
+      return {
+        summary: {
+          customersHandled: 0,
+          issuesResolvedMtd: 0,
+          issuesResolvedTrend: "No prior data",
+          visitsCompletedMtd: 0,
+          visitsScheduledMtd: 0,
+          avgSatisfaction: null as number | null,
+        },
+        scorecards: [] as ExecutiveScorecard[],
+        topPerformers: [] as ExecutiveScorecard[],
+      };
+    }
+
+    const teamExecs = executiveProfiles.filter((e) => e.managerId === managerProfileId);
+    const teamExecIds = new Set(teamExecs.map((e) => e.executiveId));
+    const scopedTickets = tickets.filter(
+      (t) => t.executiveId != null && teamExecIds.has(t.executiveId)
+    );
+    const scopedVisits = visits;
+
+    const now = new Date();
+    const thisMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
+    const lastMonthDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+    const lastMonthKey = `${lastMonthDate.getFullYear()}-${String(lastMonthDate.getMonth() + 1).padStart(2, "0")}`;
+
+    const isResolvedInMonth = (t: TicketRecord, key: string) => {
+      if (!["resolved", "closed"].includes(t.status)) return false;
+      const ts = t.resolvedAt || t.updatedAt || t.createdAt;
+      return monthKey(ts) === key;
+    };
+
+    const issuesResolvedMtd = scopedTickets.filter((t) => isResolvedInMonth(t, thisMonthKey)).length;
+    const issuesResolvedLastMonth = scopedTickets.filter((t) => isResolvedInMonth(t, lastMonthKey)).length;
+
+    const visitsCompletedMtd = scopedVisits.filter(
+      (v) => visitExecutedWithReport(v) && monthKey(v.visitDate) === thisMonthKey
+    ).length;
+    const visitsScheduledMtd = scopedVisits.filter(
+      (v) => monthKey(v.visitDate) === thisMonthKey
+    ).length;
+
+    const ratedMtd = scopedVisits.filter(
+      (v) => typeof v.customerRating === "number" && monthKey(v.visitDate) === thisMonthKey
+    );
+    const avgSatisfaction = ratedMtd.length
+      ? Math.round(
+          (ratedMtd.reduce((s, v) => s + Number(v.customerRating), 0) / ratedMtd.length) * 10
+        ) / 10
+      : null;
+
+    const scorecards: ExecutiveScorecard[] = teamExecs.map((ex) => {
+      const exTickets = scopedTickets.filter((t) => t.executiveId === ex.executiveId);
+      const exVisits = scopedVisits.filter((v) => v.executiveId === ex.executiveId);
+      const exTicketsMtd = exTickets.filter((t) => monthKey(t.createdAt) === thisMonthKey);
+      const exVisitsMtd = exVisits.filter((v) => monthKey(v.visitDate) === thisMonthKey);
+
+      const done = exVisitsMtd.filter((v) => visitExecutedWithReport(v)).length;
+      const scheduled = exVisitsMtd.length;
+      const rated = exVisitsMtd.filter((v) => typeof v.customerRating === "number");
+      const satisfaction = rated.length
+        ? Math.round(
+            (rated.reduce((s, v) => s + Number(v.customerRating), 0) / rated.length) * 10
+          ) / 10
+        : null;
+      const resolved = exTicketsMtd.filter((t) => ["resolved", "closed"].includes(t.status)).length;
+      const responseHours = avgResponseHours(
+        exTicketsMtd.filter((t) => ["resolved", "closed"].includes(t.status))
+      );
+
+      return {
+        executiveId: ex.executiveId,
+        name: `${ex.firstName} ${ex.lastName}`,
+        done,
+        scheduled,
+        satisfaction,
+        avgResponse: formatHours(responseHours),
+        resolved,
+        score: computePerformanceScore(satisfaction, done, scheduled, resolved),
+      };
+    });
+
+    const topPerformers = [...scorecards]
+      .sort((a, b) => {
+        if (b.score !== a.score) return b.score - a.score;
+        return (b.satisfaction ?? 0) - (a.satisfaction ?? 0);
+      })
+      .slice(0, 3);
+
+    return {
+      summary: {
+        customersHandled: managerCorporates.length,
+        issuesResolvedMtd,
+        issuesResolvedTrend: formatTrend(issuesResolvedMtd, issuesResolvedLastMonth),
+        visitsCompletedMtd,
+        visitsScheduledMtd,
+        avgSatisfaction,
+      },
+      scorecards: scorecards.sort((a, b) => a.name.localeCompare(b.name)),
+      topPerformers,
+    };
+  }, [profile, tickets, visits, executiveProfiles, managerCorporates]);
 
   // Template builder state
   const [templateSections, setTemplateSections] = useState([
@@ -87,7 +354,6 @@ export default function ManagementProfile() {
   const tabs: { key: Tab; label: string }[] = [
     { key: "profile", label: "Manager / Supervisor Profile" },
     { key: "performance", label: "Executive Performance" },
-    { key: "assign", label: "Assign / Reassign Executive" },
     { key: "templates", label: "Control Card Templates" },
     { key: "sla", label: "SLA Configuration" },
     { key: "upgrade", label: "Role Upgrades" },
@@ -114,184 +380,116 @@ export default function ManagementProfile() {
 
       {/* PROFILE */}
       {activeTab === "profile" && (
-        <div className="grid gap-6 md:grid-cols-3">
-          <Card className="md:col-span-1">
-            <CardContent className="pt-6 flex flex-col items-center text-center">
-              <div className="h-24 w-24 rounded-full bg-mtc-navy flex items-center justify-center text-white text-3xl font-bold mb-4">{initials}</div>
-              <h3 className="text-lg font-semibold text-slate-900">{displayName}</h3>
-              <p className="text-sm text-slate-500">{profile?.personId ? `EMP-${profile.personId}` : "—"} · CRM Manager</p>
-              <div className="mt-4 w-full space-y-2 text-left text-sm">
-                <div className="flex items-center gap-2 text-slate-600"><Mail className="h-4 w-4 text-mtc-blue" /> {profile?.email || "—"}</div>
-                <div className="flex items-center gap-2 text-slate-600"><Phone className="h-4 w-4 text-mtc-blue" /> {profile?.phone || "—"}</div>
-                <div className="flex items-center gap-2 text-slate-600"><Briefcase className="h-4 w-4 text-mtc-blue" /> {profile?.department || "Corporate CRM Division"}</div>
-              </div>
-            </CardContent>
-          </Card>
-          <Card className="md:col-span-2">
-            <CardHeader><CardTitle className="text-base">Division Overview</CardTitle></CardHeader>
-            <CardContent>
-              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                {[
-                  { label: "Total Executives", value: "24", color: "text-mtc-blue" },
-                  { label: "Supervisors", value: "6", color: "text-slate-900" },
-                  { label: "Active Corporates", value: "87", color: "text-green-600" },
-                  { label: "Monthly Revenue", value: "N$14.2M", color: "text-mtc-blue-dark" },
-                ].map((m) => (
-                  <div key={m.label} className="text-center p-4 rounded-lg bg-slate-50 border border-slate-100">
-                    <span className={`text-2xl font-bold ${m.color}`}>{m.value}</span>
-                    <p className="text-xs text-slate-500 mt-1">{m.label}</p>
-                  </div>
-                ))}
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-      )}
-
-      {/* ASSIGN / REASSIGN EXECUTIVE */}
-      {activeTab === "assign" && (
         <div className="space-y-6">
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base flex items-center gap-2"><ArrowRightLeft className="h-5 w-5 text-mtc-blue" /> Executive-Corporate Assignments</CardTitle>
-            </CardHeader>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Corporate</TableHead>
-                  <TableHead>Current Executive</TableHead>
-                  <TableHead>Supervisor</TableHead>
-                  <TableHead>Health</TableHead>
-                  <TableHead>Since</TableHead>
-                  <TableHead className="text-right">Reassign</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {managerCorporates.map((c) => {
-                  const health: "green" | "amber" | "red" =
-                    c.approvalStatus === "approved"
-                      ? "green"
-                      : c.approvalStatus === "rejected"
-                      ? "red"
-                      : "amber";
-                  const currentExecutive = c.executiveFirstName
-                    ? `${c.executiveFirstName} ${c.executiveLastName ?? ""}`.trim()
-                    : "Not assigned";
-                  const supervisor = profile ? `${profile.firstName} ${profile.lastName}` : "—";
-                  return (
-                    <TableRow key={c.corporateId}>
-                      <TableCell className="font-medium text-slate-900">{c.corporateName}</TableCell>
-                      <TableCell>{currentExecutive}</TableCell>
-                      <TableCell>{supervisor}</TableCell>
-                      <TableCell>
-                        <span className="inline-flex items-center gap-1.5">
-                          <span className={`h-2.5 w-2.5 rounded-full ${health === "green" ? "bg-green-500" : health === "amber" ? "bg-amber-500" : "bg-red-500"}`} />
-                          <span className="text-xs capitalize">{health}</span>
-                        </span>
-                      </TableCell>
-                      <TableCell>{new Date(c.created_at).toLocaleDateString()}</TableCell>
-                      <TableCell className="text-right align-top">
-                        {(() => {
-                          const currentPersonId = managerExecutives.find(
-                            (ex) =>
-                              `${(ex.firstName || "").trim()} ${(ex.lastName || "").trim()}`.toLowerCase() ===
-                              `${(c.executiveFirstName || "").trim()} ${(c.executiveLastName || "").trim()}`.toLowerCase()
-                          )?.id;
-                          const pick = executiveReassignPick[c.corporateId] ?? "";
-                          return (
-                            <div className="inline-flex flex-col items-end gap-1.5 max-w-[11rem]">
-                              <Select
-                                className="w-40 h-8 text-xs"
-                                value={pick}
-                                disabled={reassigningCorporateId === c.corporateId}
-                                onChange={(e) =>
-                                  setExecutiveReassignPick((prev) => ({
-                                    ...prev,
-                                    [c.corporateId]: e.target.value,
-                                  }))
-                                }
-                              >
-                                <option value="">Choose executive…</option>
-                                {managerExecutives.map((ex) => (
-                                  <option
-                                    key={ex.id}
-                                    value={String(ex.id)}
-                                    disabled={currentPersonId != null && ex.id === currentPersonId}
-                                  >
-                                    {ex.firstName} {ex.lastName}
-                                  </option>
-                                ))}
-                              </Select>
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                className="h-7 text-xs"
-                                disabled={
-                                  reassigningCorporateId === c.corporateId ||
-                                  !pick ||
-                                  pick === String(currentPersonId ?? "")
-                                }
-                                onClick={async () => {
-                                  const nextExecutiveId = parseInt(pick, 10);
-                                  if (!nextExecutiveId) return;
-                                  setReassigningCorporateId(c.corporateId);
-                                  try {
-                                    const updated = await reassignCorporateExecutive(c.corporateId, nextExecutiveId);
-                                    const picked = managerExecutives.find((ex) => ex.id === nextExecutiveId);
-                                    setManagerCorporates((prev) =>
-                                      prev.map((corp) => {
-                                        if (corp.corporateId !== c.corporateId) return corp;
-                                        return {
-                                          ...corp,
-                                          executiveId: updated.executiveId ?? corp.executiveId,
-                                          executiveFirstName: picked?.firstName,
-                                          executiveLastName: picked?.lastName,
-                                        };
-                                      })
-                                    );
-                                    setExecutiveReassignPick((prev) => {
-                                        const next = { ...prev };
-                                        delete next[c.corporateId];
-                                        return next;
-                                      });
-                                    toast.success(`${c.corporateName} reassigned`, {
-                                        description:
-                                          "Notifications were sent to the previous and new executives, and to contact persons with portal access.",
-                                      });
-                                  } catch (err) {
-                                    toast.error("Reassignment failed", {
-                                      description: err instanceof Error ? err.message : undefined,
-                                    });
-                                  } finally {
-                                    setReassigningCorporateId(null);
-                                  }
-                                }}
-                              >
-                                {reassigningCorporateId === c.corporateId ? (
-                                  <span className="inline-flex items-center gap-1">
-                                    <Loader2 className="h-3 w-3 animate-spin" /> Working…
-                                  </span>
-                                ) : (
-                                  "Confirm"
-                                )}
-                              </Button>
-                            </div>
-                          );
-                        })()}
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-                {managerCorporates.length === 0 && (
-                  <TableRow>
-                    <td colSpan={6} className="text-center text-slate-500 py-6">
-                      No corporates assigned to your profile.
-                    </td>
-                  </TableRow>
-                )}
-              </TableBody>
-            </Table>
-          </Card>
+          <div className="grid gap-6 md:grid-cols-3">
+            <Card className="md:col-span-1">
+              <CardContent className="pt-6 flex flex-col items-center text-center">
+                <div className="h-24 w-24 rounded-full bg-mtc-navy flex items-center justify-center text-white text-3xl font-bold mb-4">{initials}</div>
+                <h3 className="text-lg font-semibold text-slate-900">{displayName}</h3>
+                <p className="text-sm text-slate-500">{profile?.personId ? `EMP-${profile.personId}` : "—"} · CRM Manager</p>
+                <div className="mt-4 w-full space-y-2 text-left text-sm">
+                  <div className="flex items-center gap-2 text-slate-600"><Mail className="h-4 w-4 text-mtc-blue" /> {profile?.email || "—"}</div>
+                  <div className="flex items-center gap-2 text-slate-600"><Phone className="h-4 w-4 text-mtc-blue" /> {profile?.phone || "—"}</div>
+                  <div className="flex items-center gap-2 text-slate-600"><Briefcase className="h-4 w-4 text-mtc-blue" /> {profile?.department || "Corporate CRM Division"}</div>
+                </div>
+              </CardContent>
+            </Card>
+            <Card className="md:col-span-2">
+              <CardHeader><CardTitle className="text-base">Division Overview</CardTitle></CardHeader>
+              <CardContent>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  {[
+                    { label: "Total Executives", value: String(eligibleExecutives.length), color: "text-mtc-blue" },
+                    { label: "Supervisors", value: String(supervisorGroups.length), color: "text-slate-900" },
+                    { label: "Active Corporates", value: String(managerCorporates.length), color: "text-green-600" },
+                    { label: "Monthly Revenue", value: "N$14.2M", color: "text-mtc-blue-dark" },
+                  ].map((m) => (
+                    <div key={m.label} className="text-center p-4 rounded-lg bg-slate-50 border border-slate-100">
+                      <span className={`text-2xl font-bold ${m.color}`}>{m.value}</span>
+                      <p className="text-xs text-slate-500 mt-1">{m.label}</p>
+                    </div>
+                  ))}
+                </div>
+              </CardContent>
+            </Card>
+          </div>
+
+          {isManagerOrSupervisor && (
+            <Card>
+              <CardHeader>
+                <CardTitle className="text-base flex items-center gap-2">
+                  <UserPlus className="h-5 w-5 text-mtc-blue" /> Create Executive
+                </CardTitle>
+                <p className="text-xs text-slate-500 mt-1">
+                  Add a new executive to your department. Portal credentials will be emailed after you confirm the details.
+                </p>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+                  <div className="space-y-2">
+                    <Label>First Name <span className="text-red-500">*</span></Label>
+                    <Input
+                      placeholder="First name"
+                      value={createExecutiveForm.firstName}
+                      onChange={(e) => setCreateExecutiveForm((f) => ({ ...f, firstName: e.target.value }))}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Last Name <span className="text-red-500">*</span></Label>
+                    <Input
+                      placeholder="Last name"
+                      value={createExecutiveForm.lastName}
+                      onChange={(e) => setCreateExecutiveForm((f) => ({ ...f, lastName: e.target.value }))}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Email <span className="text-red-500">*</span></Label>
+                    <Input
+                      type="email"
+                      placeholder="name@mtc.com.na"
+                      value={createExecutiveForm.email}
+                      onChange={(e) => setCreateExecutiveForm((f) => ({ ...f, email: e.target.value }))}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Phone</Label>
+                    <Input
+                      placeholder="+264 ..."
+                      value={createExecutiveForm.phone}
+                      onChange={(e) => setCreateExecutiveForm((f) => ({ ...f, phone: e.target.value }))}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Region</Label>
+                    <Select
+                      value={createExecutiveForm.region}
+                      onChange={(e) => setCreateExecutiveForm((f) => ({ ...f, region: e.target.value }))}
+                    >
+                      <option value="">Select Region...</option>
+                      <option value="Windhoek Central">Windhoek Central</option>
+                      <option value="Northern Region">Northern Region</option>
+                      <option value="Southern Region">Southern Region</option>
+                      <option value="Coastal Region">Coastal Region</option>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Reports to Manager</Label>
+                    <Input value={displayName} readOnly />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Department</Label>
+                    <Input value={profile?.department || "—"} readOnly />
+                  </div>
+                </div>
+                <div className="flex justify-end gap-2 pt-4 border-t border-slate-200">
+                  <Button variant="outline" onClick={resetCreateExecutiveForm}>Reset</Button>
+                  <Button onClick={handleCreateExecutiveSubmit}>
+                    <UserPlus className="h-4 w-4 mr-1" /> Submit
+                  </Button>
+                </div>
+              </CardContent>
+            </Card>
+          )}
         </div>
       )}
 
@@ -548,116 +746,250 @@ export default function ManagementProfile() {
       {/* EXECUTIVE PERFORMANCE */}
       {activeTab === "performance" && (
         <div className="space-y-6">
-          {/* Summary KPIs */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-            {[
-              { label: "Total Customers Handled", value: "87", sub: "Active corporate accounts", color: "text-mtc-blue" },
-              { label: "Issues Resolved (MTD)", value: "142", sub: "+18% vs last month", color: "text-green-600" },
-              { label: "Visits Completed (MTD)", value: "63", sub: "74 scheduled this month", color: "text-mtc-blue-dark" },
-              { label: "Avg Satisfaction Score", value: "4.1 / 5", sub: "Team average across executives", color: "text-amber-600" },
-            ].map((m) => (
-              <Card key={m.label}>
-                <CardContent className="pt-5">
-                  <p className="text-xs text-slate-500">{m.label}</p>
-                  <p className={`text-2xl font-bold mt-1 ${m.color}`}>{m.value}</p>
-                  <p className="text-xs text-slate-400 mt-1">{m.sub}</p>
+          {teamDataLoading ? (
+            <div className="flex flex-col items-center justify-center py-16 text-slate-500 gap-3">
+              <Loader2 className="h-8 w-8 animate-spin text-mtc-blue" />
+              <p className="text-sm">Loading executive performance…</p>
+            </div>
+          ) : (
+            <>
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                {[
+                  {
+                    label: "Total Customers Handled",
+                    value: String(performanceData.summary.customersHandled),
+                    sub: "Active corporate accounts",
+                    color: "text-mtc-blue",
+                  },
+                  {
+                    label: "Issues Resolved (MTD)",
+                    value: String(performanceData.summary.issuesResolvedMtd),
+                    sub: performanceData.summary.issuesResolvedTrend,
+                    color: "text-green-600",
+                  },
+                  {
+                    label: "Visits Completed (MTD)",
+                    value: String(performanceData.summary.visitsCompletedMtd),
+                    sub: `${performanceData.summary.visitsScheduledMtd} scheduled this month`,
+                    color: "text-mtc-blue-dark",
+                  },
+                  {
+                    label: "Avg Satisfaction Score",
+                    value:
+                      performanceData.summary.avgSatisfaction != null
+                        ? `${performanceData.summary.avgSatisfaction} / 5`
+                        : "—",
+                    sub: "Team average from visit ratings (MTD)",
+                    color: "text-amber-600",
+                  },
+                ].map((m) => (
+                  <Card key={m.label}>
+                    <CardContent className="pt-5">
+                      <p className="text-xs text-slate-500">{m.label}</p>
+                      <p className={`text-2xl font-bold mt-1 ${m.color}`}>{m.value}</p>
+                      <p className="text-xs text-slate-400 mt-1">{m.sub}</p>
+                    </CardContent>
+                  </Card>
+                ))}
+              </div>
+
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base flex items-center gap-2">
+                    <CheckCircle className="h-5 w-5 text-green-500" /> Top Performing Executives
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  {performanceData.topPerformers.length === 0 ? (
+                    <p className="text-sm text-slate-500 py-4 text-center">
+                      No executive performance data yet for this month.
+                    </p>
+                  ) : (
+                    <div className="grid md:grid-cols-3 gap-4">
+                      {performanceData.topPerformers.map((e, index) => {
+                        const rank = index + 1;
+                        const sat = e.satisfaction ?? 0;
+                        return (
+                          <div
+                            key={e.executiveId}
+                            className="flex items-start gap-3 p-4 rounded-lg border border-slate-100 bg-slate-50"
+                          >
+                            <span
+                              className={`flex items-center justify-center h-8 w-8 rounded-full text-white font-bold text-sm shrink-0 ${
+                                rank === 1
+                                  ? "bg-yellow-500"
+                                  : rank === 2
+                                  ? "bg-slate-400"
+                                  : "bg-orange-400"
+                              }`}
+                            >
+                              #{rank}
+                            </span>
+                            <div className="flex-1 min-w-0">
+                              <p className="font-semibold text-slate-900 text-sm">{e.name}</p>
+                              <p
+                                className={`text-xl font-bold ${
+                                  sat >= 4.5
+                                    ? "text-green-600"
+                                    : sat >= 4.0
+                                    ? "text-amber-600"
+                                    : sat > 0
+                                    ? "text-red-600"
+                                    : "text-slate-400"
+                                }`}
+                              >
+                                {e.satisfaction != null ? `${e.satisfaction} ★` : "No ratings"}
+                              </p>
+                              <p className="text-xs text-slate-500 mt-0.5">
+                                Visits: {e.done}/{e.scheduled} · Issues: {e.resolved} · Resp: {e.avgResponse}
+                              </p>
+                            </div>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
                 </CardContent>
               </Card>
-            ))}
-          </div>
 
-          {/* Top Performers */}
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base flex items-center gap-2">
-                <CheckCircle className="h-5 w-5 text-green-500" /> Top Performing Executives
-              </CardTitle>
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base">Monthly Performance Scorecards</CardTitle>
+                </CardHeader>
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Executive</TableHead>
+                      <TableHead>Visits (Done / Sched)</TableHead>
+                      <TableHead>Satisfaction</TableHead>
+                      <TableHead>Avg Response</TableHead>
+                      <TableHead>Issues Resolved</TableHead>
+                      <TableHead>Score</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {performanceData.scorecards.map((e) => {
+                      const sat = e.satisfaction;
+                      const ragColor =
+                        sat == null
+                          ? "bg-slate-300"
+                          : sat >= 4.0
+                          ? "bg-green-500"
+                          : sat >= 3.0
+                          ? "bg-amber-500"
+                          : "bg-red-500";
+                      const ragLabel =
+                        sat == null
+                          ? "No ratings"
+                          : sat >= 4.0
+                          ? "Green"
+                          : sat >= 3.0
+                          ? "Amber"
+                          : "Red";
+                      return (
+                        <TableRow key={e.executiveId}>
+                          <TableCell className="font-medium text-slate-900">{e.name}</TableCell>
+                          <TableCell>
+                            {e.done} / {e.scheduled}
+                          </TableCell>
+                          <TableCell>
+                            <span className="inline-flex items-center gap-1.5">
+                              <span className={`h-2.5 w-2.5 rounded-full ${ragColor}`} />
+                              <span className="text-xs">
+                                {sat != null ? `${ragLabel} (${sat})` : ragLabel}
+                              </span>
+                            </span>
+                          </TableCell>
+                          <TableCell>{e.avgResponse}</TableCell>
+                          <TableCell>{e.resolved}</TableCell>
+                          <TableCell>
+                            <span
+                              className={`font-bold ${
+                                e.score >= 80
+                                  ? "text-green-600"
+                                  : e.score >= 60
+                                  ? "text-amber-600"
+                                  : "text-red-600"
+                              }`}
+                            >
+                              {e.score}%
+                            </span>
+                          </TableCell>
+                        </TableRow>
+                      );
+                    })}
+                    {performanceData.scorecards.length === 0 && (
+                      <TableRow>
+                        <td colSpan={6} className="text-center text-slate-500 py-6">
+                          No executives on your team yet.
+                        </td>
+                      </TableRow>
+                    )}
+                  </TableBody>
+                </Table>
+              </Card>
+            </>
+          )}
+        </div>
+      )}
+
+      {/* CREATE EXECUTIVE CONFIRMATION MODAL */}
+      {showCreateExecutiveConfirm && (
+        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in">
+          <Card className="w-full max-w-md">
+            <CardHeader className="flex flex-row items-center justify-between border-b border-slate-200 py-4">
+              <CardTitle className="text-lg">Confirm Executive Details</CardTitle>
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={creatingExecutive}
+                onClick={() => setShowCreateExecutiveConfirm(false)}
+              >
+                <X className="h-4 w-4" />
+              </Button>
             </CardHeader>
-            <CardContent>
-              <div className="grid md:grid-cols-3 gap-4">
+            <CardContent className="space-y-5 pt-6">
+              <p className="text-sm text-slate-600">
+                Review the details below. A temporary password will be generated and emailed to the executive.
+              </p>
+              <div className="space-y-3 text-sm">
                 {[
-                  { rank: 1, name: "Peter Nakale", score: 4.7, visits: "12/12", resolved: 28, response: "1.2h" },
-                  { rank: 2, name: "Jane Smith", score: 4.5, visits: "10/11", resolved: 24, response: "1.8h" },
-                  { rank: 3, name: "John Doe", score: 4.0, visits: "9/12", resolved: 19, response: "2.1h" },
-                ].map((e) => (
-                  <div key={e.rank} className="flex items-start gap-3 p-4 rounded-lg border border-slate-100 bg-slate-50">
-                    <span className={`flex items-center justify-center h-8 w-8 rounded-full text-white font-bold text-sm shrink-0 ${
-                      e.rank === 1 ? "bg-yellow-500" : e.rank === 2 ? "bg-slate-400" : "bg-orange-400"
-                    }`}>
-                      #{e.rank}
-                    </span>
-                    <div className="flex-1 min-w-0">
-                      <p className="font-semibold text-slate-900 text-sm">{e.name}</p>
-                      <p className={`text-xl font-bold ${
-                        e.score >= 4.5 ? "text-green-600" : e.score >= 4.0 ? "text-amber-600" : "text-red-600"
-                      }`}>{e.score} ★</p>
-                      <p className="text-xs text-slate-500 mt-0.5">Visits: {e.visits} · Issues: {e.resolved} · Resp: {e.response}</p>
-                    </div>
+                  { label: "Full Name", value: `${createExecutiveForm.firstName.trim()} ${createExecutiveForm.lastName.trim()}` },
+                  { label: "Email", value: createExecutiveForm.email.trim() },
+                  { label: "Phone", value: createExecutiveForm.phone.trim() || "—" },
+                  { label: "Region", value: createExecutiveForm.region || "—" },
+                  { label: "Reports to Manager", value: displayName },
+                  { label: "Department", value: profile?.department || "—" },
+                  { label: "Role", value: "Executive Staff" },
+                ].map((row) => (
+                  <div key={row.label} className="flex justify-between gap-4 border-b border-slate-100 pb-2">
+                    <span className="text-slate-500 shrink-0">{row.label}</span>
+                    <span className="font-medium text-slate-900 text-right">{row.value}</span>
                   </div>
                 ))}
               </div>
+              <div className="flex gap-2 pt-2">
+                <Button
+                  variant="outline"
+                  className="flex-1"
+                  disabled={creatingExecutive}
+                  onClick={() => setShowCreateExecutiveConfirm(false)}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  className="flex-1"
+                  disabled={creatingExecutive}
+                  onClick={handleConfirmCreateExecutive}
+                >
+                  {creatingExecutive ? (
+                    <><Loader2 className="h-4 w-4 mr-1 animate-spin" /> Generating...</>
+                  ) : (
+                    <><Key className="h-4 w-4 mr-1" /> Confirm and Generate Credentials</>
+                  )}
+                </Button>
+              </div>
             </CardContent>
-          </Card>
-
-          {/* Scorecards Table */}
-          <Card>
-            <CardHeader className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-              <CardTitle className="text-base">Monthly Performance Scorecards</CardTitle>
-              <button
-                onClick={() => setActiveTab("assign")}
-                className="text-sm text-mtc-blue hover:underline font-medium flex items-center gap-1"
-              >
-                <ArrowRightLeft className="h-4 w-4" /> Assign Customers
-              </button>
-            </CardHeader>
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Executive</TableHead>
-                  <TableHead>Visits (Done / Sched)</TableHead>
-                  <TableHead>Satisfaction</TableHead>
-                  <TableHead>Avg Response</TableHead>
-                  <TableHead>Issues Resolved</TableHead>
-                  <TableHead>Score</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {[
-                  { name: "Peter Nakale", done: 12, scheduled: 12, satisfaction: 4.7, response: "1.2h", resolved: 28 },
-                  { name: "Jane Smith",   done: 10, scheduled: 11, satisfaction: 4.5, response: "1.8h", resolved: 24 },
-                  { name: "John Doe",     done: 9,  scheduled: 12, satisfaction: 4.0, response: "2.1h", resolved: 19 },
-                  { name: "Sarah Lee",    done: 7,  scheduled: 10, satisfaction: 3.5, response: "3.4h", resolved: 12 },
-                  { name: "Anna Kaufmann",done: 5,  scheduled: 9,  satisfaction: 2.8, response: "5.1h", resolved: 8  },
-                ].map((e) => {
-                  const ragColor = e.satisfaction >= 4.0 ? "bg-green-500" : e.satisfaction >= 3.0 ? "bg-amber-500" : "bg-red-500";
-                  const ragLabel = e.satisfaction >= 4.0 ? "Green" : e.satisfaction >= 3.0 ? "Amber" : "Red";
-                  const score = Math.round(
-                    (e.satisfaction / 5) * 40 +
-                    (e.done / e.scheduled) * 40 +
-                    (Math.min(e.resolved, 30) / 30) * 20
-                  );
-                  return (
-                    <TableRow key={e.name}>
-                      <TableCell className="font-medium text-slate-900">{e.name}</TableCell>
-                      <TableCell>{e.done} / {e.scheduled}</TableCell>
-                      <TableCell>
-                        <span className="inline-flex items-center gap-1.5">
-                          <span className={`h-2.5 w-2.5 rounded-full ${ragColor}`} />
-                          <span className="text-xs">{ragLabel} ({e.satisfaction})</span>
-                        </span>
-                      </TableCell>
-                      <TableCell>{e.response}</TableCell>
-                      <TableCell>{e.resolved}</TableCell>
-                      <TableCell>
-                        <span className={`font-bold ${
-                          score >= 80 ? "text-green-600" : score >= 60 ? "text-amber-600" : "text-red-600"
-                        }`}>{score}%</span>
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
           </Card>
         </div>
       )}

@@ -103,6 +103,18 @@ const AVR_TICKET_COMPLAINT_TYPE_OPTIONS: { value: string; label: string }[] = [
   { value: "other", label: "Other" },
 ];
 
+type VisitScheduleMode = "single" | "quarterly";
+const QUARTERLY_VISIT_COUNT = 4;
+
+/** One visit per month for four months, starting from the first selected date. */
+function quarterlyVisitDates(firstVisitDate: string): string[] {
+  const base = new Date(`${firstVisitDate}T12:00:00`);
+  if (Number.isNaN(base.getTime())) return [];
+  return Array.from({ length: QUARTERLY_VISIT_COUNT }, (_, i) =>
+    format(addMonths(base, i), "yyyy-MM-dd"),
+  );
+}
+
 const defaultAVR = (): AVRData => ({
   accountName: "",
   visitDate: "",
@@ -342,6 +354,7 @@ export default function ExecutiveVisits() {
   const [formMeetingType, setFormMeetingType] = useState<"online" | "in_person">("in_person");
   const [formPurpose, setFormPurpose] = useState("");
   const [formAgenda, setFormAgenda] = useState("");
+  const [formScheduleMode, setFormScheduleMode] = useState<VisitScheduleMode>("single");
   const [formDate, setFormDate] = useState("");
   const [formStartTime, setFormStartTime] = useState("");
   const [formEndTime, setFormEndTime] = useState("");
@@ -472,8 +485,14 @@ export default function ExecutiveVisits() {
     { date: "Oct 15, 2024", corp: "Ministry of Finance", type: "Sales Pitch", exec: "John Doe", rating: 4 },
   ];
 
+  const quarterlyPreviewDates = useMemo(
+    () => (formScheduleMode === "quarterly" && formDate ? quarterlyVisitDates(formDate) : []),
+    [formScheduleMode, formDate],
+  );
+
   const resetForm = () => {
     setFormCorporateId(""); setFormMeetingType("in_person"); setFormPurpose(""); setFormAgenda("");
+    setFormScheduleMode("single");
     setFormDate(""); setFormStartTime(""); setFormEndTime(""); setFormLocation("");
     setFormOnlineLink(""); setFormAttendees([]); setAttendeesOpen(false);
     setCorporatePickerOpen(false);
@@ -699,22 +718,35 @@ export default function ExecutiveVisits() {
       toast.error("Please fill in all required fields");
       return;
     }
+    const visitDates =
+      formScheduleMode === "quarterly" ? quarterlyVisitDates(formDate) : [formDate];
+    if (formScheduleMode === "quarterly" && visitDates.length !== QUARTERLY_VISIT_COUNT) {
+      toast.error("Please choose a valid first visit date for the quarterly schedule");
+      return;
+    }
     try {
       setSubmitting(true);
-      const payload: VisitPayload = {
+      const basePayload: Omit<VisitPayload, "visitDate"> = {
         corporateId: Number(formCorporateId),
         meetingType: formMeetingType,
         purpose: formPurpose,
         agenda: formAgenda || undefined,
-        visitDate: formDate,
         startTime: formStartTime,
         endTime: formEndTime,
         location: formMeetingType === "in_person" ? formLocation || undefined : undefined,
         onlineLink: formMeetingType === "online" ? formOnlineLink || undefined : undefined,
         attendees: formAttendees,
       };
-      await createVisit(payload);
-      toast.success("Visit scheduled", { description: "The customer will be notified and can approve or reschedule." });
+      for (const visitDate of visitDates) {
+        await createVisit({ ...basePayload, visitDate });
+      }
+      const count = visitDates.length;
+      toast.success(count === 1 ? "Visit scheduled" : `${count} visits scheduled`, {
+        description:
+          count === 1
+            ? "The customer will be notified and can approve or reschedule."
+            : "Four monthly visits were created. The customer will be notified for each.",
+      });
       setShowSchedule(false);
       resetForm();
       await fetchData();
@@ -989,9 +1021,45 @@ export default function ExecutiveVisits() {
                   <option value="Technical Support">Technical Support</option>
                 </Select>
               </div>
+              <div className="space-y-2 md:col-span-2">
+                <Label>Schedule <span className="text-red-500">*</span></Label>
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <button
+                    type="button"
+                    onClick={() => setFormScheduleMode("single")}
+                    className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-md border text-sm font-medium transition-colors ${formScheduleMode === "single" ? "border-mtc-blue bg-mtc-blue-50 text-mtc-blue" : "border-slate-300 text-slate-600 hover:bg-slate-50"}`}
+                  >
+                    <Calendar className="h-4 w-4" /> Single visit
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setFormScheduleMode("quarterly")}
+                    className={`flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-md border text-sm font-medium transition-colors ${formScheduleMode === "quarterly" ? "border-mtc-blue bg-mtc-blue-50 text-mtc-blue" : "border-slate-300 text-slate-600 hover:bg-slate-50"}`}
+                  >
+                    <Calendar className="h-4 w-4" /> Quarterly (4 months)
+                  </button>
+                </div>
+                <p className="text-xs text-slate-500">
+                  {formScheduleMode === "single"
+                    ? "Schedule one meeting on the date you choose."
+                    : "Schedule one meeting per month for four months, using the same time and details each month."}
+                </p>
+              </div>
               <div className="space-y-2">
-                <Label>Visit Date <span className="text-red-500">*</span></Label>
+                <Label>
+                  {formScheduleMode === "quarterly" ? "First visit date" : "Visit date"}{" "}
+                  <span className="text-red-500">*</span>
+                </Label>
                 <Input type="date" value={formDate} onChange={(e) => setFormDate(e.target.value)} />
+                {formScheduleMode === "quarterly" && quarterlyPreviewDates.length > 0 && (
+                  <ul className="rounded-md border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600 space-y-1">
+                    {quarterlyPreviewDates.map((d, i) => (
+                      <li key={d}>
+                        Month {i + 1}: {format(new Date(`${d}T12:00:00`), "EEE, MMM d, yyyy")}
+                      </li>
+                    ))}
+                  </ul>
+                )}
               </div>
               <div className="space-y-2">
                 <Label>Start Time <span className="text-red-500">*</span></Label>
@@ -1107,7 +1175,11 @@ export default function ExecutiveVisits() {
             <div className="flex justify-end gap-2 mt-6">
               <Button variant="outline" onClick={() => { setShowSchedule(false); resetForm(); }}>Cancel</Button>
               <Button onClick={handleScheduleVisit} disabled={submitting}>
-                {submitting ? "Scheduling..." : "Schedule Visit"}
+                {submitting
+                  ? "Scheduling..."
+                  : formScheduleMode === "quarterly"
+                    ? "Schedule 4 visits"
+                    : "Schedule visit"}
               </Button>
             </div>
           </CardContent>

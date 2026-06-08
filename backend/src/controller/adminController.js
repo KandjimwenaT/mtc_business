@@ -36,6 +36,11 @@ const {
   filterCorporatesByRequesterDepartment,
   buildCorporateDepartmentMap,
 } = require("../services/corporateSegmentScope");
+const {
+  isKeyAccountsDepartment,
+  isEbuDepartment,
+  departmentsMatch,
+} = require("../services/departmentSegment");
 
 // ── Helper: resolve a Manager profile id from a persons.id ──────────
 // persons.managerId stores persons.id values, but executive_staff.manager_id
@@ -49,6 +54,23 @@ async function resolveManagerProfileFromPerson(personId) {
   if (!managerUser) return null;
   const managerProfile = await Manager.findOne({ where: { userId: managerUser.id } });
   return managerProfile ? managerProfile.managerId : null;
+}
+
+// Manager.department is copied at portal-access creation, but older rows (or
+// managers granted access before department was required) may have null here
+// while persons.department is set. Fall back to the directory Person record.
+async function resolveManagerDepartment(managerProfile) {
+  if (!managerProfile) return null;
+  if (managerProfile.department) return managerProfile.department;
+  if (!managerProfile.email) return null;
+  const person = await Person.findOne({
+    where: {
+      email: managerProfile.email,
+      type: { [Op.in]: ["manager", "supervisor"] },
+    },
+    attributes: ["department"],
+  });
+  return person?.department || null;
 }
 
 async function resolveExecutiveUserIdByExecutiveProfileId(executiveProfileId) {
@@ -83,6 +105,27 @@ async function managerHasCorporateScope(corporate, managerProfile, managerPerson
   return !!(execStaff && execStaff.managerId === managerProfile.managerId);
 }
 
+async function resolveRequesterManagerContext(user) {
+  const managerProfile = await Manager.findOne({ where: { userId: user.id } });
+  if (!managerProfile) return null;
+  const managerPerson = await Person.findOne({ where: { email: managerProfile.email } });
+  return {
+    managerProfile,
+    managerPersonId: managerPerson?.id ?? null,
+  };
+}
+
+function personBelongsToManager(person, ctx) {
+  return (
+    person.managerId === ctx.managerProfile.managerId ||
+    (ctx.managerPersonId !== null && person.managerId === ctx.managerPersonId)
+  );
+}
+
+function isManagerOrSupervisorRole(role) {
+  return role === "manager" || role === "supervisor";
+}
+
 function isoMonth(dateValue) {
   if (!dateValue) return "";
   const d = new Date(dateValue);
@@ -96,9 +139,26 @@ function currencySummary(amount) {
 
 // ── Create Person (database record, no portal access) ───────────
 exports.createPerson = async (req, res) => {
-  const { firstName, lastName, email, phone, type, region, department, gmId, managerId, corporateId } = req.body;
+  let { firstName, lastName, email, phone, type, region, department, gmId, managerId, corporateId } = req.body;
 
   const allowedTypes = ["executive_staff", "supervisor", "manager", "gm", "admin", "customer"];
+
+  if (isManagerOrSupervisorRole(req.user?.role)) {
+    if (type !== "executive_staff") {
+      return res.status(403).json({
+        status: "Failed",
+        message: "Managers can only create Executive Staff members",
+      });
+    }
+    const managerCtx = await resolveRequesterManagerContext(req.user);
+    if (!managerCtx || managerCtx.managerPersonId === null) {
+      return res.status(404).json({ status: "Failed", message: "Manager profile not found" });
+    }
+    managerId = managerCtx.managerPersonId;
+    department = null;
+    gmId = null;
+    corporateId = null;
+  }
 
   if (!firstName || !lastName || !email || !type) {
     return res
@@ -360,10 +420,31 @@ exports.createPortalAccess = async (req, res) => {
       .json({ status: "Failed", message: "Person ID is required" });
   }
 
+  const requesterIsManagerOrSupervisor = isManagerOrSupervisorRole(req.user?.role);
+  let requesterManagerCtx = null;
+  if (requesterIsManagerOrSupervisor) {
+    if (personType && personType !== "executive_staff") {
+      return res.status(403).json({
+        status: "Failed",
+        message: "Managers can only grant portal access to Executive Staff members",
+      });
+    }
+    requesterManagerCtx = await resolveRequesterManagerContext(req.user);
+    if (!requesterManagerCtx) {
+      return res.status(404).json({ status: "Failed", message: "Manager profile not found" });
+    }
+  }
+
   try {
     // Customer (Account Manager) records live in a separate table from Person.
     // Resolve explicitly when personType is provided to avoid ID collisions.
     if (personType === "customer") {
+      if (requesterIsManagerOrSupervisor) {
+        return res.status(403).json({
+          status: "Failed",
+          message: "Managers can only grant portal access to Executive Staff members",
+        });
+      }
       const accountManager = await AccountManager.findByPk(personId);
       if (!accountManager) {
         return res
@@ -434,6 +515,13 @@ exports.createPortalAccess = async (req, res) => {
           .json({ status: "Failed", message: "Person not found" });
       }
 
+      if (requesterIsManagerOrSupervisor) {
+        return res.status(403).json({
+          status: "Failed",
+          message: "Managers can only grant portal access to Executive Staff members",
+        });
+      }
+
       const existingUser = await User.findOne({ where: { email: accountManager.email } });
       if (accountManager.hasPortalAccess && existingUser) {
         return res.status(400).json({ status: "Failed", message: "This user already has portal access" });
@@ -485,6 +573,21 @@ exports.createPortalAccess = async (req, res) => {
           password: tempPassword,
         },
       });
+    }
+
+    if (requesterIsManagerOrSupervisor) {
+      if (person.type !== "executive_staff") {
+        return res.status(403).json({
+          status: "Failed",
+          message: "Managers can only grant portal access to Executive Staff members",
+        });
+      }
+      if (!personBelongsToManager(person, requesterManagerCtx)) {
+        return res.status(403).json({
+          status: "Failed",
+          message: "You can only grant portal access to executives under your team",
+        });
+      }
     }
 
     const existingUser = await User.findOne({ where: { email: person.email } });
@@ -579,6 +682,8 @@ exports.createPortalAccess = async (req, res) => {
           phone: person.phone,
           department: person.department || null,
         });
+      } else if (!existing.department && person.department) {
+        await existing.update({ department: person.department });
       }
     } else if (person.type === "executive_staff") {
       const existing = await ExecutiveStaff.findOne({ where: { email: person.email } });
@@ -661,7 +766,37 @@ exports.getGMs = async (req, res) => {
 exports.getManagers = async (req, res) => {
   try {
     const managers = await Manager.findAll({ order: [["first_name", "ASC"]] });
-    return res.status(200).json({ status: "Success", managers });
+    const emails = managers.map((m) => m.email).filter(Boolean);
+    const persons =
+      emails.length > 0
+        ? await Person.findAll({
+            where: {
+              email: { [Op.in]: emails },
+              type: { [Op.in]: ["manager", "supervisor"] },
+            },
+            attributes: ["email", "department", "type"],
+          })
+        : [];
+    const personByEmail = new Map(
+      persons.map((p) => [
+        p.email,
+        { department: p.department || null, personType: p.type },
+      ])
+    );
+
+    const enriched = managers.map((m) => {
+      const plain = m.toJSON();
+      const linked = plain.email ? personByEmail.get(plain.email) : null;
+      if (linked) {
+        plain.personType = linked.personType ?? null;
+        if (!plain.department) plain.department = linked.department;
+      } else {
+        plain.personType = null;
+      }
+      return plain;
+    });
+
+    return res.status(200).json({ status: "Success", managers: enriched });
   } catch (error) {
     console.error("Get managers error:", error);
     return res.status(500).json({ status: "Failed", message: "Internal server error" });
@@ -2361,7 +2496,7 @@ exports.getPendingImportedExecutives = async (req, res) => {
         const fromManager = exec.managerId != null ? managerDeptMap.get(exec.managerId) : null;
         const fromCorporate = corporateDeptByExecId.get(exec.executiveId) || null;
         const execDepartment = fromManager || fromCorporate || null;
-        return execDepartment === requesterDepartment;
+        return departmentsMatch(execDepartment, requesterDepartment);
       });
     }
 
@@ -2653,14 +2788,15 @@ exports.importKeyAccountsFromExcelUpload = async (req, res) => {
         message: "Invalid manager selection — use a portal manager id from GET /admin/managers",
       });
     }
-    if (managerRow.department !== "Key Accounts") {
+    const managerDepartment = await resolveManagerDepartment(managerRow);
+    if (!isKeyAccountsDepartment(managerDepartment)) {
       return res.status(400).json({
         status: "Failed",
         message: "Selected manager is not in Key Accounts",
       });
     }
     const requesterDepartment = await resolveRequesterDepartment(req.user);
-    if (requesterDepartment && requesterDepartment !== "Key Accounts") {
+    if (requesterDepartment && !isKeyAccountsDepartment(requesterDepartment)) {
       return res.status(403).json({
         status: "Failed",
         message: "Only Key Accounts admins can run the Key Accounts import",
@@ -2809,14 +2945,15 @@ exports.importEbuFromExcelUpload = async (req, res) => {
         message: "Invalid manager selection — use a portal manager id from GET /admin/managers",
       });
     }
-    if (managerRow.department !== "EBU") {
+    const managerDepartment = await resolveManagerDepartment(managerRow);
+    if (!isEbuDepartment(managerDepartment)) {
       return res.status(400).json({
         status: "Failed",
         message: "Selected manager is not in EBU",
       });
     }
     const requesterDepartment = await resolveRequesterDepartment(req.user);
-    if (requesterDepartment && requesterDepartment !== "EBU") {
+    if (requesterDepartment && !isEbuDepartment(requesterDepartment)) {
       return res.status(403).json({
         status: "Failed",
         message: "Only EBU admins can run the EBU import",

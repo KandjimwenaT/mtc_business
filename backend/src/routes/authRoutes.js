@@ -16,6 +16,7 @@ router.post('/reset-password', authLimiter, authController.resetPassword);
 
 // Protected routes
 const auth = require('../middleware/auth');
+const microsoftGraphController = require('../controller/microsoftGraphController');
 router.post('/logout', auth, authController.userLogout);
 router.get('/me', auth, authController.getProfile);
 router.get('/my-accounts', auth, authController.getMyAccounts);
@@ -50,5 +51,11 @@ router.delete(
 
 router.put('/profile', auth, authController.updateProfile);
 router.put('/change-password', auth, authController.changePassword);
+
+// Microsoft Teams / Outlook calendar (OAuth)
+router.get('/microsoft/status', auth, microsoftGraphController.getMicrosoftCalendarStatus);
+router.get('/microsoft/connect', auth, microsoftGraphController.connectMicrosoftCalendar);
+router.get('/microsoft/callback', microsoftGraphController.microsoftCalendarCallback);
+router.delete('/microsoft/disconnect', auth, microsoftGraphController.disconnectMicrosoftCalendar);
 
 module.exports = router;

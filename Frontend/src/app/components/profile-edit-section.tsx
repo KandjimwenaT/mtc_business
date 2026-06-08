@@ -3,6 +3,7 @@ import { toast } from "sonner";
 import { Card, CardHeader, CardTitle, CardContent, Button, Input, Label, Badge } from "./ui-components";
 import { updateMyProfile, changePassword } from "../api/authApi";
 import type { UserProfile } from "../api/authApi";
+import MicrosoftCalendarConnect from "./microsoft-calendar-connect";
 
 interface ProfileEditSectionProps {
   profile: UserProfile;
@@ -88,7 +89,10 @@ export default function ProfileEditSection({ profile, onProfileUpdated, readOnly
     }
   };
 
+  const isVisitOrganizer = ["executive_staff", "supervisor"].includes(profile.role);
+
   return (
+    <div className="space-y-6">
     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
       {/* ── Personal Information ── */}
       <Card>
@@ -248,6 +252,8 @@ export default function ProfileEditSection({ profile, onProfileUpdated, readOnly
           </div>
         </CardContent>
       </Card>
+    </div>
+    <MicrosoftCalendarConnect showForOrganizer={isVisitOrganizer} />
     </div>
   );
 }

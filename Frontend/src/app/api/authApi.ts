@@ -1,4 +1,5 @@
 import { API_BASE_URL } from "./apiBase";
+import { clearAuthSession, touchSession } from "../auth/session";
 import type { CorporateRecord, PersonRecord } from "./adminApi";
 
 export interface LoginPayload {
@@ -105,9 +106,7 @@ export const logoutUser = async (): Promise<void> => {
   } catch {
     // Proceed with local logout even if the API call fails
   } finally {
-    localStorage.removeItem("accessToken");
-    localStorage.removeItem("refreshToken");
-    localStorage.removeItem("currentUser");
+    clearAuthSession();
   }
 };
 
@@ -129,11 +128,11 @@ const authHeaders = () => {
 };
 
 const handleUnauthorized = () => {
-  localStorage.removeItem("accessToken");
-  localStorage.removeItem("refreshToken");
-  localStorage.removeItem("currentUser");
+  clearAuthSession();
   window.location.href = "/";
 };
+
+export { touchSession };
 
 export const getMyProfile = async (): Promise<UserProfile> => {
   const response = await fetch(`${API_BASE_URL}/auth/me`, {
@@ -637,4 +636,55 @@ export const createContactPersonForMyCorporate = async (
     throw new Error(data.message || "Failed to create contact person");
   }
   return data.person as PersonRecord;
+};
+
+export interface MicrosoftCalendarStatus {
+  configured: boolean;
+  connected: boolean;
+  connectedAt: string | null;
+}
+
+export const getMicrosoftCalendarStatus = async (): Promise<MicrosoftCalendarStatus> => {
+  const response = await fetch(`${API_BASE_URL}/auth/microsoft/status`, {
+    method: "GET",
+    headers: authHeaders(),
+  });
+  if (response.status === 401) {
+    handleUnauthorized();
+    throw new Error("Session expired");
+  }
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.message || "Failed to load Microsoft calendar status");
+  return {
+    configured: Boolean(data.configured),
+    connected: Boolean(data.connected),
+    connectedAt: data.connectedAt ?? null,
+  };
+};
+
+export const startMicrosoftCalendarConnect = async (): Promise<{ url: string }> => {
+  const response = await fetch(`${API_BASE_URL}/auth/microsoft/connect`, {
+    method: "GET",
+    headers: authHeaders(),
+  });
+  if (response.status === 401) {
+    handleUnauthorized();
+    throw new Error("Session expired");
+  }
+  const data = await response.json();
+  if (!response.ok) throw new Error(data.message || "Failed to start Microsoft connection");
+  return { url: data.url as string };
+};
+
+export const disconnectMicrosoftCalendar = async (): Promise<void> => {
+  const response = await fetch(`${API_BASE_URL}/auth/microsoft/disconnect`, {
+    method: "DELETE",
+    headers: authHeaders(),
+  });
+  if (response.status === 401) {
+    handleUnauthorized();
+    throw new Error("Session expired");
+  }
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.message || "Failed to disconnect Microsoft calendar");
 };

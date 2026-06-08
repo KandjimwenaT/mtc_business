@@ -212,7 +212,7 @@ exports.userLogin = async (req, res) => {
     const accessToken = securityService.generateJWT(
       { userId: user.id, email: user.email },
       process.env.JWT_SECRET,
-      "8h",
+      "1h",
     );
 
     // Generate refresh token (long-lived)
@@ -274,7 +274,7 @@ exports.refreshToken = async (req, res) => {
     const newAccessToken = securityService.generateJWT(
       { userId: user.id, email: user.email },
       process.env.JWT_SECRET,
-      "15m",
+      "1h",
     );
 
     return res.status(200).json({

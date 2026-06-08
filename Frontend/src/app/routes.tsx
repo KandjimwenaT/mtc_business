@@ -28,8 +28,10 @@ import ManagerDashboard from "./components/manager/ManagerDashboard";
 import ForgotPassword from "./view/forgot-password";
 import AdminCorporate from "./components/admin/adminCorporate";
 import { isExecutiveRole, isManagerRole, isSupervisorRole } from "./utils/roleCapabilities";
+import { hasValidSession } from "./auth/session";
+import { useSessionWatch } from "./auth/useSessionWatch";
 
-const isAuthenticated = () => Boolean(localStorage.getItem("accessToken"));
+const isAuthenticated = () => hasValidSession();
 
 const getCurrentRole = (): string | null => {
   try {
@@ -42,6 +44,7 @@ const getCurrentRole = (): string | null => {
 
 const RequireAuth = () => {
   const outletContext = useOutletContext();
+  useSessionWatch();
   if (!isAuthenticated()) {
     return <Navigate to="/" replace />;
   }

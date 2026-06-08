@@ -45,6 +45,10 @@ import { getAllTickets, type TicketRecord } from "../api/ticketApi";
 import { Mail, Phone } from "lucide-react";
 import AdminCorporateWizard from "./admin/adminCorporateWizard";
 import { isExecutiveRole, isManagerRole, isSupervisorRole } from "../utils/roleCapabilities";
+import {
+  departmentsMatch,
+  normalizeDepartmentSegment,
+} from "../utils/departmentSegment";
 import type { StaffLayoutOutletContext } from "../layoutOutletContext";
 import { defaultSupervisorBadges } from "../hooks/useSupervisorHybridBadges";
 import { useExecutiveData } from "../hooks/useExecutiveData";
@@ -1076,12 +1080,7 @@ export default function Corporates() {
   // PersonRecord.department lookup via Person.id, which matches
   // PersonRecord.managerId on executives). Super-admins (no department) see
   // everyone, mirroring the backend rule on corporates.
-  const myDepartment: "EBU" | "Key Accounts" | null =
-    userProfile?.department === "EBU"
-      ? "EBU"
-      : userProfile?.department === "Key Accounts"
-      ? "Key Accounts"
-      : null;
+  const myDepartment = normalizeDepartmentSegment(userProfile?.department);
 
   const managerDepartmentByPersonId = useMemo(() => {
     const map = new Map<number, string | null>();
@@ -1095,7 +1094,10 @@ export default function Corporates() {
     if (!myDepartment) return executives;
     return executives.filter((e) => {
       if (e.managerId == null) return false; // orphans hidden from departmented users
-      return managerDepartmentByPersonId.get(e.managerId) === myDepartment;
+      return departmentsMatch(
+        managerDepartmentByPersonId.get(e.managerId),
+        myDepartment
+      );
     });
   }, [executives, managerDepartmentByPersonId, myDepartment]);
 

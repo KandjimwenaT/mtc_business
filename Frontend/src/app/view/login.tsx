@@ -1,6 +1,6 @@
 import React, { useState } from "react";
 import { useNavigate } from "react-router";
-import { loginUser } from "../api/authApi";
+import { loginUser, touchSession } from "../api/authApi";
 
 
 import logo from '../../assets/logo.png';
@@ -26,6 +26,7 @@ const Login: React.FC = () => {
       localStorage.setItem("accessToken", response.accessToken);
       localStorage.setItem("refreshToken", response.refreshToken);
       localStorage.setItem("currentUser", JSON.stringify(response.user));
+      touchSession();
 
       navigate(response.user.role === "customer" ? "/customerAccount" : "/dashboard", { replace: true });
     } catch (error) {

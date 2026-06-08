@@ -30,6 +30,10 @@ import { getMyProfile } from "../api/authApi";
 import type { UserProfile } from "../api/authApi";
 import ProfileEditSection from "../components/profile-edit-section";
 import PortalUserHierarchyModal from "../components/admin/PortalUserHierarchyModal";
+import {
+  departmentsMatch,
+  normalizeDepartmentSegment,
+} from "../utils/departmentSegment";
 
 type Tab = "profile" | "users" | "noPortalUsers" | "pendingExecutives" | "roles" | "sla" | "notifications" | "audit" | "settings";
 
@@ -185,20 +189,59 @@ export default function SuperAdminProfile() {
   // Department-aware importer wiring. EBU admin -> EBU importer; Key Accounts
   // admin -> KAM importer; super-admin (no department) -> use the manual
   // `importMode` toggle. Default the toggle to KAM for backwards compatibility.
+  const userDepartmentSegment = normalizeDepartmentSegment(userProfile?.department);
+
   const effectiveImportMode: "kam" | "ebu" =
-    userProfile?.department === "EBU"
+    userDepartmentSegment === "EBU"
       ? "ebu"
-      : userProfile?.department === "Key Accounts"
+      : userDepartmentSegment === "Key Accounts"
       ? "kam"
       : importMode ?? "kam";
 
   const importDepartmentLabel: "EBU" | "Key Accounts" =
     effectiveImportMode === "ebu" ? "EBU" : "Key Accounts";
 
-  // Only show managers in the matching department in the dropdown so admins
-  // cannot accidentally pick a manager from the other segment.
-  const filteredImportManagers = keyAccountsImportManagers.filter(
-    (m) => m.department === importDepartmentLabel
+  // Managers + supervisors share the managers portal table; use both person
+  // lists for department enrichment by email (not for selection).
+  const lineManagerPersonsByEmail = useMemo(() => {
+    const map = new Map<string, PersonRecord>();
+    for (const p of [...managerList, ...supervisorPersonList]) {
+      map.set(p.email, p);
+    }
+    return map;
+  }, [managerList, supervisorPersonList]);
+
+  const isSelectablePortalManager = useCallback(
+    (portalMgr: ManagerRecord) => {
+      if (portalMgr.personType === "supervisor") return false;
+      if (portalMgr.personType === "manager") return true;
+      const person = lineManagerPersonsByEmail.get(portalMgr.email);
+      return person?.type === "manager";
+    },
+    [lineManagerPersonsByEmail]
+  );
+
+  // Portal Manager rows sometimes have department=null even though the linked
+  // Person directory record has "Key Accounts" or "EBU". Enrich from both
+  // manager and supervisor person records by email before filtering.
+  const importManagersEnriched = useMemo(
+    () =>
+      keyAccountsImportManagers.map((m) => {
+        const person = lineManagerPersonsByEmail.get(m.email);
+        return {
+          ...m,
+          department: m.department || person?.department || null,
+          personType: m.personType ?? person?.type ?? null,
+        };
+      }),
+    [keyAccountsImportManagers, lineManagerPersonsByEmail]
+  );
+
+  // Only show true managers (not supervisors) in the matching department.
+  const filteredImportManagers = importManagersEnriched.filter(
+    (m) =>
+      departmentsMatch(m.department, importDepartmentLabel) &&
+      isSelectablePortalManager(m)
   );
 
   // Onboarding-modal scoping. Departmented admins (EBU/Key Accounts) should
@@ -207,29 +250,66 @@ export default function SuperAdminProfile() {
   // department) see everything as before.
   const isDepartmentedAdmin = !!userProfile?.department;
 
-  // PersonRecord.department lives directly on the row, so the manager dropdown
-  // can be filtered without a join.
-  const onboardingManagerOptions = isDepartmentedAdmin
-    ? managerList.filter((m) => m.department === importDepartmentLabel)
-    : managerList;
+  // Onboarding needs Person.id (managerPersonId) but department often lives only
+  // on the portal Manager row. Build options from portal managers in the correct
+  // segment, then map each back to its Person directory record by email.
+  const onboardingManagerOptions = useMemo(() => {
+    const sortByName = (a: PersonRecord, b: PersonRecord) =>
+      `${a.firstName} ${a.lastName}`.localeCompare(`${b.firstName} ${b.lastName}`);
+
+    if (!isDepartmentedAdmin) {
+      return managerList
+        .filter((p) => p.type === "manager" && p.hasPortalAccess)
+        .map((p) => {
+          const portal = importManagersEnriched.find((m) => m.email === p.email);
+          return {
+            ...p,
+            department: p.department || portal?.department || null,
+          };
+        })
+        .sort(sortByName);
+    }
+
+    return filteredImportManagers
+      .map((portalMgr) => {
+        const person = lineManagerPersonsByEmail.get(portalMgr.email);
+        if (!person || person.type !== "manager") return null;
+        if (!person.hasPortalAccess && portalMgr.userId == null) return null;
+        return {
+          ...person,
+          department: person.department || portalMgr.department || null,
+        };
+      })
+      .filter((p): p is PersonRecord => p != null)
+      .sort(sortByName);
+  }, [
+    isDepartmentedAdmin,
+    managerList,
+    lineManagerPersonsByEmail,
+    importManagersEnriched,
+    filteredImportManagers,
+  ]);
 
   // ExecutiveRecord has no department field. Derive it via
   // executive.managerId -> Manager.department using the same managers list
   // we already loaded for the import dropdown.
   const managerDepartmentById = useMemo(() => {
     const map = new Map<number, string | null>();
-    for (const m of keyAccountsImportManagers) {
+    for (const m of importManagersEnriched) {
       map.set(m.managerId, m.department ?? null);
     }
     return map;
-  }, [keyAccountsImportManagers]);
+  }, [importManagersEnriched]);
 
   const onboardingExistingExecutiveOptions = (() => {
     const onboarded = executiveList.filter((ex) => !!ex.userId);
     if (!isDepartmentedAdmin) return onboarded;
     return onboarded.filter((ex) => {
       if (ex.managerId == null) return false; // orphans hidden from departmented admins
-      return managerDepartmentById.get(ex.managerId) === importDepartmentLabel;
+      return departmentsMatch(
+        managerDepartmentById.get(ex.managerId),
+        importDepartmentLabel
+      );
     });
   })();
 
@@ -293,13 +373,15 @@ export default function SuperAdminProfile() {
   const fetchPendingExecutives = useCallback(async () => {
     setLoadingPendingExecutives(true);
     try {
-      const [pending, managers, portalManagers] = await Promise.all([
+      const [pending, managers, supervisors, portalManagers] = await Promise.all([
         getPendingImportedExecutives(),
         getPersonsByType("manager"),
+        getPersonsByType("supervisor"),
         getManagers(),
       ]);
       setPendingExecutives(pending);
       setManagerList(managers);
+      setSupervisorPersonList(supervisors);
       setKeyAccountsImportManagers(portalManagers);
       if (executiveList.length === 0) {
         const execs = await getExecutives();
@@ -1416,17 +1498,19 @@ export default function SuperAdminProfile() {
                   {filteredImportManagers.map((m) => (
                     <option key={m.managerId} value={m.managerId}>
                       {m.firstName} {m.lastName}
-                      {m.department ? ` — ${m.department}` : ""} (ID&nbsp;{m.managerId})
+                      {m.department ? ` — ${m.department}` : ""} (Manager)
                     </option>
                   ))}
                 </Select>
                 <p className="text-xs text-slate-500">
                   Required. Every imported corporate, account and placeholder executive will
                   be linked to this {importDepartmentLabel} manager so it shows up under their
-                  segment.
+                  segment. Supervisors are not listed here.
                   {filteredImportManagers.length === 0 && (
                     <span className="block mt-1 text-amber-600">
-                      No {importDepartmentLabel} managers found. Create one in User Management first.
+                      No {importDepartmentLabel} managers with portal access found. Supervisors
+                      are excluded. Ensure the manager has portal access and Department ={" "}
+                      {importDepartmentLabel} on their user record.
                     </span>
                   )}
                 </p>
@@ -1758,12 +1842,14 @@ export default function SuperAdminProfile() {
                   <option value="">Select Manager...</option>
                   {onboardingManagerOptions.map((m) => (
                     <option key={m.id} value={m.id}>
-                      {m.firstName} {m.lastName}{m.department ? ` — ${m.department}` : ""}
+                      {m.firstName} {m.lastName}
+                      {m.department ? ` — ${m.department}` : ""} (Manager)
                     </option>
                   ))}
                 </Select>
                 <p className="text-xs text-slate-500">
-                  Only managers who already have portal access can be selected.
+                  Only managers who already have portal access can be selected. Supervisors
+                  are not listed here.
                   {isDepartmentedAdmin && (
                     <span className="block mt-1">
                       Scoped to the <span className="font-semibold">{importDepartmentLabel}</span> segment.
@@ -1771,7 +1857,9 @@ export default function SuperAdminProfile() {
                   )}
                   {isDepartmentedAdmin && onboardingManagerOptions.length === 0 && (
                     <span className="block mt-1 text-amber-600">
-                      No {importDepartmentLabel} managers found.
+                      No {importDepartmentLabel} managers with portal access found. Supervisors
+                      are excluded. Ensure the manager has portal access and Department ={" "}
+                      {importDepartmentLabel} on their user record.
                     </span>
                   )}
                 </p>

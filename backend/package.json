@@ -9,7 +9,8 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "import:key-accounts": "node scripts/importKeyAccountsFromExcel.js",
     "delete:key-accounts-import": "node scripts/deleteKeyAccountsImport.js",
-    "migrate:visits-schema": "node scripts/syncVisitSchemaMySQL.js"
+    "migrate:visits-schema": "node scripts/syncVisitSchemaMySQL.js",
+    "migrate:microsoft-calendar": "node scripts/syncMicrosoftCalendarSchemaMySQL.js"
   },
   "keywords": [],
   "author": "",
