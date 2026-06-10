@@ -41,6 +41,9 @@ require('dotenv').config();
 const app = express();
 const PORT = 3003;
 
+// nginx (or similar) forwards X-Forwarded-For; required for req.ip and express-rate-limit.
+app.set('trust proxy', 1);
+
 // Security middleware — cross-origin images from /uploads (e.g. Vite on :5173, API on :3003)
 app.use(
   helmet({
