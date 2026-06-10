@@ -147,6 +147,20 @@ export default function Notifications() {
     const metadata = (notif.metadata || {}) as Record<string, unknown>;
     const ticketId = Number(metadata.ticketId);
     const visitId = Number(metadata.visitId);
+    const corporateId = Number(metadata.corporateId);
+    const metadataKind = String(metadata.kind ?? "").toLowerCase();
+
+    if (
+      metadataKind === "contract_expiring" &&
+      Number.isFinite(corporateId) &&
+      corporateId > 0 &&
+      (currentUser?.role === "manager" || currentUser?.role === "supervisor")
+    ) {
+      const accountId = Number(metadata.accountId);
+      const accountQuery =
+        Number.isFinite(accountId) && accountId > 0 ? `&accountId=${accountId}` : "";
+      return `/corporates?corporateId=${corporateId}${accountQuery}`;
+    }
 
     if ((notif.type === "ticket" || notif.type === "escalation" || notif.type === "sla") && Number.isFinite(ticketId)) {
       return `/tickets/${ticketId}`;

@@ -47,13 +47,31 @@ app.use(
     crossOriginResourcePolicy: { policy: 'cross-origin' },
   })
 );
-app.use(cors({
-  origin: [
-    process.env.FRONTEND_URL || 'http://localhost:5173',
+const normalizeOrigin = (value) =>
+  typeof value === 'string' ? value.trim().replace(/\/$/, '') : '';
 
-    // 'http://41.219.113.1',
-    // 'http://41.219.113.1:4000',
-  ],
+const allowedOrigins = [
+  process.env.FRONTEND_URL,
+  process.env.CORS_ORIGINS,
+  'http://localhost:5173',
+  'http://41.219.71.112:8081',
+]
+  .filter(Boolean)
+  .flatMap((entry) => entry.split(','))
+  .map(normalizeOrigin)
+  .filter(Boolean);
+
+const uniqueAllowedOrigins = [...new Set(allowedOrigins)];
+
+app.use(cors({
+  origin(origin, callback) {
+    // Same-origin or non-browser clients (curl, Postman) — no Origin header.
+    if (!origin) return callback(null, true);
+    if (uniqueAllowedOrigins.includes(normalizeOrigin(origin))) {
+      return callback(null, true);
+    }
+    return callback(null, false);
+  },
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   credentials: true,
 }));

@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
-import { useNavigate, useOutletContext } from "react-router";
+import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useNavigate, useOutletContext, useSearchParams } from "react-router";
 import { toast } from "sonner";
 import { 
   Card, 
@@ -122,6 +122,7 @@ export default function Corporates() {
   const formatNad = (value: string | number | null | undefined) =>
     `N$ ${Number(value || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const outletCtx = useOutletContext<StaffLayoutOutletContext | undefined>();
   const supervisorBadges = outletCtx?.supervisorBadges ?? defaultSupervisorBadges();
   // Detect user role
@@ -1054,12 +1055,93 @@ export default function Corporates() {
     }
   }, [isExecutive, execAccounts, selectedExecAccount]);
 
+  const [pendingDeepLink, setPendingDeepLink] = useState<{
+    corporateId: number;
+    accountId?: number;
+  } | null>(null);
+  const deepLinkHandledRef = useRef(false);
+
+  useEffect(() => {
+    const rawCorp = searchParams.get("corporateId");
+    const rawAcc = searchParams.get("accountId");
+    const corporateId = rawCorp ? Number(rawCorp) : NaN;
+    if (!Number.isFinite(corporateId) || corporateId <= 0) return;
+
+    const accountId = rawAcc ? Number(rawAcc) : NaN;
+    deepLinkHandledRef.current = false;
+    setPendingDeepLink({
+      corporateId,
+      accountId: Number.isFinite(accountId) && accountId > 0 ? accountId : undefined,
+    });
+  }, [searchParams]);
+
+  useEffect(() => {
+    if (!pendingDeepLink || deepLinkHandledRef.current) return;
+    if (!hasManagerScope && !isAdmin) return;
+
+    if (isSupervisor && supervisorView !== "manager") {
+      setSupervisorView("manager");
+      return;
+    }
+
+    if (!showCorporatePanel || corporates.length === 0 || loadingAccounts) return;
+
+    const target = corporates.find((c) => c.corporateId === pendingDeepLink.corporateId);
+    if (!target) return;
+
+    setSearchQuery("");
+    setExpiryFilterMonths(0);
+    setAlphabetFilter("all");
+    setExecutiveFilter("all");
+
+    const visibleCorporates = corporates.filter((c) =>
+      matchesExecutiveFilter(c.executiveId ?? null, c.executiveFirstName, c.executiveLastName)
+    );
+    const listIndex = visibleCorporates.findIndex((c) => c.corporateId === target.corporateId);
+    if (listIndex >= 0) {
+      setCurrentListPage(Math.floor(listIndex / CARD_PAGE_SIZE) + 1);
+    }
+
+    const accountIdToOpen = pendingDeepLink.accountId;
+
+    setSelectedCorporate(target);
+    deepLinkHandledRef.current = true;
+    setPendingDeepLink(null);
+
+    const nextParams = new URLSearchParams(searchParams);
+    nextParams.delete("corporateId");
+    nextParams.delete("accountId");
+    setSearchParams(nextParams, { replace: true });
+
+    if (accountIdToOpen) {
+      const account = accounts.find((a) => a.accountId === accountIdToOpen);
+      if (account) {
+        void handleOpenDetail(account);
+      }
+    }
+  }, [
+    pendingDeepLink,
+    hasManagerScope,
+    isAdmin,
+    isSupervisor,
+    supervisorView,
+    showCorporatePanel,
+    corporates,
+    accounts,
+    loadingAccounts,
+    searchParams,
+    setSearchParams,
+    handleOpenDetail,
+  ]);
+
   useEffect(() => {
     if (!isManager) return;
+    if (pendingDeepLink != null) return;
+    if (searchParams.get("corporateId")) return;
     if (!selectedCorporate || !alphabetFilteredCorporateRecords.some((corp) => corp.corporateId === selectedCorporate.corporateId)) {
       setSelectedCorporate(alphabetFilteredCorporateRecords[0] ?? null);
     }
-  }, [isManager, alphabetFilteredCorporateRecords, selectedCorporate]);
+  }, [isManager, alphabetFilteredCorporateRecords, selectedCorporate, pendingDeepLink, searchParams]);
 
   useEffect(() => {
     setCurrentListPage(1);
