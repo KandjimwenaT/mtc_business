@@ -26,6 +26,7 @@ import {
   type TicketRecord,
 } from "../api/ticketApi";
 import { getCurrentUser } from "../api/authApi";
+import { canAddTicketInternalNote } from "../utils/roleCapabilities";
 import { format } from "date-fns";
 
 function formatTicketStatusLabel(s: string) {
@@ -69,7 +70,7 @@ export default function TicketDetails() {
   const [saving, setSaving] = useState(false);
   const [addingNote, setAddingNote] = useState(false);
   const currentUser = getCurrentUser();
-  const canAddInternalNote = ["manager", "supervisor", "admin"].includes(currentUser?.role || "");
+  const canAddInternalNote = canAddTicketInternalNote(currentUser?.role);
 
   useEffect(() => {
     const run = async () => {
@@ -202,7 +203,11 @@ export default function TicketDetails() {
           ? "Manager"
           : note.authorRole === "supervisor"
             ? "Supervisor"
-            : "Admin";
+            : note.authorRole === "gm"
+              ? "GM"
+              : note.authorRole === "executive_staff"
+                ? "Executive"
+                : "Admin";
       rows.push({
         kind: "internal_note",
         id: `note-${note.noteId}`,
@@ -494,7 +499,7 @@ export default function TicketDetails() {
                 <Label>Internal Note (Optional)</Label>
                 <textarea 
                   className="flex min-h-[80px] w-full rounded-md border border-slate-300 bg-transparent px-3 py-2 text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-mtc-blue disabled:opacity-50"
-                  placeholder={canAddInternalNote ? "Add internal note for executive, supervisor and admin visibility..." : "Only manager/supervisor/admin can add internal notes"}
+                  placeholder={canAddInternalNote ? "Add internal note for executive, supervisor, GM and admin visibility..." : "Only manager, supervisor, admin, GM, or executive can add internal notes"}
                   value={internalNote}
                   onChange={(e) => setInternalNote(e.target.value)}
                   disabled={!canAddInternalNote || addingNote}

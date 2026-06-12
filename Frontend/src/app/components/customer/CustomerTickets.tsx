@@ -10,6 +10,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from ".
 import { Search, Plus, Filter, Clock, X, Loader2, Send, AlertCircle, Zap, AlertTriangle } from "lucide-react";
 import { createTicket, getMyTickets, type TicketRecord } from "../../api/ticketApi";
 import { format } from "date-fns";
+import EscalationWorkflowCard from "../EscalationWorkflowCard";
 
 const REQUEST_TYPES = [
   { value: "request_meeting", label: "Request Meeting" },
@@ -617,8 +618,9 @@ export default function CustomerTickets() {
         </Card>
       )}
 
+      <div className="grid gap-6 md:grid-cols-3">
       {/* Tickets table */}
-      <Card>
+      <Card className="md:col-span-2">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-4 p-4 border-b border-slate-200">
           <div className="relative w-full sm:flex-1 sm:max-w-sm">
             <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-slate-500" />
@@ -743,6 +745,9 @@ export default function CustomerTickets() {
           </TableBody>
         </Table>
       </Card>
+
+      <EscalationWorkflowCard />
+      </div>
     </div>
   );
 }

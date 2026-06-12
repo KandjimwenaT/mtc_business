@@ -25,9 +25,10 @@ import ExecutiveVisits from "./components/executive/ExecutiveVisits";
 import ExecutiveDashboard from "./components/executive/ExecutiveDashboard";
 import ManagerVisits from "./components/manager/ManagerVisits";
 import ManagerDashboard from "./components/manager/ManagerDashboard";
+import GmDashboard from "./components/gm/GmDashboard";
 import ForgotPassword from "./view/forgot-password";
 import AdminCorporate from "./components/admin/adminCorporate";
-import { isExecutiveRole, isManagerRole, isSupervisorRole } from "./utils/roleCapabilities";
+import { isExecutiveRole, isGmRole, isManagerRole, isSupervisorRole } from "./utils/roleCapabilities";
 import { hasValidSession } from "./auth/session";
 import { useSessionWatch } from "./auth/useSessionWatch";
 
@@ -73,6 +74,7 @@ const LoginEntry = () => {
 
 const StaffDashboardEntry = () => {
   const role = getCurrentRole();
+  if (isGmRole(role)) return <GmDashboard />;
   if (isSupervisorRole(role) || isManagerRole(role)) return <ManagerDashboard />;
   if (isExecutiveRole(role)) return <ExecutiveDashboard />;
   return <Dashboard />;
@@ -156,7 +158,7 @@ export const router = createBrowserRouter([
           },
           // Manager / Super Admin only
           {
-            element: <RequireRole allowed={["admin", "manager", "supervisor"]} />,
+            element: <RequireRole allowed={["admin", "manager", "supervisor", "gm"]} />,
             children: [
               { path: "management-profile", Component: ManagementProfile },
               { path: "manager-visits", Component: ManagerVisits },

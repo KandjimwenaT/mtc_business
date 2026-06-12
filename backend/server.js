@@ -11,7 +11,7 @@ const { xssProtection } = require('./src/middleware/security');
 const authRoutes = require('./src/routes/authRoutes');
 const adminRoutes = require('./src/routes/adminRoutes');
 const auth = require('./src/middleware/auth');
-const { superAdminOnly, adminOrManager } = require('./src/middleware/adminAuth');
+const { superAdminOnly, adminOrManager, blockGmWrites } = require('./src/middleware/adminAuth');
 const Person = require('./src/models/Person');
 const GM = require('./src/models/GM');
 const Manager = require('./src/models/Manager');
@@ -113,7 +113,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api', auth);
 
 // ── Protected routes (add new route files here) ───────────────────
-app.use('/api/admin', adminOrManager, adminRoutes);
+app.use('/api/admin', adminOrManager, blockGmWrites, adminRoutes);
 app.use('/api/complaints', complaintRoutes);
 app.use('/api/account-requests', accountRequestRoutes);
 app.use('/api/tickets', ticketRoutes);

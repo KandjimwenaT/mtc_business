@@ -21,6 +21,11 @@ const {
 } = require("./ticketController");
 const { resolveAttendeeRecipients } = require("../services/visitRecipientService");
 const { syncVisitCalendarInvites } = require("../services/visitCalendarInviteService");
+const {
+  resolveGmProfile,
+  buildGmVisitWhereClause,
+  resolveGmExecutiveIds,
+} = require("../services/gmScope");
 
 const VISIT_ACTION_REQUEST_TYPES = new Set([
   "request_meeting", "new_product_request", "new_line", "plan_change", "line_suspension", "line_activation",
@@ -411,11 +416,18 @@ exports.getAllVisits = async (req, res) => {
   try {
     const user = req.user;
 
-    if (!["manager", "supervisor", "admin"].includes(user.role)) {
+    if (!["manager", "supervisor", "admin", "gm"].includes(user.role)) {
       return res.status(403).json({ status: "Failed", message: "Unauthorized" });
     }
 
+    let whereClause = {};
+    if (user.role === "gm") {
+      const gmProfile = await resolveGmProfile(user);
+      whereClause = await buildGmVisitWhereClause(gmProfile);
+    }
+
     const visits = await Visit.findAll({
+      where: whereClause,
       order: [["visit_date", "DESC"], ["start_time", "ASC"]],
     });
 
@@ -626,14 +638,17 @@ exports.getPendingReschedules = async (req, res) => {
   try {
     const user = req.user;
 
-    if (!["manager", "supervisor", "admin"].includes(user.role)) {
+    if (!["manager", "supervisor", "admin", "gm"].includes(user.role)) {
       return res.status(403).json({ status: "Failed", message: "Unauthorized" });
     }
 
     let whereClause = { execRescheduleStatus: "pending_approval" };
 
-    // Scope to manager team or supervisor team+own (admin sees all)
-    if (user.role === "manager" || user.role === "supervisor") {
+    if (user.role === "gm") {
+      const gmProfile = await resolveGmProfile(user);
+      const gmVisitWhere = await buildGmVisitWhereClause(gmProfile);
+      whereClause = { ...whereClause, ...gmVisitWhere };
+    } else if (user.role === "manager" || user.role === "supervisor") {
       if (user.role === "supervisor") {
         const execIds = await getSupervisorManagedExecutiveIds(user);
         whereClause.executiveId =
@@ -848,6 +863,13 @@ async function userMayAccessVisitControlCard(user, visit) {
   if (user.role === "manager") {
     const execIds = await getManagerExecIds(user.id);
     if (execIds === null) return false;
+    return execIds.includes(visit.executiveId);
+  }
+
+  if (user.role === "gm") {
+    const gmProfile = await resolveGmProfile(user);
+    if (!gmProfile) return false;
+    const execIds = await resolveGmExecutiveIds(gmProfile);
     return execIds.includes(visit.executiveId);
   }
 
@@ -1099,13 +1121,16 @@ exports.getManagerVisits = async (req, res) => {
   try {
     const user = req.user;
 
-    if (!["manager", "supervisor", "admin"].includes(user.role)) {
+    if (!["manager", "supervisor", "admin", "gm"].includes(user.role)) {
       return res.status(403).json({ status: "Failed", message: "Unauthorized" });
     }
 
     let whereClause = {};
 
-    if (user.role === "supervisor") {
+    if (user.role === "gm") {
+      const gmProfile = await resolveGmProfile(user);
+      whereClause = await buildGmVisitWhereClause(gmProfile);
+    } else if (user.role === "supervisor") {
       const execIds = await getSupervisorManagedExecutiveIds(user);
       whereClause.executiveId =
         execIds.length === 0 ? { [Op.in]: [-1] } : { [Op.in]: execIds };
@@ -1123,7 +1148,9 @@ exports.getManagerVisits = async (req, res) => {
       order: [["visit_date", "DESC"], ["start_time", "ASC"]],
     });
 
-    await sendVisitReminderAndOverdueAlerts(visits);
+    if (user.role !== "gm") {
+      await sendVisitReminderAndOverdueAlerts(visits);
+    }
 
     return res.status(200).json({ status: "Success", visits });
   } catch (error) {
@@ -1225,13 +1252,16 @@ exports.getManagerControlCards = async (req, res) => {
   try {
     const user = req.user;
 
-    if (!["manager", "supervisor", "admin"].includes(user.role)) {
+    if (!["manager", "supervisor", "admin", "gm"].includes(user.role)) {
       return res.status(403).json({ status: "Failed", message: "Unauthorized" });
     }
 
     let whereClause = {};
 
-    if (user.role === "supervisor") {
+    if (user.role === "gm") {
+      const gmProfile = await resolveGmProfile(user);
+      whereClause = await buildGmVisitWhereClause(gmProfile);
+    } else if (user.role === "supervisor") {
       const execIds = await getSupervisorManagedExecutiveIds(user);
       whereClause.executiveId =
         execIds.length === 0 ? { [Op.in]: [-1] } : { [Op.in]: execIds };

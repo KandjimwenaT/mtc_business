@@ -15,8 +15,16 @@ const {
   getAccountsForCustomerUser,
   getAccountManagerIdsForCorporate,
 } = require("../services/contactPersonService");
+const { resolveGmProfile, filterTicketsByGmScope } = require("../services/gmScope");
+const {
+  syncOpenTicketWithAccountExecutive,
+  resolveExecutiveDisplayName,
+  OPEN_TICKET_STATUSES,
+  normalizeExecutiveProfileId,
+} = require("../services/ticketExecutiveSyncService");
 
 const hasExecutiveScope = (role) => ["executive_staff", "supervisor"].includes(role);
+const INTERNAL_NOTE_AUTHOR_ROLES = ["admin", "manager", "supervisor", "gm", "executive_staff"];
 
 // Generate next ticket number:  REQ-00001 / CMP-00001
 async function generateTicketNumber(category) {
@@ -150,7 +158,10 @@ async function toTicketWithAccountContext(ticketInstance) {
 }
 
 async function buildTicketDetailPayload(ticketInstance) {
-  const detailed = await toTicketWithAccountContext(ticketInstance);
+  const syncedTicket = await syncOpenTicketWithAccountExecutive(ticketInstance);
+  const detailed = await toTicketWithAccountContext(syncedTicket);
+  const executiveName = await resolveExecutiveNameByExecutiveProfileId(syncedTicket.executiveId);
+  detailed.assignedTo = executiveName || detailed.assignedTo || null;
   const internalNotes = await TicketInternalNote.findAll({
     where: { ticketId: ticketInstance.ticketId },
     order: [["created_at", "ASC"]],
@@ -245,10 +256,16 @@ async function sendTicketBreachNotificationsToManagers(tickets) {
 }
 
 async function resolveExecutiveNameByExecutiveProfileId(executiveProfileId) {
-  if (!executiveProfileId) return null;
-  const executive = await ExecutiveStaff.findByPk(executiveProfileId);
-  if (!executive) return null;
-  return `${executive.firstName} ${executive.lastName}`;
+  return resolveExecutiveDisplayName(executiveProfileId);
+}
+
+async function hydrateTicketAssignee(ticketInstance) {
+  const ticket = await syncOpenTicketWithAccountExecutive(ticketInstance);
+  const executiveName = await resolveExecutiveNameByExecutiveProfileId(ticket.executiveId);
+  return {
+    ...ticket.toJSON(),
+    assignedTo: executiveName || ticket.assignedTo || null,
+  };
 }
 
 async function resolveActorLabel(user) {
@@ -614,15 +631,7 @@ exports.getMyTickets = async (req, res) => {
       where: { accountId: { [Op.in]: accountIds } },
       order: [["created_at", "DESC"]],
     });
-    const ticketsForCustomer = await Promise.all(
-      tickets.map(async (ticket) => {
-        const executiveName = await resolveExecutiveNameByExecutiveProfileId(ticket.executiveId);
-        return {
-          ...ticket.toJSON(),
-          assignedTo: executiveName || ticket.assignedTo || null,
-        };
-      })
-    );
+    const ticketsForCustomer = await Promise.all(tickets.map((ticket) => hydrateTicketAssignee(ticket)));
 
     return res.status(200).json({ status: "Success", tickets: ticketsForCustomer });
   } catch (error) {
@@ -645,14 +654,39 @@ exports.getAssignedTickets = async (req, res) => {
       return res.status(404).json({ status: "Failed", message: "Executive staff profile not found" });
     }
 
-    const tickets = await Ticket.findAll({
+    const assignedAccounts = await Account.findAll({
       where: { executiveId: executive.executiveId },
+      attributes: ["accountId"],
+    });
+    const assignedAccountIds = assignedAccounts.map((account) => account.accountId);
+
+    const ticketWhere = assignedAccountIds.length
+      ? {
+          [Op.or]: [
+            { executiveId: executive.executiveId },
+            {
+              accountId: { [Op.in]: assignedAccountIds },
+              status: { [Op.in]: OPEN_TICKET_STATUSES },
+            },
+          ],
+        }
+      : { executiveId: executive.executiveId };
+
+    const tickets = await Ticket.findAll({
+      where: ticketWhere,
       order: [["created_at", "DESC"]],
     });
 
     await sendTicketBreachNotificationsToManagers(tickets);
 
-    const result = await Promise.all(tickets.map((t) => toTicketWithAccountContext(t)));
+    const syncedTickets = await Promise.all(
+      tickets.map((ticket) => syncOpenTicketWithAccountExecutive(ticket))
+    );
+    const visibleTickets = syncedTickets.filter(
+      (ticket) => normalizeExecutiveProfileId(ticket.executiveId) === executive.executiveId
+    );
+
+    const result = await Promise.all(visibleTickets.map((ticket) => toTicketWithAccountContext(ticket)));
 
     return res.status(200).json({ status: "Success", tickets: result });
   } catch (error) {
@@ -693,6 +727,11 @@ exports.getAllTickets = async (req, res) => {
       tickets = resolved
         .filter((entry) => entry.department && entry.department === adminDepartment)
         .map((entry) => entry.ticket);
+    }
+
+    if (user.role === "gm") {
+      const gmProfile = await resolveGmProfile(user);
+      tickets = await filterTicketsByGmScope(tickets, gmProfile);
     }
 
     if (["manager", "supervisor"].includes(user.role)) {
@@ -843,12 +882,15 @@ exports.updateTicket = async (req, res) => {
   }
 };
 
-// Add internal note (manager/supervisor/admin)
+// Add internal note (manager/supervisor/admin/gm/executive)
 exports.addInternalNote = async (req, res) => {
   try {
     const user = req.user;
-    if (!["manager", "supervisor", "admin"].includes(user.role)) {
-      return res.status(403).json({ status: "Failed", message: "Only manager, supervisor, or admin can add internal notes" });
+    if (!INTERNAL_NOTE_AUTHOR_ROLES.includes(user.role)) {
+      return res.status(403).json({
+        status: "Failed",
+        message: "Only manager, supervisor, admin, GM, or executive can add internal notes",
+      });
     }
 
     const { ticketId } = req.params;
@@ -860,6 +902,21 @@ exports.addInternalNote = async (req, res) => {
     const ticket = await Ticket.findByPk(ticketId);
     if (!ticket) {
       return res.status(404).json({ status: "Failed", message: "Ticket not found" });
+    }
+
+    if (user.role === "gm") {
+      const gmProfile = await resolveGmProfile(user);
+      const scoped = await filterTicketsByGmScope([ticket], gmProfile);
+      if (!scoped.length) {
+        return res.status(403).json({ status: "Failed", message: "You do not have access to this ticket" });
+      }
+    }
+
+    if (user.role === "executive_staff") {
+      const executive = await ExecutiveStaff.findOne({ where: { userId: user.id } });
+      if (!executive || executive.executiveId !== ticket.executiveId) {
+        return res.status(403).json({ status: "Failed", message: "You are not assigned to this ticket" });
+      }
     }
 
     const actorLabel = await resolveActorLabel(user);

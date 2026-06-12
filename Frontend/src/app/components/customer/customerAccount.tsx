@@ -70,7 +70,7 @@ export function CustomerAccount() {
     );
   }
 
-  const { account, accounts, corporate, corporates, accountManager, executive, services, contracts } = data;
+  const { account, accounts, corporate, corporates, accountManager, executive, corporateExecutives, services, contracts } = data;
   const subAccounts = accounts ?? [account];
   const linkedCorporates = corporates && corporates.length > 0
     ? corporates
@@ -115,8 +115,14 @@ export function CustomerAccount() {
       : accountContactFullName;
   const contactEmailDisplay = accountManager?.email
     || (accountContactEmailLooksDummy || !account.contactEmail ? "Not assigned" : account.contactEmail);
-  const executiveName = executive ? `${executive.firstName} ${executive.lastName}` : null;
-  const executiveInitials = executive ? `${executive.firstName[0]}${executive.lastName[0]}` : '';
+  const executiveCards = (corporateExecutives && corporateExecutives.length > 0
+    ? corporateExecutives
+    : executive && corporate
+      ? [{ corporateId: corporate.corporateId, corporateName: corporate.corporateName, executive }]
+      : executive
+        ? [{ corporateId: corporate?.corporateId ?? 0, corporateName: corporate?.corporateName ?? "Your account", executive }]
+        : []
+  ).filter((entry) => entry.executive);
   const subAccountCount = subAccounts.length;
   const formatNad = (value: string | number | null | undefined) =>
     `N$ ${Number(value || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -504,42 +510,48 @@ export function CustomerAccount() {
             </Card>
 
             {/* Account Executive */}
-            {executive && (
-              <Card>
+            {executiveCards.map(({ corporateId, corporateName, executive: exec }) => {
+              const execName = `${exec.firstName} ${exec.lastName}`;
+              const execInitials = `${exec.firstName[0]}${exec.lastName[0]}`;
+              return (
+              <Card key={corporateId}>
                 <CardHeader>
-                  <CardTitle>Your Account Executive</CardTitle>
+                  <CardTitle>
+                    {isMultiCorporate ? `Account Executive — ${corporateName}` : "Your Account Executive"}
+                  </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <div className="flex items-center gap-4 mb-4">
                     <div className="size-16 bg-blue-100 rounded-full flex items-center justify-center text-blue-700 text-xl">
-                      {executiveInitials}
+                      {execInitials}
                     </div>
                     <div>
-                      <p className="font-medium">{executiveName}</p>
-                      {executive.region && <p className="text-sm text-gray-500">{executive.region}</p>}
+                      <p className="font-medium">{execName}</p>
+                      {exec.region && <p className="text-sm text-gray-500">{exec.region}</p>}
                     </div>
                   </div>
 
                   <div className="space-y-2">
                     <div className="flex items-center gap-2 text-sm">
                       <Mail className="size-4 text-gray-400" />
-                      <span>{executive.email}</span>
+                      <span>{exec.email}</span>
                     </div>
-                    {executive.phone && (
+                    {exec.phone && (
                       <div className="flex items-center gap-2 text-sm">
                         <Phone className="size-4 text-gray-400" />
-                        <span>{executive.phone}</span>
+                        <span>{exec.phone}</span>
                       </div>
                     )}
                   </div>
 
-                  <Button className="w-full mt-4" onClick={() => window.location.href = `mailto:${executive.email}`}>
+                  <Button className="w-full mt-4" onClick={() => window.location.href = `mailto:${exec.email}`}>
                     <Mail className="size-4 mr-2" />
                     Contact Executive
                   </Button>
                 </CardContent>
               </Card>
-            )}
+              );
+            })}
           </div>
         </TabsContent>
 

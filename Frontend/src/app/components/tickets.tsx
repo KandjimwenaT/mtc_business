@@ -61,7 +61,7 @@ export default function Tickets() {
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [statusFilter, setStatusFilter] = useState("all");
   const [categoryFilter, setCategoryFilter] = useState("all");
-  const canCreateTicket = ["admin", "executive_staff", "supervisor", "manager", "gm"].includes(currentUser?.role || "");
+  const canCreateTicket = ["admin", "executive_staff", "supervisor", "manager"].includes(currentUser?.role || "");
 
   const refreshBadges = supervisorBadges.refresh;
   const fetchTickets = useCallback(async () => {

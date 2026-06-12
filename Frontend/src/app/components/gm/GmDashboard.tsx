@@ -7,15 +7,18 @@ import {
   getExecutives,
   getCorporates,
   getAccounts,
+  getManagers,
   getExpiringContracts,
   getManagerMonthlySpendingSummary,
   getManagerMonthlySpendingTrend,
   type ExecutiveRecord,
   type CorporateRecord,
   type AccountRecord,
+  type ManagerRecord,
   type ExpiringContractRecord,
   type SpendingTrendRecord,
 } from "../../api/adminApi";
+import { normalizeDepartmentSegment } from "../../utils/departmentSegment";
 import {
   Card,
   CardContent,
@@ -53,6 +56,8 @@ import {
   List,
   Trophy,
   Loader2,
+  Crown,
+  Briefcase,
 } from "lucide-react";
 
 function toISODate(value: string | Date): string {
@@ -82,7 +87,6 @@ function monthKey(iso: string): string {
   return iso.slice(0, 7);
 }
 
-/** AVR submitted or visit fully closed — counts as “held” for KPIs. */
 function visitExecutedWithReport(v: Pick<VisitRecord, "status">) {
   return v.status === "completed" || v.status === "follow_up_pending";
 }
@@ -105,7 +109,7 @@ type ActivityRow = {
   activityType: string;
   corporate: string;
   outcome: string;
-  typeLabel: "Visit" | "Ticket" | "Escalation" | "Account" | "Control Card";
+  typeLabel: "Visit" | "Ticket" | "Escalation";
 };
 
 function StatCard({
@@ -137,15 +141,7 @@ function StatCard({
   );
 }
 
-function TrendStatCard({
-  label,
-  value,
-  sub,
-}: {
-  label: string;
-  value: string | number;
-  sub: string;
-}) {
+function TrendStatCard({ label, value, sub }: { label: string; value: string | number; sub: string }) {
   return (
     <Card className="rounded-xl border border-slate-200/90 shadow-sm bg-white">
       <CardContent className="pt-5 pb-4 px-5">
@@ -175,13 +171,11 @@ function activityTypeBadge(type: ActivityRow["typeLabel"]) {
     Visit: "bg-emerald-50 text-emerald-800 border-emerald-100",
     Ticket: "bg-blue-50 text-blue-800 border-blue-100",
     Escalation: "bg-white text-slate-700 border border-slate-200",
-    Account: "bg-sky-50 text-sky-800 border-sky-100",
-    "Control Card": "bg-slate-50 text-slate-700 border border-slate-200",
   };
   return map[type];
 }
 
-export default function ManagerDashboard() {
+export default function GmDashboard() {
   const navigate = useNavigate();
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [tickets, setTickets] = useState<TicketRecord[]>([]);
@@ -190,6 +184,7 @@ export default function ManagerDashboard() {
   const [corporates, setCorporates] = useState<CorporateRecord[]>([]);
   const [accounts, setAccounts] = useState<AccountRecord[]>([]);
   const [expiringContracts, setExpiringContracts] = useState<ExpiringContractRecord[]>([]);
+  const [gmManagers, setGmManagers] = useState<ManagerRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [monthlySpendingTotal, setMonthlySpendingTotal] = useState("0.00");
@@ -202,33 +197,31 @@ export default function ManagerDashboard() {
         setError("");
         const profileData = await getMyProfile();
         setProfile(profileData);
-        const managerId = profileData.roleProfileId ?? undefined;
 
-        const [ticketsRes, visitsRes, execRes, corpRes, accRes, expContractsRes, spendingSummaryRes, spendingTrendRes] = await Promise.all([
-          getAllTickets().catch(() => [] as TicketRecord[]),
-          getManagerVisits().catch(() => [] as VisitRecord[]),
-          getExecutives().catch(() => [] as ExecutiveRecord[]),
-          managerId != null
-            ? getCorporates(managerId).catch(() => [] as CorporateRecord[])
-            : Promise.resolve([] as CorporateRecord[]),
-          managerId != null
-            ? getAccounts({ managerId }).catch(() => [] as AccountRecord[])
-            : getAccounts().catch(() => [] as AccountRecord[]),
-          getExpiringContracts(6).catch(() => [] as ExpiringContractRecord[]),
-          getManagerMonthlySpendingSummary().catch(() => ({
-            total: "0.00",
-            currency: "NAD",
-            byCorporate: {},
-            byAccount: {},
-          })),
-          getManagerMonthlySpendingTrend(6).catch(() => [] as SpendingTrendRecord[]),
-        ]);
+        const [ticketsRes, visitsRes, execRes, corpRes, accRes, mgrRes, expContractsRes, spendingSummaryRes, spendingTrendRes] =
+          await Promise.all([
+            getAllTickets().catch(() => [] as TicketRecord[]),
+            getManagerVisits().catch(() => [] as VisitRecord[]),
+            getExecutives().catch(() => [] as ExecutiveRecord[]),
+            getCorporates().catch(() => [] as CorporateRecord[]),
+            getAccounts().catch(() => [] as AccountRecord[]),
+            getManagers().catch(() => [] as ManagerRecord[]),
+            getExpiringContracts(6).catch(() => [] as ExpiringContractRecord[]),
+            getManagerMonthlySpendingSummary().catch(() => ({
+              total: "0.00",
+              currency: "NAD",
+              byCorporate: {},
+              byAccount: {},
+            })),
+            getManagerMonthlySpendingTrend(6).catch(() => [] as SpendingTrendRecord[]),
+          ]);
 
         setTickets(ticketsRes);
         setVisits(visitsRes);
         setExecutives(execRes);
         setCorporates(corpRes);
         setAccounts(accRes);
+        setGmManagers(mgrRes);
         setExpiringContracts(expContractsRes);
         setMonthlySpendingTotal(spendingSummaryRes.total || "0.00");
         setSpendingTrend(spendingTrendRes);
@@ -241,72 +234,83 @@ export default function ManagerDashboard() {
     void run();
   }, []);
 
-  const managerProfileId = profile?.roleProfileId ?? null;
-
-  const teamExecutives = useMemo(() => {
-    if (managerProfileId == null) return executives;
-    return executives.filter((e) => e.managerId === managerProfileId);
-  }, [executives, managerProfileId]);
-
-  const teamExecIds = useMemo(
-    () => new Set(teamExecutives.map((e) => e.executiveId)),
-    [teamExecutives],
-  );
-
-  const scopedTickets = useMemo(() => {
-    if (managerProfileId == null || teamExecIds.size === 0) return tickets;
-    return tickets.filter((t) => t.executiveId != null && teamExecIds.has(t.executiveId));
-  }, [tickets, managerProfileId, teamExecIds]);
-
-  const scopedVisits = visits;
-
   const openStatuses = new Set(["new", "assigned", "in_progress", "escalated"]);
 
-  const openTicketsCount = scopedTickets.filter((t) => openStatuses.has(t.status)).length;
-  const breachedCount = scopedTickets.filter((t) => getSlaStatus(t) === "Breached").length;
+  const managerRows = useMemo(() => {
+    return gmManagers.map((mgr) => {
+      const segment = normalizeDepartmentSegment(mgr.department);
+      const teamExecs = executives.filter((e) => e.managerId === mgr.managerId);
+      const mgrCorporates = corporates.filter(
+        (c) => c.managerId === mgr.managerId || teamExecs.some((e) => e.executiveId === c.executiveId),
+      );
+      const corpIds = new Set(mgrCorporates.map((c) => c.corporateId));
+      const mgrAccounts = accounts.filter((a) => a.corporateId != null && corpIds.has(a.corporateId));
+      const mgrTickets = tickets.filter((t) => teamExecs.some((e) => e.executiveId === t.executiveId));
+      const openT = mgrTickets.filter((t) => openStatuses.has(t.status)).length;
+      return {
+        managerId: mgr.managerId,
+        name: `${mgr.firstName} ${mgr.lastName}`,
+        segment: segment || "—",
+        executives: teamExecs.length,
+        corporates: mgrCorporates.length,
+        accounts: mgrAccounts.length,
+        openTickets: openT,
+      };
+    });
+  }, [gmManagers, executives, corporates, accounts, tickets]);
+
+  const teamExecutives = useMemo(() => {
+    const execIds = new Set(
+      [
+        ...corporates.map((c) => c.executiveId),
+        ...tickets.map((t) => t.executiveId),
+        ...visits.map((v) => v.executiveId),
+      ].filter((id): id is number => id != null),
+    );
+    if (!execIds.size) return executives;
+    return executives.filter((e) => execIds.has(e.executiveId));
+  }, [executives, corporates, tickets, visits]);
+
+  const openTicketsCount = tickets.filter((t) => openStatuses.has(t.status)).length;
+  const breachedCount = tickets.filter((t) => getSlaStatus(t) === "Breached").length;
 
   const now = new Date();
   const thisMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
   const lastMonthDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
   const lastMonthKey = `${lastMonthDate.getFullYear()}-${String(lastMonthDate.getMonth() + 1).padStart(2, "0")}`;
 
-  const visitsCompletedThisMonth = scopedVisits.filter(
+  const visitsCompletedThisMonth = visits.filter(
     (v) => visitExecutedWithReport(v) && monthKey(v.visitDate) === thisMonthKey,
   ).length;
-
-  const visitsCompletedLastMonth = scopedVisits.filter(
+  const visitsCompletedLastMonth = visits.filter(
     (v) => visitExecutedWithReport(v) && monthKey(v.visitDate) === lastMonthKey,
   ).length;
-
-  const visitsScheduledThisMonth = scopedVisits.filter((v) => monthKey(v.visitDate) === thisMonthKey).length;
+  const visitsScheduledThisMonth = visits.filter((v) => monthKey(v.visitDate) === thisMonthKey).length;
   const visitCompletionRate =
     visitsScheduledThisMonth > 0
       ? Math.round((visitsCompletedThisMonth / visitsScheduledThisMonth) * 100)
-      : scopedVisits.length
-        ? Math.round(
-            (scopedVisits.filter((v) => visitExecutedWithReport(v)).length / Math.max(scopedVisits.length, 1)) * 100,
-          )
+      : visits.length
+        ? Math.round((visits.filter((v) => visitExecutedWithReport(v)).length / Math.max(visits.length, 1)) * 100)
         : 0;
 
-  const ratedVisits = scopedVisits.filter((v) => typeof v.customerRating === "number");
+  const ratedVisits = visits.filter((v) => typeof v.customerRating === "number");
   const avgCustomerRating = ratedVisits.length
     ? Math.round((ratedVisits.reduce((s, v) => s + Number(v.customerRating), 0) / ratedVisits.length) * 10) / 10
     : 0;
 
-  const corporatesCount = corporates.length || new Set(scopedTickets.map((t) => t.corporateId).filter(Boolean)).size;
+  const corporatesCount = corporates.length;
   const totalLines = accounts.length;
   const nextExpiringContract = expiringContracts[0] || null;
 
   const corporatesThisMonth = corporates.filter((c) => monthKey(recordCreatedAt(c)) === thisMonthKey).length;
   const corporatesLastMonth = corporates.filter((c) => monthKey(recordCreatedAt(c)) === lastMonthKey).length;
-
   const accountsThisMonth = accounts.filter((a) => monthKey(recordCreatedAt(a)) === thisMonthKey).length;
   const accountsLastMonth = accounts.filter((a) => monthKey(recordCreatedAt(a)) === lastMonthKey).length;
 
-  const ratedThisMonth = scopedVisits.filter(
+  const ratedThisMonth = visits.filter(
     (v) => typeof v.customerRating === "number" && monthKey(v.visitDate) === thisMonthKey,
   );
-  const ratedLastMonth = scopedVisits.filter(
+  const ratedLastMonth = visits.filter(
     (v) => typeof v.customerRating === "number" && monthKey(v.visitDate) === lastMonthKey,
   );
   const avgThisMonth =
@@ -318,20 +322,22 @@ export default function ManagerDashboard() {
       ? ratedLastMonth.reduce((s, v) => s + Number(v.customerRating), 0) / ratedLastMonth.length
       : 0;
   const ratingTrend =
-    avgLastMonth > 0 ? `${avgThisMonth >= avgLastMonth ? "+" : ""}${(avgThisMonth - avgLastMonth).toFixed(1)} vs last month` : "— vs last month";
+    avgLastMonth > 0
+      ? `${avgThisMonth >= avgLastMonth ? "+" : ""}${(avgThisMonth - avgLastMonth).toFixed(1)} vs last month`
+      : "— vs last month";
 
-  const visitsDoneLastMonthCount = scopedVisits.filter(
+  const visitsDoneLastMonthCount = visits.filter(
     (v) => visitExecutedWithReport(v) && monthKey(v.visitDate) === lastMonthKey,
   ).length;
   const visitRateLastMonth = (() => {
-    const sched = scopedVisits.filter((v) => monthKey(v.visitDate) === lastMonthKey).length;
+    const sched = visits.filter((v) => monthKey(v.visitDate) === lastMonthKey).length;
     if (!sched) return 0;
     return Math.round((visitsDoneLastMonthCount / sched) * 100);
   })();
 
   const slaBuckets = useMemo(() => {
     const counts = { Healthy: 0, Warning: 0, "At Risk": 0, Breached: 0 };
-    scopedTickets.forEach((t) => {
+    tickets.forEach((t) => {
       counts[getSlaStatus(t)] += 1;
     });
     const total = Object.values(counts).reduce((a, b) => a + b, 0);
@@ -344,16 +350,14 @@ export default function ManagerDashboard() {
       { name: "At Risk", value: counts["At Risk"], color: "#f97316" },
       { name: "Breached", value: counts.Breached, color: "#ef4444" },
     ].filter((x) => x.value > 0);
-  }, [scopedTickets]);
+  }, [tickets]);
 
   const executiveRows = useMemo(() => {
     return teamExecutives.map((ex) => {
-      const exTickets = scopedTickets.filter((t) => t.executiveId === ex.executiveId);
-      const exVisits = scopedVisits.filter((v) => v.executiveId === ex.executiveId);
+      const exTickets = tickets.filter((t) => t.executiveId === ex.executiveId);
+      const exVisits = visits.filter((v) => v.executiveId === ex.executiveId);
       const exCorporates = corporates.filter((c) => c.executiveId === ex.executiveId).length;
-      const corpIds = new Set(
-        corporates.filter((c) => c.executiveId === ex.executiveId).map((c) => c.corporateId),
-      );
+      const corpIds = new Set(corporates.filter((c) => c.executiveId === ex.executiveId).map((c) => c.corporateId));
       const exAccounts = accounts.filter((a) => a.corporateId != null && corpIds.has(a.corporateId));
       const openT = exTickets.filter((t) => openStatuses.has(t.status)).length;
       const visitsMtd = exVisits.filter((v) => monthKey(v.visitDate) === thisMonthKey).length;
@@ -366,7 +370,7 @@ export default function ManagerDashboard() {
       return {
         executiveId: ex.executiveId,
         name: `${ex.firstName} ${ex.lastName}`,
-        corporates: exCorporates || new Set(exTickets.map((t) => t.corporateId).filter(Boolean)).size,
+        corporates: exCorporates,
         lines: exAccounts.length,
         openTickets: openT,
         visitsMtd,
@@ -375,71 +379,65 @@ export default function ManagerDashboard() {
         perf,
       };
     });
-  }, [teamExecutives, scopedTickets, scopedVisits, corporates, accounts, thisMonthKey]);
+  }, [teamExecutives, tickets, visits, corporates, accounts, thisMonthKey]);
 
   const activityRows = useMemo((): ActivityRow[] => {
     const rows: ActivityRow[] = [];
 
-    [...scopedVisits]
+    [...visits]
       .sort((a, b) => (a.visitDate < b.visitDate ? 1 : a.visitDate > b.visitDate ? -1 : 0))
       .slice(0, 20)
       .forEach((v) => {
-      rows.push({
-        key: `v-${v.visitId}`,
-        date: toISODate(v.visitDate),
-        executive: v.executiveName,
-        activityType: "Visit",
-        corporate: v.corporateName || v.accountName,
-        outcome:
-          v.status === "completed"
-            ? "Visit closed (AVR complete)"
-            : v.status === "follow_up_pending"
-              ? "Meeting report filed — AVR sections 6–7 pending"
-              : v.status === "pending"
-              ? "Awaiting customer response"
-              : `${v.purpose || "Visit update"}`.slice(0, 80),
-        typeLabel: "Visit",
+        rows.push({
+          key: `v-${v.visitId}`,
+          date: toISODate(v.visitDate),
+          executive: v.executiveName,
+          activityType: "Visit",
+          corporate: v.corporateName || v.accountName,
+          outcome:
+            v.status === "completed"
+              ? "Visit closed (AVR complete)"
+              : v.status === "follow_up_pending"
+                ? "Meeting report filed — AVR sections 6–7 pending"
+                : v.status === "pending"
+                  ? "Awaiting customer response"
+                  : `${v.purpose || "Visit update"}`.slice(0, 80),
+          typeLabel: "Visit",
+        });
       });
-    });
 
-    [...scopedTickets]
+    [...tickets]
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
       .slice(0, 20)
       .forEach((t) => {
-      const isEsc = t.status === "escalated";
-      const exec = t.executiveId ? teamExecutives.find((e) => e.executiveId === t.executiveId) : undefined;
-      const executiveLabel = exec ? `${exec.firstName} ${exec.lastName}` : "—";
-      rows.push({
-        key: `t-${t.ticketId}`,
-        date: toISODate(t.createdAt),
-        executive: executiveLabel,
-        activityType: isEsc ? "Escalation" : "Ticket",
-        corporate: t.corporateName || t.accountName || "—",
-        outcome:
-          t.status === "resolved"
-            ? "Issue resolved within SLA"
-            : `${t.title} — ${t.status.replace(/_/g, " ")}`.slice(0, 90),
-        typeLabel: isEsc ? "Escalation" : "Ticket",
+        const isEsc = t.status === "escalated";
+        const exec = t.executiveId ? teamExecutives.find((e) => e.executiveId === t.executiveId) : undefined;
+        const executiveLabel = exec ? `${exec.firstName} ${exec.lastName}` : "—";
+        rows.push({
+          key: `t-${t.ticketId}`,
+          date: toISODate(t.createdAt),
+          executive: executiveLabel,
+          activityType: isEsc ? "Escalation" : "Ticket",
+          corporate: t.corporateName || t.accountName || "—",
+          outcome:
+            t.status === "resolved"
+              ? "Issue resolved within SLA"
+              : `${t.title} — ${t.status.replace(/_/g, " ")}`.slice(0, 90),
+          typeLabel: isEsc ? "Escalation" : "Ticket",
+        });
       });
-    });
 
-    return rows
-      .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0))
-      .slice(0, 12);
-  }, [scopedVisits, scopedTickets, teamExecutives]);
+    return rows.sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0)).slice(0, 12);
+  }, [visits, tickets, teamExecutives]);
 
-  const departmentSubtitle =
-    profile?.department?.trim() ||
-    profile?.manager?.department?.trim() ||
-    "Your department";
-
+  const displayName = profile ? `${profile.firstName} ${profile.lastName}` : "GM";
   const slaPieTotal = slaBuckets.reduce((s, x) => s + x.value, 0);
 
   if (loading) {
     return (
       <div className="flex flex-col items-center justify-center py-24 text-slate-500 gap-3">
         <Loader2 className="h-8 w-8 animate-spin text-mtc-blue" />
-        <p className="text-sm">Loading management dashboard…</p>
+        <p className="text-sm">Loading GM oversight dashboard…</p>
       </div>
     );
   }
@@ -452,30 +450,81 @@ export default function ManagerDashboard() {
 
   return (
     <div className="space-y-8 animate-in fade-in duration-500 slide-in-from-bottom-4">
-      <div>
-        <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900">Management Dashboard</h1>
-        <p className="text-sm text-slate-500 mt-1">{departmentSubtitle}</p>
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900">GM Oversight Dashboard</h1>
+          <p className="text-sm text-slate-500 mt-1">
+            Monitoring EBU and Key Accounts under managers reporting to {displayName}
+          </p>
+        </div>
+        <Badge className="w-fit bg-mtc-navy text-white border-transparent px-3 py-1">
+          <Crown className="h-3.5 w-3.5 mr-1.5 inline" />
+          Read-only
+        </Badge>
       </div>
 
+      <Card className="rounded-xl border border-slate-200/90 shadow-sm overflow-hidden">
+        <CardHeader className="flex flex-row items-center gap-2 space-y-0 border-b border-slate-100 bg-white pb-4">
+          <Briefcase className="h-5 w-5 text-mtc-blue shrink-0" />
+          <CardTitle className="text-lg">Managers Under Your Oversight</CardTitle>
+        </CardHeader>
+        <CardContent className="p-0">
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow className="hover:bg-transparent border-slate-100">
+                  <TableHead>Manager</TableHead>
+                  <TableHead>Segment</TableHead>
+                  <TableHead className="text-right">Executives</TableHead>
+                  <TableHead className="text-right">Corporates</TableHead>
+                  <TableHead className="text-right">Accounts</TableHead>
+                  <TableHead className="text-right">Open Tickets</TableHead>
+                  <TableHead className="text-right">Action</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {managerRows.length === 0 ? (
+                  <TableRow>
+                    <td colSpan={7} className="p-4 text-center text-slate-500 py-10">
+                      No managers linked to your GM profile yet. Ensure managers have you set as their reporting GM.
+                    </td>
+                  </TableRow>
+                ) : (
+                  managerRows.map((row) => (
+                    <TableRow key={row.managerId} className="border-slate-100">
+                      <TableCell className="font-medium text-slate-900">{row.name}</TableCell>
+                      <TableCell>
+                        <Badge variant="neutral" className="font-medium">
+                          {row.segment}
+                        </Badge>
+                      </TableCell>
+                      <TableCell className="text-right tabular-nums">{row.executives}</TableCell>
+                      <TableCell className="text-right tabular-nums">{row.corporates}</TableCell>
+                      <TableCell className="text-right tabular-nums">{row.accounts}</TableCell>
+                      <TableCell className="text-right tabular-nums">{row.openTickets}</TableCell>
+                      <TableCell className="text-right">
+                        <button
+                          type="button"
+                          className="text-mtc-blue hover:underline text-sm font-medium"
+                          onClick={() => navigate("/corporates")}
+                        >
+                          View
+                        </button>
+                      </TableCell>
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+            </Table>
+          </div>
+        </CardContent>
+      </Card>
+
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-6">
-        <StatCard
-          label="Team Size"
-          value={teamExecutives.length}
-          sub="Active executives"
-          icon={Users}
-        />
-        <StatCard
-          label="Open Tickets"
-          value={openTicketsCount}
-          sub="Across all executives"
-          icon={Headphones}
-        />
-        <StatCard
-          label="Visits This Month"
-          value={visitsCompletedThisMonth}
-          sub="Completed this month"
-          icon={CalendarDays}
-        />
+        <StatCard label="Managers" value={gmManagers.length} sub="Reporting to you" icon={Briefcase} />
+        <StatCard label="Team Size" value={teamExecutives.length} sub="Executives under your managers" icon={Users} />
+        <StatCard label="Open Tickets" value={openTicketsCount} sub="Across your hierarchy" icon={Headphones} />
+        <StatCard label="Visits This Month" value={visitsCompletedThisMonth} sub="Completed this month" icon={CalendarDays} />
         <StatCard
           label="Breached SLAs"
           value={breachedCount}
@@ -506,16 +555,8 @@ export default function ManagerDashboard() {
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <TrendStatCard
-          label="Total Corporates"
-          value={corporatesCount}
-          sub={formatTrend(corporatesThisMonth, corporatesLastMonth)}
-        />
-        <TrendStatCard
-          label="Total Lines"
-          value={totalLines}
-          sub={formatTrend(accountsThisMonth, accountsLastMonth)}
-        />
+        <TrendStatCard label="Total Corporates" value={corporatesCount} sub={formatTrend(corporatesThisMonth, corporatesLastMonth)} />
+        <TrendStatCard label="Total Lines" value={totalLines} sub={formatTrend(accountsThisMonth, accountsLastMonth)} />
         <TrendStatCard
           label="Avg Customer Rating"
           value={avgCustomerRating > 0 ? avgCustomerRating.toFixed(1) : "—"}
@@ -538,7 +579,7 @@ export default function ManagerDashboard() {
             <CardTitle>Ticketing Volume</CardTitle>
           </CardHeader>
           <CardContent className="pl-2">
-            <TicketVolumeChart tickets={scopedTickets} />
+            <TicketVolumeChart tickets={tickets} />
           </CardContent>
         </Card>
 
@@ -590,14 +631,7 @@ export default function ManagerDashboard() {
                 <XAxis dataKey="month" stroke="#64748b" fontSize={12} tickLine={false} axisLine={false} />
                 <YAxis stroke="#64748b" fontSize={12} tickLine={false} axisLine={false} />
                 <Tooltip />
-                <Line
-                  type="monotone"
-                  dataKey="total"
-                  name="Spending (NAD)"
-                  stroke="#16a34a"
-                  strokeWidth={2.5}
-                  dot={{ r: 3 }}
-                />
+                <Line type="monotone" dataKey="total" name="Spending (NAD)" stroke="#16a34a" strokeWidth={2.5} dot={{ r: 3 }} />
               </LineChart>
             </ResponsiveContainer>
           </div>
@@ -629,7 +663,7 @@ export default function ManagerDashboard() {
                 {executiveRows.length === 0 ? (
                   <TableRow>
                     <td colSpan={9} className="p-4 text-center text-slate-500 py-10">
-                      No executives linked to your team yet.
+                      No executives under your managers yet.
                     </td>
                   </TableRow>
                 ) : (
@@ -642,12 +676,7 @@ export default function ManagerDashboard() {
                       <TableCell className="text-right tabular-nums">{row.visitsMtd}</TableCell>
                       <TableCell className="text-right">
                         <span className="inline-flex items-center justify-end gap-1 tabular-nums">
-                          <Trophy
-                            className={cn(
-                              "h-4 w-4 shrink-0",
-                              row.avgRating >= 4.2 ? "text-amber-500" : "text-slate-300",
-                            )}
-                          />
+                          <Trophy className={cn("h-4 w-4 shrink-0", row.avgRating >= 4.2 ? "text-amber-500" : "text-slate-300")} />
                           {row.avgRating > 0 ? row.avgRating.toFixed(1) : "—"}
                         </span>
                       </TableCell>
@@ -657,21 +686,12 @@ export default function ManagerDashboard() {
                         </span>
                       </TableCell>
                       <TableCell>
-                        <span
-                          className={cn(
-                            "inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold border",
-                            row.perf.className,
-                          )}
-                        >
+                        <span className={cn("inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-semibold border", row.perf.className)}>
                           {row.perf.label}
                         </span>
                       </TableCell>
                       <TableCell className="text-right">
-                        <button
-                          type="button"
-                          className="text-mtc-blue hover:underline text-sm font-medium"
-                          onClick={() => navigate("/tickets")}
-                        >
+                        <button type="button" className="text-mtc-blue hover:underline text-sm font-medium" onClick={() => navigate("/tickets")}>
                           View
                         </button>
                       </TableCell>
@@ -687,7 +707,7 @@ export default function ManagerDashboard() {
       <Card className="rounded-xl border border-slate-200/90 shadow-sm overflow-hidden">
         <CardHeader className="flex flex-row items-center gap-2 space-y-0 border-b border-slate-100 bg-white pb-4">
           <List className="h-5 w-5 text-mtc-blue shrink-0" />
-          <CardTitle className="text-lg">Recent Department Activities</CardTitle>
+          <CardTitle className="text-lg">Recent Activities</CardTitle>
         </CardHeader>
         <CardContent className="p-0">
           <div className="overflow-x-auto">
@@ -718,10 +738,7 @@ export default function ManagerDashboard() {
                       <TableCell className="text-slate-800">{row.corporate}</TableCell>
                       <TableCell className="text-slate-600 max-w-[280px]">{row.outcome}</TableCell>
                       <TableCell>
-                        <Badge
-                          variant="neutral"
-                          className={cn("font-medium border", activityTypeBadge(row.typeLabel))}
-                        >
+                        <Badge variant="neutral" className={cn("font-medium border", activityTypeBadge(row.typeLabel))}>
                           {row.typeLabel}
                         </Badge>
                       </TableCell>

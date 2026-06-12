@@ -137,6 +137,8 @@ export interface CorporateRecord {
   expiredAccountsCount?: number;
   renewalCount?: number;
   monthlySpending?: string;
+  /** Resolved segment for GM oversight toggle (EBU / Key Accounts). */
+  department?: string | null;
   created_at: string;
   updated_at: string;
 }

@@ -48,7 +48,7 @@ import {
   type ControlCardRecord,
 } from "../../api/visitApi";
 import { getCurrentUser } from "../../api/authApi";
-import { isSupervisorRole } from "../../utils/roleCapabilities";
+import { isGmRole, isSupervisorRole } from "../../utils/roleCapabilities";
 import ExecutiveVisits from "../executive/ExecutiveVisits";
 import type { StaffLayoutOutletContext } from "../../layoutOutletContext";
 import { defaultSupervisorBadges } from "../../hooks/useSupervisorHybridBadges";
@@ -142,6 +142,7 @@ export default function ManagerVisits() {
   const refreshBadges = supervisorBadges.refresh;
   const currentUser = getCurrentUser();
   const isSupervisor = isSupervisorRole(currentUser?.role);
+  const isGm = isGmRole(currentUser?.role);
   const [scopeView, setScopeView] = useState<"executive" | "manager">("executive");
   const [activeTab, setActiveTab] = useState<Tab>("schedule");
   const [visits, setVisits] = useState<VisitRecord[]>([]);
@@ -511,7 +512,11 @@ export default function ManagerVisits() {
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900">Visits & Engagements</h2>
-          <p className="text-sm text-slate-500">Oversee executive visit schedules, reschedule requests, customer feedback, and control cards.</p>
+          <p className="text-sm text-slate-500">
+            {isGm
+              ? "Oversight — visits under your managers (read-only)."
+              : "Oversee executive visit schedules, reschedule requests, customer feedback, and control cards."}
+          </p>
         </div>
       </div>
 
@@ -522,7 +527,7 @@ export default function ManagerVisits() {
             <div className="flex items-center gap-3">
               <AlertTriangle className="h-5 w-5 text-amber-600" />
               <span className="text-sm font-medium text-amber-800">
-                {pendingCount} pending reschedule request{pendingCount > 1 ? "s" : ""} require your attention
+                {pendingCount} pending reschedule request{pendingCount > 1 ? "s" : ""}{isGm ? " in your hierarchy" : " require your attention"}
               </span>
             </div>
             <Badge variant="warning">{pendingCount}</Badge>
@@ -829,13 +834,13 @@ export default function ManagerVisits() {
                   <TableHead>Requested Date</TableHead>
                   <TableHead>Reason</TableHead>
                   <TableHead>Motivation</TableHead>
-                  <TableHead className="text-right">Action</TableHead>
+                  {!isGm && <TableHead className="text-right">Action</TableHead>}
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {reschedules.filter((r) => r.execRescheduleStatus === "pending_approval").length === 0 ? (
                   <TableRow>
-                    <td colSpan={7} className="text-center py-8 text-slate-400 p-4">
+                    <td colSpan={isGm ? 6 : 7} className="text-center py-8 text-slate-400 p-4">
                       <CheckCircle className="h-8 w-8 mx-auto mb-2 text-green-300" />
                       No pending reschedule requests. All clear!
                     </td>
@@ -857,26 +862,28 @@ export default function ManagerVisits() {
                         </TableCell>
                         <TableCell className="text-sm text-slate-500 max-w-[180px] truncate" title={req.execRescheduleReason ?? ""}>{req.execRescheduleReason || "—"}</TableCell>
                         <TableCell className="text-sm text-slate-500 max-w-[180px] truncate" title={req.execRescheduleMotivation ?? ""}>{req.execRescheduleMotivation || "—"}</TableCell>
-                        <TableCell className="text-right">
-                          <div className="flex justify-end gap-2">
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="text-green-700 border-green-300 hover:bg-green-50 text-xs"
-                              onClick={() => handleApprove(req.visitId)}
-                            >
-                              <CheckCircle className="h-3.5 w-3.5 mr-1" /> Approve
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              className="text-red-700 border-red-300 hover:bg-red-50 text-xs"
-                              onClick={() => handleReject(req.visitId)}
-                            >
-                              <X className="h-3.5 w-3.5 mr-1" /> Reject
-                            </Button>
-                          </div>
-                        </TableCell>
+                        {!isGm && (
+                          <TableCell className="text-right">
+                            <div className="flex justify-end gap-2">
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="text-green-700 border-green-300 hover:bg-green-50 text-xs"
+                                onClick={() => handleApprove(req.visitId)}
+                              >
+                                <CheckCircle className="h-3.5 w-3.5 mr-1" /> Approve
+                              </Button>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                className="text-red-700 border-red-300 hover:bg-red-50 text-xs"
+                                onClick={() => handleReject(req.visitId)}
+                              >
+                                <X className="h-3.5 w-3.5 mr-1" /> Reject
+                              </Button>
+                            </div>
+                          </TableCell>
+                        )}
                       </TableRow>
                     ))
                 )}

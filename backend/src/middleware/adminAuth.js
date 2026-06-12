@@ -22,12 +22,25 @@ const superAdminOnly = (req, res, next) => {
   next();
 };
 
-// Allow admin, manager, or supervisor roles
+// Allow admin, manager, supervisor, or GM (read-only oversight) roles
 const adminOrManager = (req, res, next) => {
-  if (req.user.role !== 'admin' && req.user.role !== 'manager' && req.user.role !== 'supervisor') {
-    return res.status(403).json({ message: 'Access denied. Admin, Manager, or Supervisor role required.' });
+  if (
+    req.user.role !== 'admin' &&
+    req.user.role !== 'manager' &&
+    req.user.role !== 'supervisor' &&
+    req.user.role !== 'gm'
+  ) {
+    return res.status(403).json({ message: 'Access denied. Admin, Manager, Supervisor, or GM role required.' });
   }
   next();
 };
 
-module.exports = { adminAuth, superAdminOnly, adminOrManager };
+// GM has read-only access to admin APIs
+const blockGmWrites = (req, res, next) => {
+  if (req.user.role === 'gm' && req.method !== 'GET') {
+    return res.status(403).json({ message: 'GM has read-only access.' });
+  }
+  next();
+};
+
+module.exports = { adminAuth, superAdminOnly, adminOrManager, blockGmWrites };

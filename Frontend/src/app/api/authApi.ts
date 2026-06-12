@@ -349,6 +349,12 @@ export interface CustomerAccountManagerInfo {
   phone: string | null;
 }
 
+export interface CustomerCorporateExecutiveInfo {
+  corporateId: number;
+  corporateName: string;
+  executive: CustomerAccountExecutive | null;
+}
+
 export interface CustomerAccountResponse {
   corporate?: CustomerCorporateInfo;
   /** Every corporate the contact person is linked to (legacy primary +
@@ -359,6 +365,8 @@ export interface CustomerAccountResponse {
   accounts?: CustomerAccountInfo[];
   account: CustomerAccountInfo;
   executive: CustomerAccountExecutive | null;
+  /** Per-corporate account executives (source of truth is corporate assignment). */
+  corporateExecutives?: CustomerCorporateExecutiveInfo[];
   services: CustomerService[];
   contracts: CustomerContract[];
   spendingSummary?: {

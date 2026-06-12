@@ -44,7 +44,7 @@ import {
 import { getAllTickets, type TicketRecord } from "../api/ticketApi";
 import { Mail, Phone } from "lucide-react";
 import AdminCorporateWizard from "./admin/adminCorporateWizard";
-import { isExecutiveRole, isManagerRole, isSupervisorRole } from "../utils/roleCapabilities";
+import { isExecutiveRole, isGmRole, isManagerRole, isSupervisorRole } from "../utils/roleCapabilities";
 import {
   departmentsMatch,
   normalizeDepartmentSegment,
@@ -136,6 +136,7 @@ export default function Corporates() {
   const isManager = hasManagerScope && (!isSupervisor || supervisorView === "manager");
   const isExecutive = hasExecutiveScope && (!isSupervisor || supervisorView === "executive");
   const isAdmin = currentUser?.role === "admin";
+  const isGm = isGmRole(currentUser?.role);
   const profileHref =
     currentUser?.role === "admin" ? "/super-admin-profile" :
     currentUser?.role === "customer" ? "/account-manager-profile" :
@@ -144,7 +145,8 @@ export default function Corporates() {
     currentUser?.role === "gm" ? "/gm-crm-profile" :
     hasExecutiveScope ? "/executive-profile" :
     "/dashboard";
-  const showCorporatePanel = isAdmin || isManager;
+  const showCorporatePanel = isAdmin || isManager || isGm;
+  const canViewLiveCorporates = showCorporatePanel || isExecutive;
   const canManageCorporates = isManager || isAdmin;
   const CARD_PAGE_SIZE = 12;
   const ALPHABET_FILTER_OPTIONS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
@@ -161,6 +163,7 @@ export default function Corporates() {
     getMyProfile().then(setUserProfile).catch(() => {});
   }, []);
   const [currentListPage, setCurrentListPage] = useState(1);
+  const [gmSegmentFilter, setGmSegmentFilter] = useState<"all" | "EBU" | "Key Accounts">("all");
 
   // === Mock data state (non-manager roles) ===
   const [selectedCorp, setSelectedCorp] = useState(mockCorporates[0]);
@@ -361,8 +364,8 @@ export default function Corporates() {
   );
 
   useEffect(() => {
-    if (canManageCorporates) fetchAccounts();
-  }, [canManageCorporates, fetchAccounts]);
+    if (showCorporatePanel) fetchAccounts();
+  }, [showCorporatePanel, fetchAccounts]);
 
   const refreshCorporateContactPersons = useCallback(
     async (corporateId: number | null | undefined) => {
@@ -387,9 +390,9 @@ export default function Corporates() {
   );
 
   useEffect(() => {
-    if (!canManageCorporates) return;
+    if (!showCorporatePanel) return;
     refreshCorporateContactPersons(selectedCorporate?.corporateId ?? null);
-  }, [canManageCorporates, selectedCorporate?.corporateId, refreshCorporateContactPersons]);
+  }, [showCorporatePanel, selectedCorporate?.corporateId, refreshCorporateContactPersons]);
 
   useEffect(() => {
     setCorporateReassignOpen(false);
@@ -639,7 +642,7 @@ export default function Corporates() {
   }, [isExecutive, expiryFilterMonths]);
 
   useEffect(() => {
-    if (!canManageCorporates) return;
+    if (!showCorporatePanel) return;
     getAllTickets()
       .then(setAllTickets)
       .catch((err) =>
@@ -647,7 +650,7 @@ export default function Corporates() {
           description: err instanceof Error ? err.message : undefined,
         })
       );
-  }, [canManageCorporates]);
+  }, [showCorporatePanel]);
 
   // Open account detail modal (fetches contracts + services)
   const handleOpenDetail = async (acc: AccountRecord) => {
@@ -972,16 +975,25 @@ export default function Corporates() {
     if (executiveFilter === "unassigned") return execId == null;
     return buildExecKey(firstName, lastName) === executiveFilter;
   };
-  const filteredCorporateRecords = corporates.filter((c) =>
-    (!isManager || expiryFilterMonths === 0 || managerExpiringCorporateIds.has(c.corporateId)) &&
-    matchesExecutiveFilter(c.executiveId ?? null, c.executiveFirstName, c.executiveLastName) &&
-    (
-      searchQuery === "" ||
-      c.corporateName.toLowerCase().includes(normalizedSearchQuery) ||
-      c.corporateNumber.toLowerCase().includes(normalizedSearchQuery) ||
-      (c.industry || "").toLowerCase().includes(normalizedSearchQuery)
-    )
-  );
+  const filteredCorporateRecords = corporates.filter((c) => {
+    if (
+      isGm &&
+      gmSegmentFilter !== "all" &&
+      !departmentsMatch(c.department, gmSegmentFilter)
+    ) {
+      return false;
+    }
+    return (
+      (!isManager || expiryFilterMonths === 0 || managerExpiringCorporateIds.has(c.corporateId)) &&
+      matchesExecutiveFilter(c.executiveId ?? null, c.executiveFirstName, c.executiveLastName) &&
+      (
+        searchQuery === "" ||
+        c.corporateName.toLowerCase().includes(normalizedSearchQuery) ||
+        c.corporateNumber.toLowerCase().includes(normalizedSearchQuery) ||
+        (c.industry || "").toLowerCase().includes(normalizedSearchQuery)
+      )
+    );
+  });
   const alphabetFilteredCorporateRecords = filteredCorporateRecords.filter((corp) =>
     matchesAlphabetFilter(corp.corporateName || "")
   );
@@ -1145,7 +1157,7 @@ export default function Corporates() {
 
   useEffect(() => {
     setCurrentListPage(1);
-  }, [searchQuery, expiryFilterMonths, alphabetFilter, executiveFilter, showCorporatePanel]);
+  }, [searchQuery, expiryFilterMonths, alphabetFilter, executiveFilter, showCorporatePanel, gmSegmentFilter]);
 
   useEffect(() => {
     if (currentListPage > totalListPages) {
@@ -1222,6 +1234,8 @@ export default function Corporates() {
           <p className="text-sm text-slate-500">
             {canManageCorporates
               ? "Review accounts, assign executives, and approve customer portal access."
+              : isGm
+              ? "Monitor corporates and accounts across EBU and Key Accounts under your managers."
               : isExecutive
               ? "View corporate accounts assigned to you, their services, and contracts."
               : "Manage corporate profiles, child accounts, and overall relationship health."}
@@ -1259,6 +1273,22 @@ export default function Corporates() {
               <span className="h-2 w-2 shrink-0 rounded-full bg-red-500" title="Team oversight queue needs attention" />
             )}
           </Button>
+        </div>
+      )}
+
+      {isGm && (
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-sm font-medium text-slate-600 mr-1">Segment:</span>
+          {(["all", "EBU", "Key Accounts"] as const).map((segment) => (
+            <Button
+              key={segment}
+              variant={gmSegmentFilter === segment ? "primary" : "outline"}
+              size="sm"
+              onClick={() => setGmSegmentFilter(segment)}
+            >
+              {segment === "all" ? "All" : segment}
+            </Button>
+          ))}
         </div>
       )}
 
@@ -1309,7 +1339,7 @@ export default function Corporates() {
            </Select>
          )}
       </div>
-      {(canManageCorporates || isExecutive) && (
+      {(showCorporatePanel || isExecutive) && (
         <div className="flex items-center gap-2 overflow-x-auto pb-1">
           <Button
             variant={alphabetFilter === "all" ? "primary" : "outline"}
@@ -1673,7 +1703,7 @@ export default function Corporates() {
             </div>
           </div>
         )
-      ) : canManageCorporates ? (
+      ) : canViewLiveCorporates ? (
         loadingAccounts ? (
           <div className="flex items-center justify-center py-16">
             <Loader2 className="h-8 w-8 animate-spin text-mtc-blue" />
@@ -1746,7 +1776,11 @@ export default function Corporates() {
               {(showCorporatePanel ? alphabetFilteredCorporateRecords.length === 0 : alphabetFilteredAccounts.length === 0) && (
                 <div className="py-8 text-center text-slate-500 text-sm">
                   {showCorporatePanel
-                    ? (corporates.length === 0 ? "No corporates created yet." : "No corporates match your search.")
+                    ? (corporates.length === 0
+                        ? "No corporates under your managers yet."
+                        : isGm && gmSegmentFilter !== "all"
+                          ? `No ${gmSegmentFilter} corporates match your filters.`
+                          : "No corporates match your search.")
                     : (accounts.length === 0 ? "No accounts created yet." : "No corporate accounts match your search.")}
                 </div>
               )}

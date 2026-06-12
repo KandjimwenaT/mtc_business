@@ -19,7 +19,7 @@ import { cn } from "./ui-components";
 import mtcLogo from "../../assets/logo.png";
 import { logoutUser, getCurrentUser } from "../api/authApi";
 import { getUnreadNotificationCount } from "../api/notificationsApi";
-import { isExecutiveRole, isManagerRole, isSupervisorRole } from "../utils/roleCapabilities";
+import { isExecutiveRole, isGmRole, isManagerRole, isSupervisorRole } from "../utils/roleCapabilities";
 import { useSupervisorHybridBadges } from "../hooks/useSupervisorHybridBadges";
 import { ExecutiveDataProvider } from "../hooks/useExecutiveData";
 
@@ -34,6 +34,7 @@ export default function Layout() {
   const isSupervisor = isSupervisorRole(currentUser?.role);
   const hasExecutiveScope = isExecutiveRole(currentUser?.role);
   const hasManagerScope = isManagerRole(currentUser?.role);
+  const isGm = isGmRole(currentUser?.role);
   const notificationsHref =
     hasExecutiveScope ? "/executive-notifications" : "/notifications";
 
@@ -94,7 +95,7 @@ export default function Layout() {
         },
         { name: "Tickets", href: isSupervisor ? "/tickets" : hasExecutiveScope ? "/executive-tickets" : "/tickets", icon: Ticket },
         ...(currentUser?.role !== "admin"
-          ? [{ name: "Visits", href: isSupervisor ? "/manager-visits" : hasExecutiveScope ? "/executive-visits" : hasManagerScope ? "/manager-visits" : "/visits", icon: CalendarCheck }]
+          ? [{ name: "Visits", href: isGm || isSupervisor ? "/manager-visits" : hasExecutiveScope ? "/executive-visits" : hasManagerScope ? "/manager-visits" : "/visits", icon: CalendarCheck }]
           : []),
         ...(!hasExecutiveScope && currentUser?.role !== "admin"
           ? [{ name: "SLA Monitoring", href: "/sla-monitoring", icon: Timer }]

@@ -16,3 +16,10 @@ export const isManagerRole = (role: AppRole): boolean =>
   role === "manager" || role === "supervisor";
 
 export const isSupervisorRole = (role: AppRole): boolean => role === "supervisor";
+
+export const isGmRole = (role: AppRole): boolean => role === "gm";
+
+export const hasGmOversightScope = (role: AppRole): boolean => isGmRole(role);
+
+export const canAddTicketInternalNote = (role: AppRole): boolean =>
+  ["admin", "manager", "supervisor", "gm", "executive_staff"].includes(role || "");

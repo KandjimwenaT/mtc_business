@@ -154,14 +154,6 @@ exports.userLogin = async (req, res) => {
   }
 
   try {
-    // Check rate limiting by IP
-    if (securityService.isRateLimited(req.ip)) {
-      return res.status(429).json({
-        status: "Failed",
-        message: "Too many login attempts. Try again later.",
-      });
-    }
-
     // Find user by email
     const user = await User.findOne({ where: { email } });
     if (!user) {
@@ -717,7 +709,11 @@ exports.getProfile = async (req, res) => {
 
     // Fetch role-specific record for additional context
     if (user.role === "gm") {
-      const gm = await GM.findOne({ where: { userId: user.id } });
+      let gm = await GM.findOne({ where: { userId: user.id } });
+      if (!gm && user.email) {
+        gm = await GM.findOne({ where: { email: user.email } });
+        if (gm && !gm.userId) await gm.update({ userId: user.id });
+      }
       if (gm) profile.roleProfileId = gm.gmId;
     } else if (user.role === "manager" || user.role === "supervisor") {
       const manager = await Manager.findOne({ where: { userId: user.id } });
@@ -810,7 +806,8 @@ exports.updateProfile = async (req, res) => {
     if (phone !== undefined) nameUpdates.phone = phone;
 
     if (user.role === "gm") {
-      const gm = await GM.findOne({ where: { userId: user.id } });
+      let gm = await GM.findOne({ where: { userId: user.id } });
+      if (!gm && user.email) gm = await GM.findOne({ where: { email: user.email } });
       if (gm) await gm.update(nameUpdates);
     } else if (user.role === "manager" || user.role === "supervisor") {
       const manager = await Manager.findOne({ where: { userId: user.id } });
@@ -1343,22 +1340,39 @@ exports.getMyAccount = async (req, res) => {
       return res.status(404).json({ status: "Failed", message: "No accounts found under your corporate" });
     }
 
-    const account = accounts.find((a) => a.executiveId) || accounts[0];
+    const account = accounts.find((a) => a.corporateId === corporate.corporateId) || accounts[0];
 
-    // Fetch the assigned executive staff (from first sub-account that has an executive)
-    let executive = null;
-    if (account.executiveId) {
-      const exec = await ExecutiveStaff.findByPk(account.executiveId);
-      if (exec) {
-        executive = {
-          executiveId: exec.executiveId,
-          firstName: exec.firstName,
-          lastName: exec.lastName,
-          email: exec.email,
-          phone: exec.phone,
-          region: exec.region,
-        };
-      }
+    async function serializeExecutive(executiveProfileId) {
+      if (!executiveProfileId) return null;
+      const exec = await ExecutiveStaff.findByPk(executiveProfileId);
+      if (!exec) return null;
+      return {
+        executiveId: exec.executiveId,
+        firstName: exec.firstName,
+        lastName: exec.lastName,
+        email: exec.email,
+        phone: exec.phone,
+        region: exec.region,
+      };
+    }
+
+    const corporateExecutives = await Promise.all(
+      linkedCorporates.map(async (corp) => ({
+        corporateId: corp.corporateId,
+        corporateName: corp.corporateName,
+        executive: await serializeExecutive(corp.executiveId),
+      }))
+    );
+
+    // Corporate assignment is the source of truth for the account executive.
+    let executive =
+      corporateExecutives.find((entry) => entry.corporateId === corporate.corporateId)?.executive
+      || null;
+    if (!executive) {
+      const fallbackAccount = accounts.find(
+        (a) => a.corporateId === corporate.corporateId && a.executiveId
+      );
+      executive = await serializeExecutive(fallbackAccount?.executiveId || null);
     }
 
     const accountIds = accounts.map((a) => a.accountId);
@@ -1442,6 +1456,7 @@ exports.getMyAccount = async (req, res) => {
         currency: "NAD",
       },
       executive,
+      corporateExecutives,
       services: services.map(s => ({
         serviceId: s.serviceId,
         accountId: s.accountId,

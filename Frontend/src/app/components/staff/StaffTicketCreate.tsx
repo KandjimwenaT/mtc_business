@@ -1,8 +1,19 @@
 import { type FormEvent, useEffect, useMemo, useState } from "react";
 import { Button, Card, CardContent, Input, Label, Select } from "../ui-components";
 import { createTicket } from "../../api/ticketApi";
-import { getAccounts, type AccountRecord } from "../../api/adminApi";
+import { getAccounts } from "../../api/adminApi";
+import { getCurrentUser, getMyAccounts } from "../../api/authApi";
+import { isExecutiveRole } from "../../utils/roleCapabilities";
 import { Textarea } from "../ui/textarea";
+
+type TicketAccountOption = {
+  accountId: number;
+  accountName: string;
+  accountNumber: string;
+  contactFirstName: string;
+  contactLastName: string;
+  contactEmail: string;
+};
 
 const REQUEST_TYPES = [
   "request_meeting",
@@ -43,7 +54,7 @@ export default function StaffTicketCreate({
   onCreated,
   onCancel,
 }: StaffTicketCreateProps) {
-  const [accounts, setAccounts] = useState<AccountRecord[]>([]);
+  const [accounts, setAccounts] = useState<TicketAccountOption[]>([]);
   const [accountsLoading, setAccountsLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
@@ -62,8 +73,20 @@ export default function StaffTicketCreate({
     const load = async () => {
       try {
         setAccountsLoading(true);
-        const data = await getAccounts();
-        setAccounts(data);
+        const role = getCurrentUser()?.role;
+        const data = isExecutiveRole(role)
+          ? await getMyAccounts()
+          : await getAccounts();
+        setAccounts(
+          data.map((account) => ({
+            accountId: account.accountId,
+            accountName: account.accountName,
+            accountNumber: account.accountNumber,
+            contactFirstName: account.contactFirstName,
+            contactLastName: account.contactLastName,
+            contactEmail: account.contactEmail,
+          })),
+        );
       } catch (err) {
         setError(err instanceof Error ? err.message : "Failed to load customer accounts");
       } finally {
@@ -142,7 +165,7 @@ export default function StaffTicketCreate({
           <form className="space-y-4" onSubmit={handleSubmit}>
             <div className="space-y-2">
               <Label>Customer Account</Label>
-              <Select value={accountId} onValueChange={setAccountId} disabled={accountsLoading || submitting}>
+              <Select value={accountId} onChange={(e) => setAccountId(e.target.value)} disabled={accountsLoading || submitting}>
                 <option value="" disabled>Select customer account</option>
                 {accounts.map((account) => (
                   <option key={account.accountId} value={String(account.accountId)}>
@@ -160,14 +183,14 @@ export default function StaffTicketCreate({
             <div className="grid gap-4 md:grid-cols-2">
               <div className="space-y-2">
                 <Label>Category</Label>
-                <Select value={category} onValueChange={(value) => { setCategory(value as "request" | "complaint"); setType(""); }}>
+                <Select value={category} onChange={(e) => { setCategory(e.target.value as "request" | "complaint"); setType(""); }}>
                   <option value="request">Request</option>
                   <option value="complaint">Complaint</option>
                 </Select>
               </div>
               <div className="space-y-2">
                 <Label>Type</Label>
-                <Select value={type} onValueChange={setType}>
+                <Select value={type} onChange={(e) => setType(e.target.value)}>
                   <option value="" disabled>Select ticket type</option>
                   {ticketTypes.map((item) => (
                     <option key={item} value={item}>{item.replace(/_/g, " ")}</option>
@@ -199,7 +222,7 @@ export default function StaffTicketCreate({
             <div className="grid gap-4 md:grid-cols-2">
               <div className="space-y-2">
                 <Label>Source Channel</Label>
-                <Select value={sourceChannel} onValueChange={(value) => setSourceChannel(value as "email" | "phone")}>
+                <Select value={sourceChannel} onChange={(e) => setSourceChannel(e.target.value as "email" | "phone")}>
                   <option value="email">Email conversation</option>
                   <option value="phone">Phone call</option>
                 </Select>

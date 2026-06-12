@@ -11,6 +11,7 @@ const AccountManager = require("../models/AccountManager");
 const CorporateContactPerson = require("../models/CorporateContactPerson");
 const Account = require("../models/Account");
 const Contract = require("../models/Contract");
+const { reassignOpenTicketsForCorporate } = require("../services/ticketExecutiveSyncService");
 const Service = require("../models/Service");
 const Invoice = require("../models/Invoice");
 const Notification = require("../models/Notification");
@@ -36,6 +37,15 @@ const {
   filterCorporatesByRequesterDepartment,
   buildCorporateDepartmentMap,
 } = require("../services/corporateSegmentScope");
+const {
+  resolveGmProfile,
+  resolveGmManagerIds,
+  resolveGmManagerProfiles,
+  filterCorporatesByGmManagers,
+  resolveGmCorporateIds,
+  attachGmManagerDepartmentsToCorporates,
+  resolveGmScopeForUser,
+} = require("../services/gmScope");
 const {
   isKeyAccountsDepartment,
   isEbuDepartment,
@@ -669,6 +679,8 @@ exports.createPortalAccess = async (req, res) => {
           email: person.email,
           phone: person.phone,
         });
+      } else if (!existing.userId) {
+        await existing.update({ userId: userRecord.id });
       }
     } else if (person.type === "manager" || person.type === "supervisor") {
       const existing = await Manager.findOne({ where: { email: person.email } });
@@ -682,8 +694,12 @@ exports.createPortalAccess = async (req, res) => {
           phone: person.phone,
           department: person.department || null,
         });
-      } else if (!existing.department && person.department) {
-        await existing.update({ department: person.department });
+      } else {
+        const managerUpdates = {};
+        if (!existing.userId) managerUpdates.userId = userRecord.id;
+        if (!existing.gmId && resolvedGmId) managerUpdates.gmId = resolvedGmId;
+        if (!existing.department && person.department) managerUpdates.department = person.department;
+        if (Object.keys(managerUpdates).length) await existing.update(managerUpdates);
       }
     } else if (person.type === "executive_staff") {
       const existing = await ExecutiveStaff.findOne({ where: { email: person.email } });
@@ -765,7 +781,13 @@ exports.getGMs = async (req, res) => {
 // ── Get Managers (for executive creation dropdown) ───────────────
 exports.getManagers = async (req, res) => {
   try {
-    const managers = await Manager.findAll({ order: [["first_name", "ASC"]] });
+    let managers;
+    if (req.user?.role === "gm") {
+      const gmProfile = await resolveGmProfile(req.user);
+      managers = await resolveGmManagerProfiles(gmProfile);
+    } else {
+      managers = await Manager.findAll({ order: [["first_name", "ASC"]] });
+    }
     const emails = managers.map((m) => m.email).filter(Boolean);
     const persons =
       emails.length > 0
@@ -1048,12 +1070,16 @@ exports.getCorporates = async (req, res) => {
     const corporates = await Corporate.findAll({ where, order: [["created_at", "DESC"]] });
     const allPlain = corporates.map((c) => c.toJSON());
 
-    // Department scoping: managers/supervisors/admins/executives see only
-    // corporates in their own segment ("Key Accounts" vs "EBU"). Users with no
-    // resolvable department (super-admins) bypass the filter. Orphan corporates
-    // with no resolvable segment are hidden from departmented users.
-    const requesterDepartment = await resolveRequesterDepartment(req.user);
-    const plain = await filterCorporatesByRequesterDepartment(allPlain, requesterDepartment);
+    // GM: hierarchy scope across EBU + Key Accounts. Others: department segment.
+    let plain;
+    if (req.user?.role === "gm") {
+      const gmProfile = await resolveGmProfile(req.user);
+      plain = await filterCorporatesByGmManagers(allPlain, gmProfile);
+      plain = await attachGmManagerDepartmentsToCorporates(plain, gmProfile);
+    } else {
+      const requesterDepartment = await resolveRequesterDepartment(req.user);
+      plain = await filterCorporatesByRequesterDepartment(allPlain, requesterDepartment);
+    }
     const corporateIds = plain.map((c) => c.corporateId);
 
     if (corporateIds.length > 0) {
@@ -1393,6 +1419,21 @@ exports.reassignCorporateExecutive = async (req, res) => {
       { where: { corporateId: corporate.corporateId } }
     );
 
+    const managerActorName =
+      `${managerProfile.firstName || ""} ${managerProfile.lastName || ""}`.trim() ||
+      req.user.email ||
+      "System";
+
+    const ticketReassignment = await reassignOpenTicketsForCorporate({
+      corporateId: corporate.corporateId,
+      newExecutiveProfileId: execStaff.executiveId,
+      newExecutiveDisplayName,
+      previousExecutiveName,
+      actorUser: req.user,
+      actorName: managerActorName,
+      actorRole: req.user.role,
+    });
+
     const previousExecutiveUserId = await resolveExecutiveUserIdByExecutiveProfileId(previousExecutiveProfileId);
     const newExecutiveUserId = await resolveExecutiveUserIdByExecutiveProfileId(execStaff.executiveId);
 
@@ -1422,6 +1463,42 @@ exports.reassignCorporateExecutive = async (req, res) => {
           kind: "executive_reassigned_to",
         },
       });
+    }
+
+    if (ticketReassignment.reassignedCount > 0) {
+      const ticketCountLabel =
+        ticketReassignment.reassignedCount === 1 ? "1 open ticket" : `${ticketReassignment.reassignedCount} open tickets`;
+      const fromLabel = previousExecutiveName ? ` from ${previousExecutiveName}` : "";
+
+      if (newExecutiveUserId) {
+        await createForUserIds([newExecutiveUserId], {
+          type: "ticket",
+          title: `Tickets Reassigned - ${corporate.corporateName}`,
+          message: `${ticketCountLabel} for ${corporate.corporateName} ${ticketReassignment.reassignedCount === 1 ? "has" : "have"} been reassigned to you${fromLabel}.`,
+          priority: "normal",
+          metadata: {
+            corporateId: corporate.corporateId,
+            corporateName: corporate.corporateName,
+            kind: "ticket_executive_reassigned_to",
+            ticketNumbers: ticketReassignment.ticketNumbers,
+          },
+        });
+      }
+
+      if (previousExecutiveUserId) {
+        await createForUserIds([previousExecutiveUserId], {
+          type: "ticket",
+          title: `Tickets Reassigned - ${corporate.corporateName}`,
+          message: `${ticketCountLabel} for ${corporate.corporateName} ${ticketReassignment.reassignedCount === 1 ? "has" : "have"} been reassigned to ${newExecutiveDisplayName}.`,
+          priority: "normal",
+          metadata: {
+            corporateId: corporate.corporateId,
+            corporateName: corporate.corporateName,
+            kind: "ticket_executive_reassigned_from",
+            ticketNumbers: ticketReassignment.ticketNumbers,
+          },
+        });
+      }
     }
 
     try {
@@ -1474,6 +1551,7 @@ exports.reassignCorporateExecutive = async (req, res) => {
       status: "Success",
       message: "Corporate executive reassigned successfully",
       corporate,
+      ticketsReassigned: ticketReassignment.reassignedCount,
     });
   } catch (error) {
     console.error("Reassign corporate executive error:", error);
@@ -1792,6 +1870,18 @@ exports.getAccounts = async (req, res) => {
     // (legacy AccountManager.corporateId or corporate_contact_persons junction).
     await enrichAccountsWithCorporateContact(plain);
 
+    if (req.user?.role === "gm") {
+      const gmProfile = await resolveGmProfile(req.user);
+      const gmCorpIds = new Set(await resolveGmCorporateIds(gmProfile));
+      if (!gmCorpIds.size) {
+        return res.status(200).json({ status: "Success", accounts: [] });
+      }
+      const scoped = plain.filter(
+        (acc) => acc.corporateId != null && gmCorpIds.has(acc.corporateId)
+      );
+      return res.status(200).json({ status: "Success", accounts: scoped });
+    }
+
     return res.status(200).json({ status: "Success", accounts: plain });
   } catch (error) {
     console.error("Get accounts error:", error);
@@ -1875,20 +1965,30 @@ exports.getInvoices = async (req, res) => {
 };
 
 exports.getManagerMonthlySpendingSummary = async (req, res) => {
-  if (!["manager", "supervisor"].includes(req.user?.role)) {
-    return res.status(403).json({ status: "Failed", message: "Only managers can access spending summary" });
+  if (!["manager", "supervisor", "gm"].includes(req.user?.role)) {
+    return res.status(403).json({ status: "Failed", message: "Only managers or GM can access spending summary" });
   }
 
   try {
-    const managerProfile = await Manager.findOne({ where: { userId: req.user.id } });
-    if (!managerProfile) {
-      return res.status(404).json({ status: "Failed", message: "Manager profile not found" });
+    let managerIds = [];
+
+    if (req.user?.role === "gm") {
+      const gmProfile = await resolveGmProfile(req.user);
+      if (!gmProfile) {
+        return res.status(404).json({ status: "Failed", message: "GM profile not found" });
+      }
+      managerIds = await resolveGmManagerIds(gmProfile);
+    } else {
+      const managerProfile = await Manager.findOne({ where: { userId: req.user.id } });
+      if (!managerProfile) {
+        return res.status(404).json({ status: "Failed", message: "Manager profile not found" });
+      }
+      const managerPerson = await Person.findOne({
+        where: { email: managerProfile.email, type: { [Op.in]: ["manager", "supervisor"] } },
+      });
+      managerIds = [managerProfile.managerId, managerPerson?.id].filter((id) => Number.isInteger(id) && id > 0);
     }
 
-    const managerPerson = await Person.findOne({
-      where: { email: managerProfile.email, type: { [Op.in]: ["manager", "supervisor"] } },
-    });
-    const managerIds = [managerProfile.managerId, managerPerson?.id].filter((id) => Number.isInteger(id) && id > 0);
     if (!managerIds.length) return res.status(200).json({ status: "Success", summary: { total: "0.00", currency: "NAD" } });
 
     const accounts = await Account.findAll({
@@ -1932,21 +2032,32 @@ exports.getManagerMonthlySpendingSummary = async (req, res) => {
 };
 
 exports.getManagerMonthlySpendingTrend = async (req, res) => {
-  if (!["manager", "supervisor"].includes(req.user?.role)) {
-    return res.status(403).json({ status: "Failed", message: "Only managers can access spending trend" });
+  if (!["manager", "supervisor", "gm"].includes(req.user?.role)) {
+    return res.status(403).json({ status: "Failed", message: "Only managers or GM can access spending trend" });
   }
 
   const requestedMonths = Number(req.query.months || 6);
   const months = Number.isFinite(requestedMonths) ? Math.min(Math.max(Math.trunc(requestedMonths), 3), 24) : 6;
   try {
-    const managerProfile = await Manager.findOne({ where: { userId: req.user.id } });
-    if (!managerProfile) {
-      return res.status(404).json({ status: "Failed", message: "Manager profile not found" });
+    let managerIds = [];
+
+    if (req.user?.role === "gm") {
+      const gmProfile = await resolveGmProfile(req.user);
+      if (!gmProfile) {
+        return res.status(404).json({ status: "Failed", message: "GM profile not found" });
+      }
+      managerIds = await resolveGmManagerIds(gmProfile);
+    } else {
+      const managerProfile = await Manager.findOne({ where: { userId: req.user.id } });
+      if (!managerProfile) {
+        return res.status(404).json({ status: "Failed", message: "Manager profile not found" });
+      }
+      const managerPerson = await Person.findOne({
+        where: { email: managerProfile.email, type: { [Op.in]: ["manager", "supervisor"] } },
+      });
+      managerIds = [managerProfile.managerId, managerPerson?.id].filter((id) => Number.isInteger(id) && id > 0);
     }
-    const managerPerson = await Person.findOne({
-      where: { email: managerProfile.email, type: { [Op.in]: ["manager", "supervisor"] } },
-    });
-    const managerIds = [managerProfile.managerId, managerPerson?.id].filter((id) => Number.isInteger(id) && id > 0);
+
     if (!managerIds.length) return res.status(200).json({ status: "Success", trend: [] });
 
     const accounts = await Account.findAll({ where: { managerId: { [Op.in]: managerIds } }, attributes: ["accountId"] });
@@ -2129,8 +2240,8 @@ exports.getAccountContracts = async (req, res) => {
 
 // ── Get contracts expiring within N months (manager scope) ────────
 exports.getExpiringContracts = async (req, res) => {
-  if (!["manager", "supervisor"].includes(req.user?.role)) {
-    return res.status(403).json({ status: "Failed", message: "Only managers can access expiring contracts" });
+  if (!["manager", "supervisor", "gm"].includes(req.user?.role)) {
+    return res.status(403).json({ status: "Failed", message: "Only managers or GM can access expiring contracts" });
   }
 
   const requestedMonths = Number(req.query.withinMonths || 6);
@@ -2139,18 +2250,27 @@ exports.getExpiringContracts = async (req, res) => {
     : 6;
 
   try {
-    const managerProfile = await Manager.findOne({ where: { userId: req.user.id } });
-    if (!managerProfile) {
-      return res.status(404).json({ status: "Failed", message: "Manager profile not found" });
+    let managerIds = [];
+
+    if (req.user?.role === "gm") {
+      const gmProfile = await resolveGmProfile(req.user);
+      if (!gmProfile) {
+        return res.status(404).json({ status: "Failed", message: "GM profile not found" });
+      }
+      managerIds = await resolveGmManagerIds(gmProfile);
+    } else {
+      const managerProfile = await Manager.findOne({ where: { userId: req.user.id } });
+      if (!managerProfile) {
+        return res.status(404).json({ status: "Failed", message: "Manager profile not found" });
+      }
+      const managerPerson = await Person.findOne({
+        where: { email: managerProfile.email, type: { [Op.in]: ["manager", "supervisor"] } },
+      });
+      managerIds = [managerProfile.managerId, managerPerson?.id].filter(
+        (id) => Number.isInteger(id) && id > 0
+      );
     }
 
-    const managerPerson = await Person.findOne({
-      where: { email: managerProfile.email, type: { [Op.in]: ["manager", "supervisor"] } },
-    });
-
-    const managerIds = [managerProfile.managerId, managerPerson?.id].filter(
-      (id) => Number.isInteger(id) && id > 0
-    );
     if (!managerIds.length) {
       return res.status(200).json({ status: "Success", contracts: [] });
     }
