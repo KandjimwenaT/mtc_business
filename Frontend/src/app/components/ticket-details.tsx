@@ -27,6 +27,7 @@ import {
 } from "../api/ticketApi";
 import { getCurrentUser } from "../api/authApi";
 import { canAddTicketInternalNote } from "../utils/roleCapabilities";
+import { getTicketsListPath } from "../utils/ticketNavigation";
 import { format } from "date-fns";
 
 function formatTicketStatusLabel(s: string) {
@@ -71,6 +72,7 @@ export default function TicketDetails() {
   const [addingNote, setAddingNote] = useState(false);
   const currentUser = getCurrentUser();
   const canAddInternalNote = canAddTicketInternalNote(currentUser?.role);
+  const ticketsListPath = getTicketsListPath(currentUser?.role);
 
   useEffect(() => {
     const run = async () => {
@@ -276,7 +278,7 @@ export default function TicketDetails() {
   return (
     <div className="space-y-6 animate-in fade-in duration-500 slide-in-from-right-4">
       <div className="flex items-center gap-4 border-b border-slate-200 pb-4">
-        <Button variant="ghost" size="sm" className="rounded-full h-8 w-8 p-0 shrink-0" onClick={() => navigate("/tickets")}>
+        <Button variant="ghost" size="sm" className="rounded-full h-8 w-8 p-0 shrink-0" onClick={() => navigate(ticketsListPath)}>
           <ArrowLeft className="h-4 w-4" />
         </Button>
         <div className="flex-1 min-w-0">

@@ -1,4 +1,6 @@
 import { useState } from "react";
+import { useNavigate } from "react-router";
+import { getTicketDetailPath } from "../../utils/ticketNavigation";
 import { Card, CardContent } from "../ui/card";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
@@ -8,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table";
 import { Search, Filter, X, Loader2, ChevronDown, ChevronUp, Clock } from "lucide-react";
 import { type TicketRecord } from "../../api/ticketApi";
+import { getCurrentUser } from "../../api/authApi";
 import { format } from "date-fns";
 import StaffTicketCreate from "../staff/StaffTicketCreate";
 import { useExecutiveData } from "../../hooks/useExecutiveData";
@@ -55,6 +58,8 @@ const SLA_BADGE_CLASSES: Record<string, string> = {
 };
 
 export default function ExecutiveTickets() {
+  const navigate = useNavigate();
+  const currentUser = getCurrentUser();
   const [searchQuery, setSearchQuery] = useState("");
   const [showFilterPanel, setShowFilterPanel] = useState(false);
   const [showCreateForm, setShowCreateForm] = useState(false);
@@ -336,7 +341,15 @@ export default function ExecutiveTickets() {
 
                 return (
                   <TableRow key={ticket.ticketId} className="group">
-                    <TableCell className="font-medium text-blue-600">{ticket.ticketNumber}</TableCell>
+                    <TableCell>
+                      <button
+                        type="button"
+                        onClick={() => navigate(getTicketDetailPath(currentUser?.role, ticket.ticketId))}
+                        className="font-medium text-blue-600 hover:underline"
+                      >
+                        {ticket.ticketNumber}
+                      </button>
+                    </TableCell>
                     <TableCell className="text-slate-900 font-medium">{ticket.accountName || "—"}</TableCell>
                     <TableCell>
                       <Badge variant={ticket.category === "request" ? "default" : "destructive"} className="capitalize">

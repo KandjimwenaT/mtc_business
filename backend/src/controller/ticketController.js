@@ -631,7 +631,14 @@ exports.getMyTickets = async (req, res) => {
       where: { accountId: { [Op.in]: accountIds } },
       order: [["created_at", "DESC"]],
     });
-    const ticketsForCustomer = await Promise.all(tickets.map((ticket) => hydrateTicketAssignee(ticket)));
+    const ticketsForCustomer = await Promise.all(
+      tickets.map(async (ticket) => {
+        const synced = await syncOpenTicketWithAccountExecutive(ticket);
+        const detailed = await toTicketWithAccountContext(synced);
+        const executiveName = await resolveExecutiveNameByExecutiveProfileId(synced.executiveId);
+        return { ...detailed, assignedTo: executiveName || detailed.assignedTo || null };
+      }),
+    );
 
     return res.status(200).json({ status: "Success", tickets: ticketsForCustomer });
   } catch (error) {

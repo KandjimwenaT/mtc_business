@@ -650,7 +650,7 @@ If you didn't request a password reset, please ignore this email and your passwo
    * Send portal credentials email to a newly created portal user
    */
   async sendPortalCredentialsEmail(email, name, tempPassword) {
-    const loginUrl = `${process.env.FRONTEND_URL || "http://localhost:5173"}/login`;
+    const loginUrl = `${process.env.FRONTEND_URL || "http://localhost:5173"}`;
 
     const mailOptions = {
       from: {

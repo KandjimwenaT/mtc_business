@@ -48,6 +48,11 @@ app.set('trust proxy', 1);
 app.use(
   helmet({
     crossOriginResourcePolicy: { policy: 'cross-origin' },
+    permissionsPolicy: {
+      features: {
+        geolocation: ['self'],
+      },
+    },
   })
 );
 const normalizeOrigin = (value) =>

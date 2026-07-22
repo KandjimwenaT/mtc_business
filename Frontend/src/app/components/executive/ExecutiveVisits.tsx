@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback, type ReactElement } from "react";
 import { toast } from "sonner";
 import { 
   Button, 
@@ -349,6 +349,59 @@ export default function ExecutiveVisits() {
     await Promise.all([refreshVisits(), refreshAccounts()]);
   };
 
+  const geoErrorMessage = useCallback((err: GeolocationPositionError): string => {
+    if (!window.isSecureContext) {
+      return "GPS requires HTTPS. Open the app over a secure connection (not plain HTTP).";
+    }
+    switch (err.code) {
+      case err.PERMISSION_DENIED:
+        return "Location permission denied. Allow location in your browser settings, then tap Capture location.";
+      case err.POSITION_UNAVAILABLE:
+        return "Location unavailable. Move to an area with better signal and tap Capture location.";
+      case err.TIMEOUT:
+        return "Location request timed out. Tap Capture location to try again.";
+      default:
+        return "Unable to retrieve location. Tap Capture location to try again.";
+    }
+  }, []);
+
+  const captureGeoLocation = useCallback((visitId: number) => {
+    if (!window.isSecureContext) {
+      setGeoError("GPS requires HTTPS. The app must be served over a secure connection (https://).");
+      setGeoLoading(false);
+      return;
+    }
+    if (!navigator.geolocation) {
+      setGeoError("Geolocation is not supported by this browser");
+      setGeoLoading(false);
+      return;
+    }
+    setGeoLoading(true);
+    setGeoError("");
+    navigator.geolocation.getCurrentPosition(
+      async (position) => {
+        const { latitude, longitude } = position.coords;
+        setGeoLocation({ lat: latitude, lng: longitude });
+        setGeoAddress(`${latitude.toFixed(6)}, ${longitude.toFixed(6)}`);
+        setGeoFromPersistedMeetingStart(false);
+        setGeoLoading(false);
+        try {
+          await recordVisitMeetingStart(visitId, { latitude, longitude });
+          await refreshVisits();
+        } catch (err: unknown) {
+          toast.error("Location captured but not saved", {
+            description: err instanceof Error ? err.message : "Could not save meeting start to the server",
+          });
+        }
+      },
+      (err) => {
+        setGeoError(geoErrorMessage(err));
+        setGeoLoading(false);
+      },
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 },
+    );
+  }, [geoErrorMessage, refreshVisits]);
+
   // Schedule form state
   const [formCorporateId, setFormCorporateId] = useState("");
   const [formMeetingType, setFormMeetingType] = useState<"online" | "in_person">("in_person");
@@ -685,31 +738,7 @@ export default function ExecutiveVisits() {
       setGeoError("");
     } else {
       setGeoFromPersistedMeetingStart(false);
-      setGeoLoading(true);
-      if (navigator.geolocation) {
-        navigator.geolocation.getCurrentPosition(
-          async (position) => {
-            const { latitude, longitude } = position.coords;
-            setGeoLocation({ lat: latitude, lng: longitude });
-            setGeoAddress(`${latitude.toFixed(6)}, ${longitude.toFixed(6)}`);
-            setGeoLoading(false);
-            try {
-              await recordVisitMeetingStart(visit.visitId, { latitude, longitude });
-              await refreshVisits();
-            } catch {
-              /* Keep working on the AVR if the save fails */
-            }
-          },
-          (err) => {
-            setGeoError(err.code === 1 ? "Location permission denied" : "Unable to retrieve location");
-            setGeoLoading(false);
-          },
-          { enableHighAccuracy: true, timeout: 10000 },
-        );
-      } else {
-        setGeoError("Geolocation not supported by this browser");
-        setGeoLoading(false);
-      }
+      captureGeoLocation(visit.visitId);
     }
   };
 
@@ -832,6 +861,14 @@ export default function ExecutiveVisits() {
 
   const handleSubmitControlCard = async () => {
     if (!controlCardVisitId) return;
+    if (!geoLocation) {
+      toast.error("Location required", {
+        description: geoLoading
+          ? "Please wait for GPS capture to finish."
+          : "Capture your GPS coordinates before submitting the control card.",
+      });
+      return;
+    }
     try {
       setSubmittingControlCard(true);
       const payload = {
@@ -1700,7 +1737,7 @@ export default function ExecutiveVisits() {
                 const isExpanded = expandedCard === visit.visitId;
                 const awaitingClosure = visit.status === "follow_up_pending";
 
-                const out: JSX.Element[] = [];
+                const out: ReactElement[] = [];
                 if (showAwaitingHeader) {
                   out.push(
                     <div key={`hdr-awaiting-${visit.visitId}`} className="rounded-md border border-amber-200 bg-amber-50/80 px-3 py-2">
@@ -2038,12 +2075,25 @@ export default function ExecutiveVisits() {
                          : "GPS saved as meeting start — visible to your manager and on Past visits."
                        : geoError}
                    </p>
-                   <div className="mt-2">
+                   <div className="mt-2 flex flex-col gap-2 sm:flex-row sm:items-center">
                      <Input
                        readOnly
                        value={geoLoading ? "Fetching coordinates..." : geoError ? geoError : geoAddress}
-                       className={`text-xs font-mono ${geoLocation ? "bg-white/80 text-mtc-blue-dark border-mtc-blue-100" : geoError ? "bg-white/80 text-red-600 border-red-200" : "bg-white text-slate-500 border-slate-200"} cursor-default`}
+                       className={`text-xs font-mono flex-1 ${geoLocation ? "bg-white/80 text-mtc-blue-dark border-mtc-blue-100" : geoError ? "bg-white/80 text-red-600 border-red-200" : "bg-white text-slate-500 border-slate-200"} cursor-default`}
                      />
+                     {!geoLocation && controlCardVisitId != null && (
+                       <Button
+                         type="button"
+                         variant="outline"
+                         size="sm"
+                         className="shrink-0"
+                         disabled={geoLoading}
+                         onClick={() => captureGeoLocation(controlCardVisitId)}
+                       >
+                         <Navigation className="h-4 w-4 mr-1.5" />
+                         {geoLoading ? "Capturing..." : "Capture location"}
+                       </Button>
+                     )}
                    </div>
                  </div>
               </div>
@@ -2333,7 +2383,11 @@ export default function ExecutiveVisits() {
                 >
                   Save draft & close
                 </Button>
-                <Button onClick={handleSubmitControlCard} disabled={submittingControlCard}>
+                <Button
+                  onClick={handleSubmitControlCard}
+                  disabled={submittingControlCard || geoLoading || !geoLocation}
+                  title={!geoLocation ? "GPS coordinates are required before submitting" : undefined}
+                >
                   {submittingControlCard ? "Submitting..." : "Submit & Request Rating"}
                 </Button>
               </div>

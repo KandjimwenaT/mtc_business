@@ -1,6 +1,7 @@
 import { useMemo } from "react";
 import { useNavigate } from "react-router";
 import { getCurrentUser } from "../../api/authApi";
+import { getTicketDetailPath } from "../../utils/ticketNavigation";
 import { type TicketRecord } from "../../api/ticketApi";
 import { useExecutiveData } from "../../hooks/useExecutiveData";
 import { 
@@ -193,6 +194,7 @@ export default function ExecutiveDashboard() {
               ? "warning"
               : "success";
       return {
+        ticketId: t.ticketId,
         id: t.ticketNumber,
         corporate: t.corporateName || t.accountName || "N/A",
         subject: t.title,
@@ -521,8 +523,16 @@ export default function ExecutiveDashboard() {
               </TableHeader>
               <TableBody>
                 {recentTickets.map((ticket) => (
-                  <TableRow key={ticket.id}>
-                    <TableCell className="font-medium">{ticket.id}</TableCell>
+                  <TableRow key={ticket.ticketId}>
+                    <TableCell>
+                      <button
+                        type="button"
+                        onClick={() => navigate(getTicketDetailPath(currentUser?.role, ticket.ticketId))}
+                        className="font-medium text-blue-600 hover:underline"
+                      >
+                        {ticket.id}
+                      </button>
+                    </TableCell>
                     <TableCell>{ticket.corporate}</TableCell>
                     <TableCell>{ticket.subject}</TableCell>
                     <TableCell>

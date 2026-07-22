@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
+import { getTicketDetailPath } from "../utils/ticketNavigation";
 import { getCurrentUser } from "../api/authApi";
 import { getAllTickets, type TicketRecord } from "../api/ticketApi";
 import { getAllVisits, type VisitRecord } from "../api/visitApi";
@@ -402,7 +403,15 @@ export default function Dashboard() {
                   const rating = averageRatingsByAccount.get(ticket.accountId);
                   return (
                     <TableRow key={ticket.ticketId}>
-                      <TableCell className="font-medium text-slate-900">{ticket.ticketNumber}</TableCell>
+                      <TableCell>
+                        <button
+                          type="button"
+                          onClick={() => navigate(getTicketDetailPath(currentUser?.role, ticket.ticketId))}
+                          className="font-medium text-blue-600 hover:underline text-left"
+                        >
+                          {ticket.ticketNumber}
+                        </button>
+                      </TableCell>
                       <TableCell className="max-w-[220px]">
                         <div className="truncate">{ticket.corporateName || ticket.accountName || "N/A"}</div>
                         {typeof rating === "number" && (
@@ -422,7 +431,7 @@ export default function Dashboard() {
                       <TableCell className="text-right">
                         <button
                           className="text-mtc-blue hover:underline text-sm font-medium"
-                          onClick={() => navigate(`/tickets/${ticket.ticketId}`)}
+                          onClick={() => navigate(getTicketDetailPath(currentUser?.role, ticket.ticketId))}
                         >
                           View
                         </button>

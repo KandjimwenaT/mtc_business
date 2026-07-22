@@ -4,6 +4,7 @@ import { Badge, Button, Card, CardContent, Input, Label, Select, Table, TableBod
 import { Clock, Filter, Loader2, Search, X } from "lucide-react";
 import { getAllTickets, getAssignedTickets, type TicketRecord } from "../api/ticketApi";
 import { getCurrentUser } from "../api/authApi";
+import { getTicketDetailPath } from "../utils/ticketNavigation";
 import { format } from "date-fns";
 import { isSupervisorRole } from "../utils/roleCapabilities";
 import type { StaffLayoutOutletContext } from "../layoutOutletContext";
@@ -304,7 +305,7 @@ export default function Tickets() {
                 return (
                   <TableRow key={ticket.ticketId}>
                     <TableCell className="font-medium text-blue-600">
-                      <Link to={`/tickets/${ticket.ticketId}`} className="hover:underline">
+                      <Link to={getTicketDetailPath(currentUser?.role, ticket.ticketId)} className="hover:underline">
                         {ticket.ticketNumber}
                       </Link>
                     </TableCell>

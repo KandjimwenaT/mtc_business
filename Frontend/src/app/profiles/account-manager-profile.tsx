@@ -7,14 +7,68 @@ import {
 } from "../components/ui-components";
 import {
   User, Phone, Mail, Building2, MapPin, Star, Calendar, CheckCircle,
-  Clock, FileText, Eye, MessageSquare, TrendingUp, TrendingDown, Settings
+  Clock, FileText, TrendingUp, TrendingDown, Loader2
 } from "lucide-react";
 import { getMyProfile } from "../api/authApi";
 import type { UserProfile } from "../api/authApi";
 import { getCustomerVisits, type VisitRecord } from "../api/visitApi";
+import { getMyTickets, type TicketRecord } from "../api/ticketApi";
 import ProfileEditSection from "../components/profile-edit-section";
 
+const STATUS_LABELS: Record<string, string> = {
+  new: "New",
+  assigned: "Assigned",
+  in_progress: "In Progress",
+  escalated: "Escalated",
+  resolved: "Resolved",
+  closed: "Closed",
+  rejected: "Rejected",
+};
+
+const SLA_BADGE_VARIANTS: Record<string, "success" | "warning" | "danger" | "default"> = {
+  success: "success",
+  warning: "warning",
+  danger: "danger",
+  breached: "danger",
+};
+
+function isClosedTicket(status: string) {
+  return ["resolved", "closed", "rejected"].includes(status);
+}
+
+function getSlaInfo(ticket: TicketRecord): {
+  status: "success" | "warning" | "danger" | "breached";
+  label: string;
+  time: string;
+} {
+  if (isClosedTicket(ticket.status) || !ticket.slaDeadline) {
+    return { status: "success", label: "—", time: "" };
+  }
+
+  const now = Date.now();
+  const deadline = new Date(ticket.slaDeadline).getTime();
+  const created = new Date(ticket.createdAt).getTime();
+  const diff = deadline - now;
+  const total = deadline - created;
+  const pctRemaining = total > 0 ? diff / total : 0;
+
+  const absDiff = Math.abs(diff);
+  const h = Math.floor(absDiff / 3_600_000);
+  const m = Math.floor((absDiff % 3_600_000) / 60_000);
+  const timeStr = diff >= 0 ? `${h}h ${m}m` : `-${h}h ${m}m`;
+
+  if (diff <= 0) return { status: "breached", label: "Breached", time: timeStr };
+  if (pctRemaining <= 0.15) return { status: "danger", label: "At Risk", time: timeStr };
+  if (pctRemaining <= 0.35) return { status: "warning", label: "Warning", time: timeStr };
+  return { status: "success", label: "On Track", time: timeStr };
+}
+
+function formatTicketType(type: string) {
+  return type.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
 type Tab = "profile" | "requests" | "ratings" | "settings";
+type TicketFilter = "all" | "active" | "past";
 
 export default function AccountManagerProfile() {
   const [activeTab, setActiveTab] = useState<Tab>("profile");
@@ -22,10 +76,38 @@ export default function AccountManagerProfile() {
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [visitRatings, setVisitRatings] = useState<VisitRecord[]>([]);
   const [ratingsLoading, setRatingsLoading] = useState(false);
+  const [tickets, setTickets] = useState<TicketRecord[]>([]);
+  const [ticketsLoading, setTicketsLoading] = useState(false);
+  const [ticketsError, setTicketsError] = useState("");
+  const [ticketFilter, setTicketFilter] = useState<TicketFilter>("all");
 
   useEffect(() => {
     getMyProfile().then(setProfile).catch(() => toast.error("Failed to load profile"));
   }, []);
+
+  useEffect(() => {
+    if (activeTab !== "requests" && activeTab !== "profile") return;
+    let cancelled = false;
+    setTicketsLoading(true);
+    setTicketsError("");
+    getMyTickets()
+      .then((data) => {
+        if (!cancelled) setTickets(data);
+      })
+      .catch((err: Error) => {
+        if (!cancelled) {
+          setTickets([]);
+          setTicketsError(err.message || "Failed to load tickets");
+          if (activeTab === "requests") toast.error("Failed to load ticket history");
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setTicketsLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeTab]);
 
   useEffect(() => {
     if (activeTab !== "ratings") return;
@@ -77,6 +159,36 @@ export default function AccountManagerProfile() {
       lowCount,
     };
   }, [ratedVisits]);
+
+  const activeTickets = useMemo(
+    () => tickets.filter((t) => !isClosedTicket(t.status)),
+    [tickets],
+  );
+  const pastTickets = useMemo(
+    () => tickets.filter((t) => isClosedTicket(t.status)),
+    [tickets],
+  );
+  const openTicketSlaCounts = useMemo(() => {
+    let warning = 0;
+    let breached = 0;
+    for (const ticket of activeTickets) {
+      const sla = getSlaInfo(ticket);
+      if (sla.status === "breached") breached += 1;
+      else if (sla.status === "warning" || sla.status === "danger") warning += 1;
+    }
+    return { warning, breached };
+  }, [activeTickets]);
+  const displayedTickets = useMemo(() => {
+    const pool =
+      ticketFilter === "active"
+        ? activeTickets
+        : ticketFilter === "past"
+          ? pastTickets
+          : tickets;
+    return [...pool].sort(
+      (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+    );
+  }, [tickets, activeTickets, pastTickets, ticketFilter]);
 
   const displayName = profile ? `${profile.firstName} ${profile.lastName}` : "Loading...";
   const initials = profile ? `${profile.firstName[0]}${profile.lastName[0]}` : "..";
@@ -172,7 +284,11 @@ export default function AccountManagerProfile() {
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                   <MetricCard label="Avg Rating" value="4.3" color="text-mtc-blue" />
                   <MetricCard label="Accounts" value="12" color="text-slate-900" />
-                  <MetricCard label="Open Tickets" value="8" color="text-red-600" />
+                  <MetricCard
+                    label="Open Tickets"
+                    value={ticketsLoading ? "…" : String(activeTickets.length)}
+                    color="text-red-600"
+                  />
                 </div>
               </div>
             </CardContent>
@@ -182,48 +298,124 @@ export default function AccountManagerProfile() {
 
       {/* REQUESTS & COMPLAINTS */}
       {activeTab === "requests" && (
-        <Card>
-          <CardHeader className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-            <CardTitle className="text-base">My Requests & Complaints (Read-Only SLA View)</CardTitle>
-            <div className="flex flex-wrap gap-2">
-              <Badge variant="warning">3 Warning</Badge>
-              <Badge variant="danger">1 Breached</Badge>
-            </div>
-          </CardHeader>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Ticket ID</TableHead>
-                <TableHead>Corporate</TableHead>
-                <TableHead>Type</TableHead>
-                <TableHead>Category</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead>SLA Status</TableHead>
-                <TableHead>Time Remaining</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {[
-                { id: "REQ-00124", corp: "Namibia Breweries", type: "Request", cat: "Renewal", status: "In Progress", sla: "warning", time: "2h 15m" },
-                { id: "CMP-00431", corp: "First National Bank", type: "Complaint", cat: "Billing", status: "Escalated L1", sla: "breached", time: "-1h 30m" },
-                { id: "REQ-00125", corp: "Ministry of Finance", type: "Request", cat: "Upgrade", status: "New", sla: "success", time: "23h 45m" },
-                { id: "CMP-00432", corp: "Ohlthaver & List", type: "Complaint", cat: "Network QoS", status: "Assigned", sla: "danger", time: "45m" },
-                { id: "REQ-00126", corp: "Telecom Namibia", type: "Request", cat: "New Connection", status: "New", sla: "success", time: "47h" },
-                { id: "CMP-00433", corp: "Bank Windhoek", type: "Complaint", cat: "Billing", status: "In Progress", sla: "warning", time: "5h 30m" },
-              ].map((t) => (
-                <TableRow key={t.id}>
-                  <TableCell className="font-medium text-mtc-blue">{t.id}</TableCell>
-                  <TableCell className="font-medium text-slate-900">{t.corp}</TableCell>
-                  <TableCell><Badge variant={t.type === "Complaint" ? "danger" : "default"}>{t.type}</Badge></TableCell>
-                  <TableCell>{t.cat}</TableCell>
-                  <TableCell>{t.status}</TableCell>
-                  <TableCell><Badge variant={t.sla as any}>{t.sla === "success" ? "On Track" : t.sla === "warning" ? "Warning" : t.sla === "breached" ? "Breached" : "At Risk"}</Badge></TableCell>
-                  <TableCell className="font-mono text-sm">{t.time}</TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </Card>
+        <div className="space-y-4">
+          <div className="flex flex-wrap gap-2">
+            {(
+              [
+                { key: "all" as const, label: `All (${tickets.length})` },
+                { key: "active" as const, label: `Active (${activeTickets.length})` },
+                { key: "past" as const, label: `Past (${pastTickets.length})` },
+              ] as const
+            ).map((f) => (
+              <button
+                key={f.key}
+                type="button"
+                onClick={() => setTicketFilter(f.key)}
+                className={`rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
+                  ticketFilter === f.key
+                    ? "bg-mtc-blue text-white border-mtc-blue"
+                    : "bg-slate-100 text-slate-700 border-transparent hover:bg-slate-200"
+                }`}
+              >
+                {f.label}
+              </button>
+            ))}
+          </div>
+
+          <Card>
+            <CardHeader className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <CardTitle className="text-base">My Requests & Complaints (Read-Only SLA View)</CardTitle>
+                <p className="text-sm text-slate-500 font-normal mt-1">
+                  Live ticket history across your linked corporate accounts.
+                </p>
+              </div>
+              {!ticketsLoading && activeTickets.length > 0 && (
+                <div className="flex flex-wrap gap-2">
+                  {openTicketSlaCounts.warning > 0 && (
+                    <Badge variant="warning">{openTicketSlaCounts.warning} Warning</Badge>
+                  )}
+                  {openTicketSlaCounts.breached > 0 && (
+                    <Badge variant="danger">{openTicketSlaCounts.breached} Breached</Badge>
+                  )}
+                  {openTicketSlaCounts.warning === 0 && openTicketSlaCounts.breached === 0 && (
+                    <Badge variant="success">All SLAs on track</Badge>
+                  )}
+                </div>
+              )}
+            </CardHeader>
+
+            {ticketsLoading ? (
+              <CardContent className="py-12 flex items-center justify-center gap-2 text-sm text-slate-500">
+                <Loader2 className="h-5 w-5 animate-spin text-mtc-blue" />
+                Loading ticket history…
+              </CardContent>
+            ) : ticketsError ? (
+              <CardContent className="py-8 text-center text-sm text-red-600">{ticketsError}</CardContent>
+            ) : displayedTickets.length === 0 ? (
+              <CardContent className="py-8 text-center text-sm text-slate-500">
+                {tickets.length === 0
+                  ? "No requests or complaints yet. Submit tickets from the Tickets page."
+                  : "No tickets match this filter."}
+              </CardContent>
+            ) : (
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Ticket ID</TableHead>
+                    <TableHead>Corporate</TableHead>
+                    <TableHead>Type</TableHead>
+                    <TableHead>Category</TableHead>
+                    <TableHead>Status</TableHead>
+                    <TableHead>SLA Status</TableHead>
+                    <TableHead>Time Remaining</TableHead>
+                    <TableHead>Submitted</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {displayedTickets.map((ticket) => {
+                    const sla = getSlaInfo(ticket);
+                    const closed = isClosedTicket(ticket.status);
+                    return (
+                      <TableRow key={ticket.ticketId}>
+                        <TableCell className="font-medium text-mtc-blue">{ticket.ticketNumber}</TableCell>
+                        <TableCell className="font-medium text-slate-900">
+                          {ticket.corporateName || ticket.accountName || "—"}
+                        </TableCell>
+                        <TableCell>
+                          <Badge variant={ticket.category === "complaint" ? "danger" : "default"}>
+                            {ticket.category === "complaint" ? "Complaint" : "Request"}
+                          </Badge>
+                        </TableCell>
+                        <TableCell>{formatTicketType(ticket.type)}</TableCell>
+                        <TableCell>{STATUS_LABELS[ticket.status] || ticket.status}</TableCell>
+                        <TableCell>
+                          {closed ? (
+                            <span className="text-slate-400 text-sm">Closed</span>
+                          ) : sla.label === "—" ? (
+                            <span className="text-slate-400">—</span>
+                          ) : (
+                            <Badge variant={SLA_BADGE_VARIANTS[sla.status]}>{sla.label}</Badge>
+                          )}
+                        </TableCell>
+                        <TableCell className="font-mono text-sm">
+                          {closed || !sla.time ? (
+                            <span className="text-slate-400">—</span>
+                          ) : (
+                            sla.time
+                          )}
+                        </TableCell>
+                        <TableCell className="text-sm text-slate-500 whitespace-nowrap">
+                          {format(new Date(ticket.createdAt), "dd MMM yyyy")}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            )}
+          </Card>
+        </div>
       )}
 
       {/* RATING HISTORY */}

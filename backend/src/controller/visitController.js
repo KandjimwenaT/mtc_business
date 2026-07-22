@@ -754,6 +754,18 @@ exports.submitControlCard = async (req, res) => {
       return res.status(400).json({ status: "Failed", message: "controlCardData is required" });
     }
 
+    const lat = Number(controlCardData.geoLatitude);
+    const lng = Number(controlCardData.geoLongitude);
+    if (!Number.isFinite(lat) || !Number.isFinite(lng)) {
+      return res.status(400).json({
+        status: "Failed",
+        message: "GPS coordinates are required before submitting the control card",
+      });
+    }
+    if (lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+      return res.status(400).json({ status: "Failed", message: "GPS coordinates are out of valid range" });
+    }
+
     const visit = await Visit.findOne({ where: { visitId, executiveId: exec.executiveId } });
     if (!visit) {
       return res.status(404).json({ status: "Failed", message: "Visit not found or not assigned to you" });
@@ -796,8 +808,8 @@ exports.submitControlCard = async (req, res) => {
           opportunitiesUpsell: controlCardData.opportunitiesUpsell || null,
           opportunitiesProcess: controlCardData.opportunitiesProcess || null,
           actionItems: controlCardData.actionItems || [],
-          geoLatitude: controlCardData.geoLatitude || null,
-          geoLongitude: controlCardData.geoLongitude || null,
+          geoLatitude: lat,
+          geoLongitude: lng,
         },
         { transaction }
       );

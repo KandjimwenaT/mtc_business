@@ -173,6 +173,7 @@ export const router = createBrowserRouter([
 
               { path: "executive-profile", Component: ExecutiveProfile },
               { path: "executive-tickets", Component: ExecutiveTickets },
+              { path: "executive-tickets/:id", Component: TicketDetails },
               { path: "executive-visits", Component: ExecutiveVisits },
               { path: "executive-notifications", Component: Notifications },
 

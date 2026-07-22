@@ -35,6 +35,8 @@ import {
   Megaphone,
 } from "lucide-react";
 import { getCurrentUser } from "../api/authApi";
+import { isExecutiveRole } from "../utils/roleCapabilities";
+import { getTicketDetailPath, getTicketsListPath } from "../utils/ticketNavigation";
 import {
   getNotifications,
   markAllNotificationsRead,
@@ -56,6 +58,31 @@ function broadcastAudienceLabel(meta: Record<string, unknown>): string {
 
 function normalizedNotificationType(raw: unknown): string {
   return String(raw ?? "").toLowerCase();
+}
+
+function parseNotificationMetadata(
+  raw: NotificationRecord["metadata"]
+): Record<string, unknown> {
+  if (!raw) return {};
+  if (typeof raw === "string") {
+    try {
+      const parsed = JSON.parse(raw) as unknown;
+      return typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : {};
+    } catch {
+      return {};
+    }
+  }
+  return raw as Record<string, unknown>;
+}
+
+function resolveMetadataId(metadata: Record<string, unknown>, ...keys: string[]): number | null {
+  for (const key of keys) {
+    const id = Number(metadata[key]);
+    if (Number.isFinite(id) && id > 0) return id;
+  }
+  return null;
 }
 
 const typeConfig: Record<NotifType, { icon: typeof Bell; label: string; color: string }> = {
@@ -141,44 +168,61 @@ export default function Notifications() {
   };
 
   const resolveNotificationPath = (notif: NotificationRecord) => {
-    if (normalizedNotificationType(notif.type) === "broadcast") {
-      return currentUser?.role === "executive_staff" ? "/executive-notifications" : "/notifications";
+    const notifType = normalizedNotificationType(notif.type);
+
+    if (notifType === "broadcast") {
+      return isExecutiveRole(currentUser?.role) ? "/executive-notifications" : "/notifications";
     }
-    const metadata = (notif.metadata || {}) as Record<string, unknown>;
-    const ticketId = Number(metadata.ticketId);
-    const visitId = Number(metadata.visitId);
-    const corporateId = Number(metadata.corporateId);
+
+    const metadata = parseNotificationMetadata(notif.metadata);
+    const ticketId = resolveMetadataId(metadata, "ticketId", "ticket_id");
+    const visitId = resolveMetadataId(metadata, "visitId", "visit_id");
+    const corporateId = resolveMetadataId(metadata, "corporateId", "corporate_id");
     const metadataKind = String(metadata.kind ?? "").toLowerCase();
 
     if (
       metadataKind === "contract_expiring" &&
-      Number.isFinite(corporateId) &&
-      corporateId > 0 &&
+      corporateId != null &&
       (currentUser?.role === "manager" || currentUser?.role === "supervisor")
     ) {
-      const accountId = Number(metadata.accountId);
-      const accountQuery =
-        Number.isFinite(accountId) && accountId > 0 ? `&accountId=${accountId}` : "";
+      const accountId = resolveMetadataId(metadata, "accountId", "account_id");
+      const accountQuery = accountId != null ? `&accountId=${accountId}` : "";
       return `/corporates?corporateId=${corporateId}${accountQuery}`;
     }
 
-    if ((notif.type === "ticket" || notif.type === "escalation" || notif.type === "sla") && Number.isFinite(ticketId)) {
-      return `/tickets/${ticketId}`;
+    if (["ticket", "escalation", "sla"].includes(notifType) && ticketId != null) {
+      return getTicketDetailPath(currentUser?.role, ticketId);
     }
 
-    if ((notif.type === "visit" || notif.type === "rating") && Number.isFinite(visitId)) {
+    if (notifType === "ticket" && ticketId == null) {
+      if (corporateId != null) {
+        return `/corporates?corporateId=${corporateId}`;
+      }
+      return getTicketsListPath(currentUser?.role);
+    }
+
+    if (notifType === "assignment") {
+      if (corporateId != null) {
+        return `/corporates?corporateId=${corporateId}`;
+      }
+      if (isExecutiveRole(currentUser?.role)) {
+        return "/corporates";
+      }
+    }
+
+    if ((notifType === "visit" || notifType === "rating") && visitId != null) {
       return `${visitRouteByRole()}?visitId=${visitId}`;
     }
 
-    if (notif.type === "visit" || notif.type === "rating") {
+    if (notifType === "visit" || notifType === "rating") {
       return visitRouteByRole();
     }
 
-    if (notif.type === "vehicle") {
+    if (notifType === "vehicle") {
       return "/vehicles";
     }
 
-    if (notif.type === "role") {
+    if (notifType === "role") {
       return "/management-profile";
     }
 

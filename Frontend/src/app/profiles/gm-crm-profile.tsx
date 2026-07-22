@@ -12,6 +12,7 @@ import {
 import { getMyProfile } from "../api/authApi";
 import type { UserProfile } from "../api/authApi";
 import { getAllTickets, type TicketRecord } from "../api/ticketApi";
+import { getTicketDetailPath } from "../utils/ticketNavigation";
 import { getManagerVisits } from "../api/visitApi";
 import { getCorporates, getManagerMonthlySpendingSummary, type CorporateRecord } from "../api/adminApi";
 import ProfileEditSection from "../components/profile-edit-section";
@@ -264,7 +265,15 @@ export default function GMCRMProfile() {
                 ) : (
                   [...criticalTickets, ...highPriorityTickets].map((t) => (
                     <TableRow key={t.ticketId}>
-                      <TableCell className="font-medium text-mtc-blue">{t.ticketNumber}</TableCell>
+                      <TableCell>
+                        <button
+                          type="button"
+                          onClick={() => navigate(getTicketDetailPath("gm", t.ticketId))}
+                          className="font-medium text-mtc-blue hover:underline"
+                        >
+                          {t.ticketNumber}
+                        </button>
+                      </TableCell>
                       <TableCell className="font-medium text-slate-900">{t.corporateName || t.accountName || "—"}</TableCell>
                       <TableCell className="max-w-xs"><p className="text-sm truncate">{t.title}</p></TableCell>
                       <TableCell>
@@ -275,7 +284,7 @@ export default function GMCRMProfile() {
                       <TableCell className="text-xs capitalize">{t.status.replace(/_/g, " ")}</TableCell>
                       <TableCell><span className="text-red-600 font-mono font-medium text-xs">{formatPendingTime(t.createdAt)}</span></TableCell>
                       <TableCell className="text-right">
-                        <Button variant="ghost" size="sm" onClick={() => navigate(`/tickets/${t.ticketId}`)}>
+                        <Button variant="ghost" size="sm" onClick={() => navigate(getTicketDetailPath("gm", t.ticketId))}>
                           <Eye className="h-4 w-4" />
                         </Button>
                       </TableCell>
@@ -371,7 +380,7 @@ export default function GMCRMProfile() {
                     <div><span className="text-slate-500 block">Opened</span><p className="font-medium">{new Date(item.createdAt).toLocaleString()}</p></div>
                   </div>
                   <div className="flex justify-end border-t border-slate-200 pt-4">
-                    <Button variant="outline" onClick={() => navigate(`/tickets/${item.ticketId}`)}>
+                    <Button variant="outline" onClick={() => navigate(getTicketDetailPath("gm", item.ticketId))}>
                       <Eye className="h-4 w-4 mr-1" /> View Ticket
                     </Button>
                   </div>
