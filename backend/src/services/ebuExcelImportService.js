@@ -158,7 +158,7 @@ async function runEbuImport(options) {
   );
 
   const workbook = XLSX.read(workbookBuffer, { type: "buffer" });
-  const sheetName = sheetNameOpt || workbook.SheetNames[0];
+  const sheetName = resolveSheetName(workbook, sheetNameOpt || "");
   requireArg(!!workbook.Sheets[sheetName], `Sheet not found: ${sheetName}`);
 
   const headerRowIndex = detectHeaderRow(workbook.Sheets[sheetName]);
@@ -508,6 +508,14 @@ async function runEbuImport(options) {
         corporateName: customerName,
         accountManager: cseName,
       };
+      if (isRecoverableImportError(rowError)) {
+        stats.skipped += 1;
+        console.error(
+          `Skipping EBU row ${customerId || customerName} (${customerName}) due to validation or uniqueness error`,
+          rowError
+        );
+        continue;
+      }
       throw rowError;
     }
   }
@@ -528,7 +536,7 @@ function countEbuRows({ workbookBuffer, sheet: sheetNameOpt = "" } = {}) {
     "Missing or empty workbook buffer"
   );
   const workbook = XLSX.read(workbookBuffer, { type: "buffer" });
-  const sheetName = sheetNameOpt || workbook.SheetNames[0];
+  const sheetName = resolveSheetName(workbook, sheetNameOpt || "");
   requireArg(!!workbook.Sheets[sheetName], `Sheet not found: ${sheetName}`);
 
   const headerRowIndex = detectHeaderRow(workbook.Sheets[sheetName]);

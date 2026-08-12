@@ -3,6 +3,7 @@ import { useNavigate } from "react-router";
 import { getMyProfile, type UserProfile } from "../../api/authApi";
 import { getAllTickets, type TicketRecord } from "../../api/ticketApi";
 import { getManagerVisits, type VisitRecord } from "../../api/visitApi";
+import { getTeamLeads, type TeamLeadRecord } from "../../api/leadApi";
 import {
   getExecutives,
   getCorporates,
@@ -105,7 +106,7 @@ type ActivityRow = {
   activityType: string;
   corporate: string;
   outcome: string;
-  typeLabel: "Visit" | "Ticket" | "Escalation" | "Account" | "Control Card";
+  typeLabel: "Visit" | "Ticket" | "Escalation" | "Lead" | "Account" | "Control Card";
 };
 
 function StatCard({
@@ -175,6 +176,7 @@ function activityTypeBadge(type: ActivityRow["typeLabel"]) {
     Visit: "bg-emerald-50 text-emerald-800 border-emerald-100",
     Ticket: "bg-blue-50 text-blue-800 border-blue-100",
     Escalation: "bg-white text-slate-700 border border-slate-200",
+    Lead: "bg-violet-50 text-violet-800 border-violet-100",
     Account: "bg-sky-50 text-sky-800 border-sky-100",
     "Control Card": "bg-slate-50 text-slate-700 border border-slate-200",
   };
@@ -189,6 +191,7 @@ export default function ManagerDashboard() {
   const [executives, setExecutives] = useState<ExecutiveRecord[]>([]);
   const [corporates, setCorporates] = useState<CorporateRecord[]>([]);
   const [accounts, setAccounts] = useState<AccountRecord[]>([]);
+  const [teamLeads, setTeamLeads] = useState<TeamLeadRecord[]>([]);
   const [expiringContracts, setExpiringContracts] = useState<ExpiringContractRecord[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
@@ -204,7 +207,17 @@ export default function ManagerDashboard() {
         setProfile(profileData);
         const managerId = profileData.roleProfileId ?? undefined;
 
-        const [ticketsRes, visitsRes, execRes, corpRes, accRes, expContractsRes, spendingSummaryRes, spendingTrendRes] = await Promise.all([
+        const [
+          ticketsRes,
+          visitsRes,
+          execRes,
+          corpRes,
+          accRes,
+          leadsRes,
+          expContractsRes,
+          spendingSummaryRes,
+          spendingTrendRes,
+        ] = await Promise.all([
           getAllTickets().catch(() => [] as TicketRecord[]),
           getManagerVisits().catch(() => [] as VisitRecord[]),
           getExecutives().catch(() => [] as ExecutiveRecord[]),
@@ -214,6 +227,7 @@ export default function ManagerDashboard() {
           managerId != null
             ? getAccounts({ managerId }).catch(() => [] as AccountRecord[])
             : getAccounts().catch(() => [] as AccountRecord[]),
+          getTeamLeads().catch(() => [] as TeamLeadRecord[]),
           getExpiringContracts(6).catch(() => [] as ExpiringContractRecord[]),
           getManagerMonthlySpendingSummary().catch(() => ({
             total: "0.00",
@@ -229,6 +243,7 @@ export default function ManagerDashboard() {
         setExecutives(execRes);
         setCorporates(corpRes);
         setAccounts(accRes);
+        setTeamLeads(leadsRes);
         setExpiringContracts(expContractsRes);
         setMonthlySpendingTotal(spendingSummaryRes.total || "0.00");
         setSpendingTrend(spendingTrendRes);
@@ -357,6 +372,7 @@ export default function ManagerDashboard() {
       const exAccounts = accounts.filter((a) => a.corporateId != null && corpIds.has(a.corporateId));
       const openT = exTickets.filter((t) => openStatuses.has(t.status)).length;
       const visitsMtd = exVisits.filter((v) => monthKey(v.visitDate) === thisMonthKey).length;
+      const leadCount = teamLeads.filter((lead) => lead.executive?.executiveId === ex.executiveId).length;
       const rated = exVisits.filter((v) => typeof v.customerRating === "number");
       const avgR = rated.length
         ? Math.round((rated.reduce((s, v) => s + Number(v.customerRating), 0) / rated.length) * 10) / 10
@@ -369,16 +385,40 @@ export default function ManagerDashboard() {
         corporates: exCorporates || new Set(exTickets.map((t) => t.corporateId).filter(Boolean)).size,
         lines: exAccounts.length,
         openTickets: openT,
+        leads: leadCount,
         visitsMtd,
         avgRating: avgR,
         breached,
         perf,
       };
     });
-  }, [teamExecutives, scopedTickets, scopedVisits, corporates, accounts, thisMonthKey]);
+  }, [teamExecutives, scopedTickets, scopedVisits, corporates, accounts, thisMonthKey, teamLeads]);
 
   const activityRows = useMemo((): ActivityRow[] => {
     const rows: ActivityRow[] = [];
+
+    [...teamLeads]
+      .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+      .slice(0, 20)
+      .forEach((lead) => {
+        const statusLabel = String(lead.status || "pending").replace(/_/g, " ");
+        const fallbackExec = lead.executive?.executiveId
+          ? teamExecutives.find((e) => e.executiveId === lead.executive?.executiveId)
+          : undefined;
+        const executiveLabel =
+          lead.executive?.fullName ||
+          (fallbackExec ? `${fallbackExec.firstName} ${fallbackExec.lastName}` : "-");
+
+        rows.push({
+          key: `l-${lead.leadId}`,
+          date: toISODate(lead.createdAt),
+          executive: executiveLabel,
+          activityType: "Lead",
+          corporate: lead.companyName || "-",
+          outcome: `${lead.productInterest || "Opportunity"} - ${statusLabel}`,
+          typeLabel: "Lead",
+        });
+      });
 
     [...scopedVisits]
       .sort((a, b) => (a.visitDate < b.visitDate ? 1 : a.visitDate > b.visitDate ? -1 : 0))
@@ -426,7 +466,7 @@ export default function ManagerDashboard() {
     return rows
       .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0))
       .slice(0, 12);
-  }, [scopedVisits, scopedTickets, teamExecutives]);
+  }, [scopedVisits, scopedTickets, teamExecutives, teamLeads]);
 
   const departmentSubtitle =
     profile?.department?.trim() ||
@@ -618,6 +658,7 @@ export default function ManagerDashboard() {
                   <TableHead className="text-right">Corporates</TableHead>
                   <TableHead className="text-right">Total Lines</TableHead>
                   <TableHead className="text-right">Open Tickets</TableHead>
+                   <TableHead className="text-right">Leads</TableHead>
                   <TableHead className="text-right">Visits (MTD)</TableHead>
                   <TableHead className="text-right">Avg Rating</TableHead>
                   <TableHead className="text-right">Breached SLA</TableHead>
@@ -639,6 +680,7 @@ export default function ManagerDashboard() {
                       <TableCell className="text-right tabular-nums">{row.corporates}</TableCell>
                       <TableCell className="text-right tabular-nums">{row.lines}</TableCell>
                       <TableCell className="text-right tabular-nums">{row.openTickets}</TableCell>
+                      <TableCell className="text-right tabular-nums">{row.leads}</TableCell>
                       <TableCell className="text-right tabular-nums">{row.visitsMtd}</TableCell>
                       <TableCell className="text-right">
                         <span className="inline-flex items-center justify-end gap-1 tabular-nums">

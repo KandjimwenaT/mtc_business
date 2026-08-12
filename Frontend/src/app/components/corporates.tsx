@@ -148,6 +148,7 @@ export default function Corporates() {
   const showCorporatePanel = isAdmin || isManager || isGm;
   const canViewLiveCorporates = showCorporatePanel || isExecutive;
   const canManageCorporates = isManager || isAdmin;
+  const canCreateCorporates = isAdmin || isExecutive;
   const CARD_PAGE_SIZE = 12;
   const ALPHABET_FILTER_OPTIONS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ".split("");
 
@@ -1241,7 +1242,7 @@ export default function Corporates() {
               : "Manage corporate profiles, child accounts, and overall relationship health."}
           </p>
         </div>
-        {isAdmin && (
+        {canCreateCorporates && (
           <Button className="w-full sm:w-auto" onClick={() => {
             resetCreateWizard();
             setShowCreateCorporateWizard(true);
@@ -3093,7 +3094,7 @@ export default function Corporates() {
       )}
 
       <AdminCorporateWizard
-        show={isAdmin && showCreateCorporateWizard}
+        show={canCreateCorporates && showCreateCorporateWizard}
         wizardStep={wizardStep}
         setWizardStep={setWizardStep}
         resetCreateWizard={resetCreateWizard}

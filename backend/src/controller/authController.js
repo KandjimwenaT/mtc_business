@@ -125,10 +125,11 @@ exports.userRegistration = async (req, res) => {
       role,
     });
 
+    const { password: _pw, ...safeUser } = newUser.toJSON();
     return res.status(201).json({
       status: "Success",
       message: "User registered successfully",
-      user: newUser,
+      user: safeUser,
     });
   } catch (error) {
     console.error("Registration error:", error);
@@ -154,6 +155,18 @@ exports.userLogin = async (req, res) => {
   }
 
   try {
+    // Check lock before DB lookup to prevent timing-based enumeration
+    const earlyLockCheck = securityService.getFailedAttemptStatus(email, 5);
+    if (earlyLockCheck.isLocked) {
+      const minutesLeft = Math.ceil((earlyLockCheck.lockedUntil - Date.now()) / 60000);
+      return res.status(401).json({
+        status: "Failed",
+        message: `Account locked due to too many failed attempts. Try again in ${minutesLeft} minute${minutesLeft === 1 ? '' : 's'}.`,
+        lockedUntil: new Date(earlyLockCheck.lockedUntil).toISOString(),
+        retryAfterMinutes: minutesLeft,
+      });
+    }
+
     // Find user by email
     const user = await User.findOne({ where: { email } });
     if (!user) {
@@ -161,18 +174,6 @@ exports.userLogin = async (req, res) => {
       return res
         .status(401)
         .json({ status: "Failed", message: "Invalid credentials" });
-    }
-
-    // Check if account is already locked (without incrementing attempts)
-    const failedAttemptData = securityService.getFailedAttemptStatus(email, 5);
-    if (failedAttemptData.isLocked) {
-      const minutesLeft = Math.ceil((failedAttemptData.lockedUntil - Date.now()) / 60000);
-      return res.status(401).json({
-        status: "Failed",
-        message: `Account locked due to too many failed attempts. Try again in ${minutesLeft} minute${minutesLeft === 1 ? '' : 's'}.`,
-        lockedUntil: new Date(failedAttemptData.lockedUntil).toISOString(),
-        retryAfterMinutes: minutesLeft,
-      });
     }
 
     // Compare password with hashed password
@@ -207,10 +208,17 @@ exports.userLogin = async (req, res) => {
       "1h",
     );
 
-    // Generate refresh token (long-lived)
+    // Generate refresh token (long-lived) — requires a dedicated secret
+    const refreshSecret = process.env.REFRESH_TOKEN_SECRET;
+    if (!refreshSecret) {
+      if (process.env.NODE_ENV === 'production') {
+        throw new Error('REFRESH_TOKEN_SECRET must be set in production');
+      }
+      console.warn('[auth] REFRESH_TOKEN_SECRET not set, falling back to JWT_SECRET');
+    }
     const refreshToken = securityService.generateJWT(
       { userId: user.id },
-      process.env.REFRESH_TOKEN_SECRET || process.env.JWT_SECRET,
+      refreshSecret || process.env.JWT_SECRET,
       "7d",
     );
 

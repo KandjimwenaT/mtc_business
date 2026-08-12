@@ -707,7 +707,7 @@ exports.getAllTickets = async (req, res) => {
   try {
     const user = req.user;
 
-    if (!["admin", "manager", "supervisor", "gm", "executive_staff", "customer"].includes(user.role)) {
+    if (!["admin", "manager", "supervisor", "gm"].includes(user.role)) {
       return res.status(403).json({ status: "Failed", message: "Insufficient permissions" });
     }
 
@@ -864,7 +864,8 @@ exports.updateTicket = async (req, res) => {
     const customerUserIds = await resolveCustomerUserIdsByAccountId(ticket.accountId);
     const executiveUserId = await resolveExecutiveUserIdByExecutiveProfileId(ticket.executiveId);
     const managerTeamIds = await resolveManagerTeamNotificationUserIds(ticket.executiveId);
-    await createForUserIds([...customerUserIds, executiveUserId, ...managerTeamIds], {
+    const execIds = executiveUserId != null ? [executiveUserId] : [];
+    await createForUserIds([...customerUserIds, ...execIds, ...managerTeamIds], {
       type: "ticket",
       title: `Ticket Updated - ${ticket.ticketNumber}`,
       message: `${ticket.title} status is now ${ticket.status.replace(/_/g, " ")}.`,

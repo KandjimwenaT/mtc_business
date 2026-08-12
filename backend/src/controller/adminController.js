@@ -510,7 +510,6 @@ exports.createPortalAccess = async (req, res) => {
           lastName: userRecord.lastName,
           email: userRecord.email,
           role: userRecord.role,
-          password: tempPassword,
         },
       });
     }
@@ -580,7 +579,6 @@ exports.createPortalAccess = async (req, res) => {
           lastName: userRecord.lastName,
           email: userRecord.email,
           role: userRecord.role,
-          password: tempPassword,
         },
       });
     }
@@ -740,7 +738,6 @@ exports.createPortalAccess = async (req, res) => {
         lastName: userRecord.lastName,
         email: userRecord.email,
         role: userRecord.role,
-        password: tempPassword,
       },
     });
   } catch (error) {
@@ -2859,7 +2856,6 @@ exports.completeImportedExecutiveOnboarding = async (req, res) => {
         lastName: userRecord.lastName,
         email: userRecord.email,
         role: userRecord.role,
-        password: tempPassword,
       },
     });
   } catch (error) {

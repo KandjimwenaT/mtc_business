@@ -477,10 +477,10 @@ exports.respondToVisit = async (req, res) => {
     if (action === "approve") {
       updates.status = "approved";
     } else if (action === "decline") {
-      updates.status = "declined";
       if (!customerResponse) {
         return res.status(400).json({ status: "Failed", message: "Please provide a reason for declining" });
       }
+      updates.status = "declined";
     } else if (action === "reschedule") {
       if (!rescheduleDate || !rescheduleStartTime || !rescheduleEndTime) {
         return res.status(400).json({ status: "Failed", message: "rescheduleDate, rescheduleStartTime and rescheduleEndTime are required" });
@@ -602,6 +602,19 @@ exports.approveReschedule = async (req, res) => {
       return res.status(400).json({ status: "Failed", message: "No pending reschedule request for this visit" });
     }
 
+    // Scope: managers and supervisors can only approve visits within their team
+    if (user.role === "manager") {
+      const execIds = await getManagerExecIds(user.id);
+      if (execIds !== null && !execIds.includes(visit.executiveId)) {
+        return res.status(403).json({ status: "Failed", message: "This visit is not within your team's scope" });
+      }
+    } else if (user.role === "supervisor") {
+      const execIds = await getSupervisorManagedExecutiveIds(user);
+      if (execIds.length > 0 && !execIds.includes(visit.executiveId)) {
+        return res.status(403).json({ status: "Failed", message: "This visit is not within your team's scope" });
+      }
+    }
+
     // Get manager name
     const manager = await Manager.findOne({ where: { userId: user.id } });
     const managerName = manager ? `${manager.firstName} ${manager.lastName}` : user.email;
@@ -712,6 +725,13 @@ exports.updateVisit = async (req, res) => {
 
     // Mark visit as completed or cancelled
     if (["executive_staff", "manager", "supervisor", "admin"].includes(user.role) && status) {
+      // Executives can only update visits assigned to themselves
+      if (hasExecutiveScope(user.role)) {
+        const exec = await ExecutiveStaff.findOne({ where: { userId: user.id } });
+        if (!exec || exec.executiveId !== visit.executiveId) {
+          return res.status(403).json({ status: "Failed", message: "You are not assigned to this visit" });
+        }
+      }
       const allowed = ["confirmed", "completed", "cancelled"];
       if (!allowed.includes(status)) {
         return res.status(400).json({ status: "Failed", message: `status must be one of: ${allowed.join(", ")}` });

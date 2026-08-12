@@ -72,7 +72,6 @@ const validateInput = (req, res, next) => {
     /eval\s*\(/i,
     /expression\s*\(/i,
     /vbscript:/i,
-    /data:/i
   ];
   
   const checkForSuspiciousContent = (obj, path = '') => {

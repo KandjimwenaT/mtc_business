@@ -174,12 +174,14 @@ export const updateMyProfile = async (
     throw new Error(data.message || "Failed to update profile");
   }
 
-  // Sync localStorage with updated profile
+  // Sync localStorage with updated profile fields
   const currentUser = getCurrentUser();
   if (currentUser) {
     const updated = {
       ...currentUser,
       firstName: data.profile.firstName,
+      lastName: data.profile.lastName,
+      phone: data.profile.phone,
     };
     localStorage.setItem("currentUser", JSON.stringify(updated));
   }

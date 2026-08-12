@@ -1,8 +1,9 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import { getCurrentUser } from "../../api/authApi";
 import { getTicketDetailPath } from "../../utils/ticketNavigation";
 import { type TicketRecord } from "../../api/ticketApi";
+import { getMyLeads, type LeadRecord as LeadApiRecord } from "../../api/leadApi";
 import { useExecutiveData } from "../../hooks/useExecutiveData";
 import { 
   Card, 
@@ -62,6 +63,8 @@ export default function ExecutiveDashboard() {
   const currentUser = getCurrentUser();
   const navigate = useNavigate();
   const executiveName = currentUser?.firstName || "Executive";
+  const [leads, setLeads] = useState<LeadApiRecord[]>([]);
+  const [leadsLoading, setLeadsLoading] = useState(true);
   const {
     accounts,
     tickets,
@@ -73,6 +76,32 @@ export default function ExecutiveDashboard() {
     initialLoading,
     error,
   } = useExecutiveData();
+
+  useEffect(() => {
+    let isMounted = true;
+    const loadLeads = async () => {
+      try {
+        const rows = await getMyLeads();
+        if (isMounted) {
+          setLeads(rows);
+        }
+      } catch (error) {
+        console.error("Failed to load executive leads", error);
+        if (isMounted) {
+          setLeads([]);
+        }
+      } finally {
+        if (isMounted) {
+          setLeadsLoading(false);
+        }
+      }
+    };
+
+    void loadLeads();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   const monthlySpendingTotal = spendingSummary?.total || "0.00";
   const managerName = profile?.manager
@@ -160,6 +189,12 @@ export default function ExecutiveDashboard() {
   const portfolioRows = Array.from(corporatesMap.values()).sort((a, b) => b.lines - a.lines);
   const corporateCount = corporatesMap.size;
   const totalLines = portfolioRows.reduce((sum, row) => sum + row.lines, 0);
+  const activeLeadsCount = leads.filter((lead) => ["pending", "in_progress", "ongoing"].includes(lead.status)).length;
+  const monthlyLeadsCount = leads.filter((lead) => {
+    const createdAt = new Date(lead.createdAt);
+    const now = new Date();
+    return createdAt.getMonth() === now.getMonth() && createdAt.getFullYear() === now.getFullYear();
+  }).length;
   const openTicketsCount = tickets.filter((t) => !["resolved", "closed", "rejected"].includes(t.status)).length;
   const breachedSlaCount = tickets.filter((t) => getSlaStatus(t) === "Breached").length;
   const pendingVisitsCount = visits.filter((v) => ["pending", "approved", "confirmed", "rescheduled"].includes(v.status)).length;
@@ -359,6 +394,14 @@ export default function ExecutiveDashboard() {
             <p className="text-xs text-slate-400">
               {`${expiringContracts.length} contracts expiring in 6 months`}
             </p>
+          </CardContent>
+        </Card>
+
+         <Card>
+          <CardContent className="pt-6">
+            <p className="text-sm font-medium text-slate-500">My Leads</p>
+            <div className="mt-2 text-2xl sm:text-3xl font-bold text-slate-900">{leadsLoading ? "..." : leads.length}</div>
+            <p className="text-xs text-slate-400">{leadsLoading ? "Loading leads..." : `${activeLeadsCount} active • ${monthlyLeadsCount} this month`}</p>
           </CardContent>
         </Card>
       </div>

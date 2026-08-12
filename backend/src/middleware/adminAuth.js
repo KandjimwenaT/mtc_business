@@ -22,15 +22,17 @@ const superAdminOnly = (req, res, next) => {
   next();
 };
 
-// Allow admin, manager, supervisor, or GM (read-only oversight) roles
+// Allow admin, manager, supervisor, executive staff, or GM (read-only oversight) roles.
+// Executive staff are permitted to use the corporate creation flows from the EBU side.
 const adminOrManager = (req, res, next) => {
   if (
     req.user.role !== 'admin' &&
     req.user.role !== 'manager' &&
     req.user.role !== 'supervisor' &&
+    req.user.role !== 'executive_staff' &&
     req.user.role !== 'gm'
   ) {
-    return res.status(403).json({ message: 'Access denied. Admin, Manager, Supervisor, or GM role required.' });
+    return res.status(403).json({ message: 'Access denied. Admin, Manager, Supervisor, Executive, or GM role required.' });
   }
   next();
 };

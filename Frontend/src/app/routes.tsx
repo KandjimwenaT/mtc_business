@@ -17,6 +17,7 @@ import AccountManagerProfile from "./profiles/account-manager-profile";
 import GMCRMProfile from "./profiles/gm-crm-profile";
 import BackOfficeProfile from "./profiles/back-office-profile";
 import ExecutiveProfile from "./profiles/executive-profile";
+import ExecutiveLeads from "./components/executive/ExecutiveLeads";
 import ManagementProfile from "./profiles/management-profile";
 import SupervisorProfile from "./profiles/supervisor-profile";
 import CustomerTickets from "./components/customer/CustomerTickets";
@@ -25,6 +26,7 @@ import ExecutiveVisits from "./components/executive/ExecutiveVisits";
 import ExecutiveDashboard from "./components/executive/ExecutiveDashboard";
 import ManagerVisits from "./components/manager/ManagerVisits";
 import ManagerDashboard from "./components/manager/ManagerDashboard";
+import ManagerLeads from "./components/manager/ManagerLeads";
 import GmDashboard from "./components/gm/GmDashboard";
 import ForgotPassword from "./view/forgot-password";
 import AdminCorporate from "./components/admin/adminCorporate";
@@ -162,6 +164,7 @@ export const router = createBrowserRouter([
             children: [
               { path: "management-profile", Component: ManagementProfile },
               { path: "manager-visits", Component: ManagerVisits },
+              { path: "manager-leads", Component: ManagerLeads },
            
             ],
           },
@@ -175,6 +178,7 @@ export const router = createBrowserRouter([
               { path: "executive-tickets", Component: ExecutiveTickets },
               { path: "executive-tickets/:id", Component: TicketDetails },
               { path: "executive-visits", Component: ExecutiveVisits },
+              { path: "executive-leads", Component: ExecutiveLeads },
               { path: "executive-notifications", Component: Notifications },
 
             ],

@@ -16,7 +16,7 @@ import { getMyAccounts } from "../api/authApi";
 import type { ExecutiveAccountRecord } from "../api/authApi";
 import ProfileEditSection from "../components/profile-edit-section";
 
-type Tab = "profile" | "tickets" | "leads" | "vehicle" | "settings";
+type Tab = "profile" | "tickets" | "vehicle" | "settings";
 
 export default function ExecutiveProfile() {
   const [activeTab, setActiveTab] = useState<Tab>("profile");
@@ -46,7 +46,6 @@ export default function ExecutiveProfile() {
   const tabs: { key: Tab; label: string }[] = [
     { key: "profile", label: "Executive Profile" },
     { key: "tickets", label: "Ticket Access" },
-    { key: "leads", label: "Lead Creation" },
     { key: "vehicle", label: "Vehicle Check-in/out" },
     { key: "settings", label: "Profile Settings" },
   ];
@@ -206,87 +205,6 @@ export default function ExecutiveProfile() {
               ))}
             </TableBody>
           </Table>
-        </Card>
-      )}
-
-      {/* LEAD CREATION */}
-      {activeTab === "leads" && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base flex items-center gap-2"><Plus className="h-5 w-5 text-mtc-blue" /> Create New Lead</CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-5">
-            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-              <div className="space-y-2">
-                <Label>Lead Source <span className="text-red-500">*</span></Label>
-                <Select>
-                  <option value="">Select Source...</option>
-                  <option>Customer Visit</option>
-                  <option>Referral</option>
-                  <option>Cold Call</option>
-                  <option>Event / Conference</option>
-                  <option>Website Inquiry</option>
-                </Select>
-              </div>
-              <div className="space-y-2">
-                <Label>Company Name <span className="text-red-500">*</span></Label>
-                <Input placeholder="e.g. Namibia Holdings Ltd" />
-              </div>
-              <div className="space-y-2">
-                <Label>Contact Person <span className="text-red-500">*</span></Label>
-                <Input placeholder="Full name" />
-              </div>
-              <div className="space-y-2">
-                <Label>Contact Phone</Label>
-                <Input placeholder="+264 81..." />
-              </div>
-              <div className="space-y-2">
-                <Label>Contact Email</Label>
-                <Input placeholder="email@company.com" />
-              </div>
-              <div className="space-y-2">
-                <Label>Estimated Lines</Label>
-                <Select>
-                  <option>1 - 10</option>
-                  <option>11 - 50</option>
-                  <option>51 - 100</option>
-                  <option>100+</option>
-                </Select>
-              </div>
-              <div className="space-y-2">
-                <Label>Product Interest <span className="text-red-500">*</span></Label>
-                <Select>
-                  <option value="">Select Product...</option>
-                  <option>Mobile Voice</option>
-                  <option>Fiber Internet</option>
-                  <option>Cloud Services</option>
-                  <option>IoT Solutions</option>
-                  <option>SD-WAN</option>
-                  <option>Bundled Package</option>
-                </Select>
-              </div>
-              <div className="space-y-2">
-                <Label>Priority</Label>
-                <Select>
-                  <option>Medium</option>
-                  <option>High</option>
-                  <option>Low</option>
-                </Select>
-              </div>
-              <div className="space-y-2">
-                <Label>Expected Close Date</Label>
-                <Input type="date" />
-              </div>
-              <div className="space-y-2 md:col-span-2 lg:col-span-3">
-                <Label>Notes</Label>
-                <textarea className="flex min-h-[60px] w-full rounded-md border border-slate-300 bg-transparent px-3 py-2 text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-mtc-blue" placeholder="Brief notes about the lead..." />
-              </div>
-            </div>
-            <div className="flex justify-end gap-2 pt-4 border-t border-slate-200">
-              <Button variant="outline">Save as Draft</Button>
-              <Button onClick={() => toast.success("Lead created", { description: "Lead has been submitted and assigned to your pipeline." })}>Submit Lead</Button>
-            </div>
-          </CardContent>
         </Card>
       )}
 

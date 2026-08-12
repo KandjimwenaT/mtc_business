@@ -159,7 +159,7 @@ export default function Tickets() {
             className="inline-flex items-center gap-2"
           >
             My Executive Work
-            {supervisorBadges.executiveSideDot && supervisorView === "executive" && (
+            {supervisorBadges.executiveSideDot && supervisorView !== "executive" && (
               <span className="h-2 w-2 shrink-0 rounded-full bg-red-500" title="Your executive queue needs attention" />
             )}
           </Button>
@@ -169,7 +169,7 @@ export default function Tickets() {
             className="inline-flex items-center gap-2"
           >
             Manager Oversight
-            {supervisorBadges.managerSideDot && supervisorView === "manager" && (
+            {supervisorBadges.managerSideDot && supervisorView !== "manager" && (
               <span className="h-2 w-2 shrink-0 rounded-full bg-red-500" title="Team oversight queue needs attention" />
             )}
           </Button>

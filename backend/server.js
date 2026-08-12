@@ -6,8 +6,8 @@ const multer = require('multer');
 const cors = require('cors');
 const helmet = require('helmet');
 const { connectDB, sequelize } = require('./src/config/database');
-const { apiLimiter } = require('./src/middleware/rateLimiter');
-const { xssProtection } = require('./src/middleware/security');
+const { apiLimiter, authLimiter } = require('./src/middleware/rateLimiter');
+const { xssProtection, validateInput } = require('./src/middleware/security');
 const authRoutes = require('./src/routes/authRoutes');
 const adminRoutes = require('./src/routes/adminRoutes');
 const auth = require('./src/middleware/auth');
@@ -36,6 +36,8 @@ const ticketRoutes = require('./src/routes/ticketRoutes');
 const visitRoutes = require('./src/routes/visitRoutes');
 const notificationRoutes = require('./src/routes/notificationRoutes');
 const Notification = require('./src/models/Notification');
+const Lead = require('./src/models/Lead');
+const leadRoutes = require('./src/routes/leadRoutes');
 require('dotenv').config();
 
 const app = express();
@@ -107,12 +109,13 @@ app.use((req, res, next) => {
 
 // XSS sanitization
 app.use(xssProtection);
+app.use(validateInput);
 
 // Rate limiting
 app.use('/api', apiLimiter);
 
-// ── Public routes (no token needed) ──────────────────────────────
-app.use('/api/auth', authRoutes);
+// ── Public routes (no token needed) ───────────────────────────────────
+app.use('/api/auth', authLimiter, authRoutes);
 
 // ── JWT guard: every /api/* route below this line requires a valid token ──
 app.use('/api', auth);
@@ -124,6 +127,7 @@ app.use('/api/account-requests', accountRequestRoutes);
 app.use('/api/tickets', ticketRoutes);
 app.use('/api/visits', visitRoutes);
 app.use('/api/notifications', notificationRoutes);
+app.use('/api/leads', leadRoutes);
 
 // Health check
 app.get('/health', (req, res) => {
@@ -331,6 +335,7 @@ const startServer = async () => {
   await TicketActivityLog.sync();
   await Visit.sync();
   await Notification.sync();
+  await Lead.sync();
   await OTPModel.sync();
   server.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);

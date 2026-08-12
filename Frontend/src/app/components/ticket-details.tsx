@@ -1,5 +1,5 @@
 import { useParams, useNavigate } from "react-router";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { 
   Button, 
@@ -70,6 +70,7 @@ export default function TicketDetails() {
   const [resolution, setResolution] = useState("");
   const [saving, setSaving] = useState(false);
   const [addingNote, setAddingNote] = useState(false);
+  const savedActionTaken = useRef("");
   const currentUser = getCurrentUser();
   const canAddInternalNote = canAddTicketInternalNote(currentUser?.role);
   const ticketsListPath = getTicketsListPath(currentUser?.role);
@@ -90,7 +91,9 @@ export default function TicketDetails() {
         setResolution(data.resolution || "");
         const logs = data.activityLog ?? [];
         const lastWithAction = [...logs].reverse().find((l) => (l.actionTaken || "").trim());
-        setActionTaken(lastWithAction?.actionTaken?.trim() ?? "");
+        const initialAction = lastWithAction?.actionTaken?.trim() ?? "";
+        savedActionTaken.current = initialAction;
+        setActionTaken(initialAction);
       } catch (err: any) {
         setError(err.message || "Failed to load ticket");
       } finally {
@@ -230,11 +233,14 @@ export default function TicketDetails() {
     if (!ticket) return;
     try {
       setSaving(true);
+      const trimmedAction = actionTaken.trim();
       const updated = await updateTicket(ticket.ticketId, {
         status: ticketStatus,
         ...(resolution !== (ticket.resolution ?? "") ? { resolution } : {}),
-        ...(actionTaken.trim() ? { actionTaken: actionTaken.trim() } : {}),
+        // only include actionTaken when the user actually changed it
+        ...(trimmedAction && trimmedAction !== savedActionTaken.current ? { actionTaken: trimmedAction } : {}),
       });
+      savedActionTaken.current = trimmedAction;
       setTicket(updated);
       toast.success("Ticket updated", { description: `${updated.ticketNumber} was updated successfully.` });
     } catch (err: any) {
@@ -262,10 +268,7 @@ export default function TicketDetails() {
     try {
       setAddingNote(true);
       const createdNote = await addInternalTicketNote(ticket.ticketId, internalNote.trim());
-      setTicket({
-        ...ticket,
-        internalNotes: [...(ticket.internalNotes || []), createdNote],
-      });
+      setTicket(prev => prev ? { ...prev, internalNotes: [...(prev.internalNotes ?? []), createdNote] } : prev);
       setInternalNote("");
       toast.success("Internal note added and notifications sent.");
     } catch (err: any) {
@@ -299,7 +302,7 @@ export default function TicketDetails() {
             <CardHeader className="bg-slate-50 border-b border-slate-200 py-4">
               <CardTitle className="text-base flex items-center gap-2">
                 <Clock className="h-4 w-4 text-mtc-blue" /> 
-                SLA Progress (Target: 24h)
+                SLA Progress {ticket.slaDeadline ? `(Target: ${Math.round((new Date(ticket.slaDeadline).getTime() - new Date(ticket.createdAt).getTime()) / 3_600_000)}h)` : ""}
               </CardTitle>
             </CardHeader>
             <CardContent className="pt-6">

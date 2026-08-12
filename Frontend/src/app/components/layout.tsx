@@ -13,6 +13,7 @@ import {
   X,
    Star,
    CalendarDays,
+   FileText,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { cn } from "./ui-components";
@@ -33,6 +34,7 @@ export default function Layout() {
   const isCustomer = currentUser?.role === "customer";
   const isSupervisor = isSupervisorRole(currentUser?.role);
   const hasExecutiveScope = isExecutiveRole(currentUser?.role);
+  const isExecutiveStaff = currentUser?.role === "executive_staff";
   const hasManagerScope = isManagerRole(currentUser?.role);
   const isGm = isGmRole(currentUser?.role);
   const notificationsHref =
@@ -88,6 +90,12 @@ export default function Layout() {
       ]
     : [
         { name: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
+        ...(hasManagerScope
+          ? [{ name: "Leads", href: "/manager-leads", icon: FileText }]
+          : []),
+        ...(isExecutiveStaff
+          ? [{ name: "Leads", href: "/executive-leads", icon: FileText }]
+          : []),
         {
           name: currentUser?.role === "admin" ? "Admin Corporates" : "Corporates",
           href: currentUser?.role === "admin" ? "/admin-corporates" : "/corporates",
