@@ -36,6 +36,7 @@ export interface PortalUser {
   email: string;
   phone: string | null;
   role: string;
+  department: string | null;
   created_at: string;
 }
 

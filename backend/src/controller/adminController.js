@@ -125,6 +125,31 @@ async function resolveRequesterManagerContext(user) {
   };
 }
 
+async function resolvePersonDepartment(person) {
+  if (!person) return null;
+  if (person.department) return person.department;
+  if (person.managerId && ["admin", "executive_staff"].includes(person.type)) {
+    const managerPerson = await Person.findByPk(person.managerId, {
+      attributes: ["department"],
+    });
+    return managerPerson?.department || null;
+  }
+  return null;
+}
+
+async function assertDepartmentScopedAccess(requester, targetDepartment, actionLabel = "this action") {
+  const requesterDepartment = await resolveRequesterDepartment(requester);
+  if (!requesterDepartment || !targetDepartment) return;
+
+  if (isKeyAccountsDepartment(requesterDepartment) && !isKeyAccountsDepartment(targetDepartment)) {
+    throw new Error(`Only Key Accounts users can ${actionLabel} for Key Accounts.`);
+  }
+
+  if (isEbuDepartment(requesterDepartment) && !isEbuDepartment(targetDepartment)) {
+    throw new Error(`Only EBU users can ${actionLabel} for EBU.`);
+  }
+}
+
 function personBelongsToManager(person, ctx) {
   return (
     person.managerId === ctx.managerProfile.managerId ||
@@ -216,7 +241,7 @@ exports.createPerson = async (req, res) => {
         .json({ status: "Failed", message: "A user/contact with this email already exists" });
     }
 
-    if (type === "admin") {
+    if (type === "admin" || type === "executive_staff") {
       const manager = await Person.findByPk(managerId);
       if (!manager || manager.type !== "manager") {
         return res.status(400).json({ status: "Failed", message: "Selected manager is invalid" });
@@ -225,6 +250,12 @@ exports.createPerson = async (req, res) => {
       if (!resolvedDepartment) {
         return res.status(400).json({ status: "Failed", message: "Selected manager has no department configured" });
       }
+    }
+
+    try {
+      await assertDepartmentScopedAccess(req.user, resolvedDepartment, "create users in");
+    } catch (error) {
+      return res.status(403).json({ status: "Failed", message: error.message });
     }
 
     if (type === "customer") {
@@ -405,6 +436,13 @@ exports.deletePersonWithoutPortalAccess = async (req, res) => {
     }
     if (person.hasPortalAccess) {
       return res.status(400).json({ status: "Failed", message: "Cannot delete a user who has portal access" });
+    }
+
+    try {
+      const targetDepartment = await resolvePersonDepartment(person);
+      await assertDepartmentScopedAccess(req.user, targetDepartment, "delete users from");
+    } catch (error) {
+      return res.status(403).json({ status: "Failed", message: error.message });
     }
 
     // Clean up any unlinked profile records created earlier without access.
@@ -598,6 +636,13 @@ exports.createPortalAccess = async (req, res) => {
       }
     }
 
+    try {
+      const targetDepartment = await resolvePersonDepartment(person);
+      await assertDepartmentScopedAccess(req.user, targetDepartment, "grant portal access for");
+    } catch (error) {
+      return res.status(403).json({ status: "Failed", message: error.message });
+    }
+
     const existingUser = await User.findOne({ where: { email: person.email } });
 
     // Check if truly fully set up (flag + user + profile all present)
@@ -755,7 +800,25 @@ exports.getPortalUsers = async (req, res) => {
       attributes: ["id", "firstName", "lastName", "email", "phone", "role", "created_at"],
       order: [["created_at", "DESC"]],
     });
-    return res.status(200).json({ status: "Success", users });
+
+    const emails = users.map((user) => user.email).filter(Boolean);
+    const persons = emails.length
+      ? await Person.findAll({
+          where: { email: { [Op.in]: emails } },
+          attributes: ["email", "department"],
+        })
+      : [];
+
+    const departmentByEmail = new Map(
+      persons.map((person) => [person.email, person.department || null])
+    );
+
+    const enrichedUsers = users.map((user) => ({
+      ...user.toJSON(),
+      department: departmentByEmail.get(user.email) ?? null,
+    }));
+
+    return res.status(200).json({ status: "Success", users: enrichedUsers });
   } catch (error) {
     console.error("Get portal users error:", error);
     return res
@@ -2500,6 +2563,18 @@ exports.revokePortalAccess = async (req, res) => {
     const user = await User.findByPk(userId);
     if (!user) {
       return res.status(404).json({ status: "Failed", message: "User not found" });
+    }
+
+    if (user.role !== "customer") {
+      const person = await Person.findOne({ where: { email: user.email } });
+      if (person) {
+        try {
+          const targetDepartment = await resolvePersonDepartment(person);
+          await assertDepartmentScopedAccess(req.user, targetDepartment, "revoke portal access for");
+        } catch (error) {
+          return res.status(403).json({ status: "Failed", message: error.message });
+        }
+      }
     }
 
     // Nullify user_id FK in all profile tables so the profiles are preserved

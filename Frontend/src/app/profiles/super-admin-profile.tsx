@@ -927,7 +927,8 @@ export default function SuperAdminProfile() {
     u.firstName.toLowerCase().includes(searchUsers.toLowerCase()) ||
     u.lastName.toLowerCase().includes(searchUsers.toLowerCase()) ||
     u.email.toLowerCase().includes(searchUsers.toLowerCase()) ||
-    u.role.toLowerCase().includes(searchUsers.toLowerCase())
+    u.role.toLowerCase().includes(searchUsers.toLowerCase()) ||
+    (u.department ?? "").toLowerCase().includes(searchUsers.toLowerCase())
   );
 
   return (
@@ -1158,11 +1159,23 @@ export default function SuperAdminProfile() {
                       <Label>Reports to Manager <span className="text-red-500">*</span></Label>
                       <Select
                         value={createUserForm.managerId?.toString() ?? ""}
-                        onChange={(e) => setCreateUserForm(f => ({ ...f, managerId: e.target.value ? Number(e.target.value) : undefined }))}
+                        onChange={(e) => {
+                          const nextManagerId = e.target.value ? Number(e.target.value) : undefined;
+                          const manager = managerList.find((m) => m.id === nextManagerId);
+                          setCreateUserForm(f => ({
+                            ...f,
+                            managerId: nextManagerId,
+                            department: manager?.department ?? "",
+                          }));
+                        }}
                       >
                         <option value="">Select Manager...{loadingHierarchy ? " (loading)" : ""}</option>
                         {managerList.map(m => <option key={m.id} value={m.id}>{m.firstName} {m.lastName}{m.department ? ` — ${m.department}` : ""}</option>)}
                       </Select>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Department</Label>
+                      <Input value={selectedManager?.department ?? createUserForm.department ?? ""} readOnly />
                     </div>
                   </>
                 )}
@@ -1309,21 +1322,23 @@ export default function SuperAdminProfile() {
                   <TableHead>Name</TableHead>
                   <TableHead>Email</TableHead>
                   <TableHead>Role</TableHead>
+                  <TableHead>Department</TableHead>
                   <TableHead>Created</TableHead>
                   <TableHead className="text-right">Actions</TableHead>
                 </TableRow>
               </TableHeader>
               <TableBody>
                 {loadingPortalUsers ? (
-                  <TableRow><td colSpan={6} className="text-center py-8 text-slate-500 px-4"><Loader2 className="h-5 w-5 animate-spin inline mr-2" />Loading...</td></TableRow>
+                  <TableRow><td colSpan={7} className="text-center py-8 text-slate-500 px-4"><Loader2 className="h-5 w-5 animate-spin inline mr-2" />Loading...</td></TableRow>
                 ) : filteredPortalUsers.length === 0 ? (
-                  <TableRow><td colSpan={6} className="text-center py-8 text-slate-400 px-4">No portal users found</td></TableRow>
+                  <TableRow><td colSpan={7} className="text-center py-8 text-slate-400 px-4">No portal users found</td></TableRow>
                 ) : filteredPortalUsers.map((u) => (
                   <TableRow key={u.id}>
                     <TableCell className="font-mono text-xs text-mtc-blue">{u.id}</TableCell>
                     <TableCell className="font-medium text-slate-900">{u.firstName} {u.lastName}</TableCell>
                     <TableCell className="text-sm">{u.email}</TableCell>
                     <TableCell><Badge variant="default">{ROLE_LABELS[u.role] || u.role}</Badge></TableCell>
+                    <TableCell className="text-sm text-slate-600">{u.department || "—"}</TableCell>
                     <TableCell className="text-sm text-slate-500">{u.created_at ? new Date(u.created_at).toLocaleDateString() : "—"}</TableCell>
                     <TableCell className="text-right">
                       <div className="flex gap-1 justify-end">
