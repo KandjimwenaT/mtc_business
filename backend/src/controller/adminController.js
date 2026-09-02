@@ -10,6 +10,11 @@ const Corporate = require("../models/Corporate");
 const AccountManager = require("../models/AccountManager");
 const CorporateContactPerson = require("../models/CorporateContactPerson");
 const Account = require("../models/Account");
+const AccountRequest = require("../models/AccountRequest");
+const Ticket = require("../models/Ticket");
+const Complaint = require("../models/Complaint");
+const Visit = require("../models/Visit");
+const ControlCard = require("../models/ControlCard");
 const Contract = require("../models/Contract");
 const { reassignOpenTicketsForCorporate } = require("../services/ticketExecutiveSyncService");
 const Service = require("../models/Service");
@@ -407,6 +412,71 @@ exports.getPersonsByType = async (req, res) => {
   }
 };
 
+// Clear FKs that point at unlinked GM/Manager/ExecutiveStaff rows, then delete
+// the directory Person. Visits/control cards require a non-null executive_id,
+// so those records are removed rather than unassigned.
+async function detachUnlinkedProfilesAndDeletePerson(person, transaction) {
+  const execStaff = await ExecutiveStaff.findAll({
+    where: { email: person.email, userId: null },
+    attributes: ["executiveId"],
+    transaction,
+  });
+  const executiveIds = execStaff.map((row) => row.executiveId);
+
+  if (executiveIds.length) {
+    const execWhere = { executiveId: { [Op.in]: executiveIds } };
+    await Ticket.update({ executiveId: null }, { where: execWhere, transaction });
+    await Complaint.update({ executiveId: null }, { where: execWhere, transaction });
+    await AccountRequest.update({ executiveId: null }, { where: execWhere, transaction });
+    await Corporate.update({ executiveId: null }, { where: execWhere, transaction });
+    await Account.update({ executiveId: null }, { where: execWhere, transaction });
+
+    const visits = await Visit.findAll({
+      where: execWhere,
+      attributes: ["visitId"],
+      transaction,
+    });
+    const visitIds = visits.map((row) => row.visitId);
+    if (visitIds.length) {
+      await ControlCard.destroy({ where: { visitId: { [Op.in]: visitIds } }, transaction });
+      await Visit.destroy({ where: { visitId: { [Op.in]: visitIds } }, transaction });
+    }
+    await ControlCard.destroy({ where: execWhere, transaction });
+    await ExecutiveStaff.destroy({ where: { executiveId: { [Op.in]: executiveIds } }, transaction });
+  }
+
+  const managers = await Manager.findAll({
+    where: { email: person.email, userId: null },
+    attributes: ["managerId"],
+    transaction,
+  });
+  const managerIds = managers.map((row) => row.managerId);
+  if (managerIds.length) {
+    const managerWhere = { managerId: { [Op.in]: managerIds } };
+    await ExecutiveStaff.update({ managerId: null }, { where: managerWhere, transaction });
+    await Corporate.update({ managerId: null }, { where: managerWhere, transaction });
+    await Account.update({ managerId: null }, { where: managerWhere, transaction });
+    await Manager.destroy({ where: { managerId: { [Op.in]: managerIds } }, transaction });
+  }
+
+  const gms = await GM.findAll({
+    where: { email: person.email, userId: null },
+    attributes: ["gmId"],
+    transaction,
+  });
+  const gmIds = gms.map((row) => row.gmId);
+  if (gmIds.length) {
+    await Manager.update({ gmId: null }, { where: { gmId: { [Op.in]: gmIds } }, transaction });
+    await GM.destroy({ where: { gmId: { [Op.in]: gmIds } }, transaction });
+  }
+
+  await Account.update({ managerId: null }, { where: { managerId: person.id }, transaction });
+  await Corporate.update({ managerId: null }, { where: { managerId: person.id }, transaction });
+  await Person.update({ managerId: null }, { where: { managerId: person.id }, transaction });
+  await Person.update({ gmId: null }, { where: { gmId: person.id }, transaction });
+  await person.destroy({ transaction });
+}
+
 // ── Delete person/contact without portal access ───────────────────
 exports.deletePersonWithoutPortalAccess = async (req, res) => {
   const { personId } = req.params;
@@ -445,11 +515,14 @@ exports.deletePersonWithoutPortalAccess = async (req, res) => {
       return res.status(403).json({ status: "Failed", message: error.message });
     }
 
-    // Clean up any unlinked profile records created earlier without access.
-    await GM.destroy({ where: { email: person.email, userId: null } });
-    await Manager.destroy({ where: { email: person.email, userId: null } });
-    await ExecutiveStaff.destroy({ where: { email: person.email, userId: null } });
-    await person.destroy();
+    const tx = await sequelize.transaction();
+    try {
+      await detachUnlinkedProfilesAndDeletePerson(person, tx);
+      await tx.commit();
+    } catch (innerError) {
+      await tx.rollback();
+      throw innerError;
+    }
 
     return res.status(200).json({ status: "Success", message: "User deleted successfully" });
   } catch (error) {
@@ -514,7 +587,7 @@ exports.createPortalAccess = async (req, res) => {
 
       let userRecord;
       if (existingUser) {
-        await existingUser.update({ password: hashedPassword });
+        await existingUser.update({ password: hashedPassword, mustChangePassword: true });
         userRecord = existingUser;
       } else {
         userRecord = await User.create({
@@ -524,6 +597,7 @@ exports.createPortalAccess = async (req, res) => {
           phone: accountManager.phone,
           password: hashedPassword,
           role: "customer",
+          mustChangePassword: true,
         });
       }
 
@@ -583,7 +657,7 @@ exports.createPortalAccess = async (req, res) => {
 
       let userRecord;
       if (existingUser) {
-        await existingUser.update({ password: hashedPassword });
+        await existingUser.update({ password: hashedPassword, mustChangePassword: true });
         userRecord = existingUser;
       } else {
         userRecord = await User.create({
@@ -593,6 +667,7 @@ exports.createPortalAccess = async (req, res) => {
           phone: accountManager.phone,
           password: hashedPassword,
           role: "customer",
+          mustChangePassword: true,
         });
       }
 
@@ -680,7 +755,7 @@ exports.createPortalAccess = async (req, res) => {
     let userRecord;
     if (existingUser) {
       // Orphaned user — reset its password so we can send it
-      await existingUser.update({ password: hashedPassword });
+      await existingUser.update({ password: hashedPassword, mustChangePassword: true });
       userRecord = existingUser;
     } else {
       userRecord = await User.create({
@@ -690,6 +765,7 @@ exports.createPortalAccess = async (req, res) => {
         phone: person.phone,
         password: hashedPassword,
         role: roleMap[person.type] || "executive_staff",
+        mustChangePassword: true,
       });
     }
 
@@ -2504,7 +2580,7 @@ exports.approveAccount = async (req, res) => {
 
     if (customerUser) {
       // User already exists — update password so we can send fresh credentials
-      await customerUser.update({ password: hashedPassword });
+      await customerUser.update({ password: hashedPassword, mustChangePassword: true });
     } else {
       customerUser = await User.create({
         firstName: account.contactFirstName,
@@ -2513,6 +2589,7 @@ exports.approveAccount = async (req, res) => {
         phone: account.contactPhone,
         password: hashedPassword,
         role: "customer",
+        mustChangePassword: true,
       });
     }
 
@@ -2895,6 +2972,7 @@ exports.completeImportedExecutiveOnboarding = async (req, res) => {
           phone: phoneValue,
           password: hashedPassword,
           role: "executive_staff",
+          mustChangePassword: true,
         },
         { transaction: t }
       );

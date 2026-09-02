@@ -134,6 +134,53 @@ const Ticket = sequelize.define(
       allowNull: true,
       field: "sla_deadline",
     },
+    slaConfigId: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      field: "sla_config_id",
+    },
+    slaTargetHours: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      field: "sla_target_hours",
+    },
+    slaWarningHours: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      field: "sla_warning_hours",
+    },
+    slaAtRiskHours: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      field: "sla_at_risk_hours",
+    },
+    slaEscalateL1Hours: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      field: "sla_escalate_l1_hours",
+    },
+    slaEscalateL2Hours: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      field: "sla_escalate_l2_hours",
+    },
+    slaEscalateL3Hours: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      field: "sla_escalate_l3_hours",
+    },
+    slaAutoEscalate: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: false,
+      field: "sla_auto_escalate",
+    },
+    slaEscalationLevel: {
+      type: DataTypes.INTEGER,
+      allowNull: false,
+      defaultValue: 0,
+      field: "sla_escalation_level",
+    },
   },
   {
     tableName: "tickets",

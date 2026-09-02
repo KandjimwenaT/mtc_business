@@ -13,6 +13,7 @@ import { getMyProfile } from "../api/authApi";
 import type { UserProfile } from "../api/authApi";
 import { getCustomerVisits, type VisitRecord } from "../api/visitApi";
 import { getMyTickets, type TicketRecord } from "../api/ticketApi";
+import { getSlaInfo } from "../utils/sla";
 import ProfileEditSection from "../components/profile-edit-section";
 
 const STATUS_LABELS: Record<string, string> = {
@@ -34,33 +35,6 @@ const SLA_BADGE_VARIANTS: Record<string, "success" | "warning" | "danger" | "def
 
 function isClosedTicket(status: string) {
   return ["resolved", "closed", "rejected"].includes(status);
-}
-
-function getSlaInfo(ticket: TicketRecord): {
-  status: "success" | "warning" | "danger" | "breached";
-  label: string;
-  time: string;
-} {
-  if (isClosedTicket(ticket.status) || !ticket.slaDeadline) {
-    return { status: "success", label: "—", time: "" };
-  }
-
-  const now = Date.now();
-  const deadline = new Date(ticket.slaDeadline).getTime();
-  const created = new Date(ticket.createdAt).getTime();
-  const diff = deadline - now;
-  const total = deadline - created;
-  const pctRemaining = total > 0 ? diff / total : 0;
-
-  const absDiff = Math.abs(diff);
-  const h = Math.floor(absDiff / 3_600_000);
-  const m = Math.floor((absDiff % 3_600_000) / 60_000);
-  const timeStr = diff >= 0 ? `${h}h ${m}m` : `-${h}h ${m}m`;
-
-  if (diff <= 0) return { status: "breached", label: "Breached", time: timeStr };
-  if (pctRemaining <= 0.15) return { status: "danger", label: "At Risk", time: timeStr };
-  if (pctRemaining <= 0.35) return { status: "warning", label: "Warning", time: timeStr };
-  return { status: "success", label: "On Track", time: timeStr };
 }
 
 function formatTicketType(type: string) {

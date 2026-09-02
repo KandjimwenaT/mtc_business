@@ -38,6 +38,11 @@ const notificationRoutes = require('./src/routes/notificationRoutes');
 const Notification = require('./src/models/Notification');
 const Lead = require('./src/models/Lead');
 const leadRoutes = require('./src/routes/leadRoutes');
+const AuditLog = require('./src/models/AuditLog');
+const auditRoutes = require('./src/routes/auditRoutes');
+const auditRequestLogger = require('./src/middleware/auditRequestLogger');
+const SlaConfig = require('./src/models/SlaConfig');
+const slaRoutes = require('./src/routes/slaRoutes');
 require('dotenv').config();
 
 const app = express();
@@ -119,8 +124,11 @@ app.use('/api/auth', authLimiter, authRoutes);
 
 // ── JWT guard: every /api/* route below this line requires a valid token ──
 app.use('/api', auth);
+app.use('/api', auditRequestLogger);
 
 // ── Protected routes (add new route files here) ───────────────────
+app.use('/api/audit-logs', auditRoutes);
+app.use('/api/sla-configs', slaRoutes);
 app.use('/api/admin', adminOrManager, blockGmWrites, adminRoutes);
 app.use('/api/complaints', complaintRoutes);
 app.use('/api/account-requests', accountRequestRoutes);
@@ -226,6 +234,20 @@ const startServer = async () => {
   } catch (err) {
     // Fresh environments may not have the table yet; Corporate.sync will create it.
   }
+  // Ensure users.must_change_password exists on legacy DBs
+  try {
+    const usersTable = await queryInterface.describeTable('users');
+    if (!usersTable.must_change_password) {
+      await queryInterface.addColumn('users', 'must_change_password', {
+        type: require('sequelize').DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: false,
+      });
+    }
+  } catch (err) {
+    // Swallow to preserve startup in partially initialized environments.
+  }
+
   // Ensure users.role ENUM includes supervisor (legacy dev DBs)
   try {
     const usersTable = await queryInterface.describeTable('users');
@@ -294,6 +316,41 @@ const startServer = async () => {
         defaultValue: 'portal',
       });
     }
+    if (!ticketTable.sla_config_id) {
+      await queryInterface.addColumn('tickets', 'sla_config_id', { type: dt.INTEGER, allowNull: true });
+    }
+    if (!ticketTable.sla_target_hours) {
+      await queryInterface.addColumn('tickets', 'sla_target_hours', { type: dt.INTEGER, allowNull: true });
+    }
+    if (!ticketTable.sla_warning_hours) {
+      await queryInterface.addColumn('tickets', 'sla_warning_hours', { type: dt.INTEGER, allowNull: true });
+    }
+    if (!ticketTable.sla_at_risk_hours) {
+      await queryInterface.addColumn('tickets', 'sla_at_risk_hours', { type: dt.INTEGER, allowNull: true });
+    }
+    if (!ticketTable.sla_escalate_l1_hours) {
+      await queryInterface.addColumn('tickets', 'sla_escalate_l1_hours', { type: dt.INTEGER, allowNull: true });
+    }
+    if (!ticketTable.sla_escalate_l2_hours) {
+      await queryInterface.addColumn('tickets', 'sla_escalate_l2_hours', { type: dt.INTEGER, allowNull: true });
+    }
+    if (!ticketTable.sla_escalate_l3_hours) {
+      await queryInterface.addColumn('tickets', 'sla_escalate_l3_hours', { type: dt.INTEGER, allowNull: true });
+    }
+    if (!ticketTable.sla_auto_escalate) {
+      await queryInterface.addColumn('tickets', 'sla_auto_escalate', {
+        type: dt.BOOLEAN,
+        allowNull: false,
+        defaultValue: false,
+      });
+    }
+    if (!ticketTable.sla_escalation_level) {
+      await queryInterface.addColumn('tickets', 'sla_escalation_level', {
+        type: dt.INTEGER,
+        allowNull: false,
+        defaultValue: 0,
+      });
+    }
   } catch (err) {
     // Fresh environments may not have tickets table yet; Ticket.sync will create it.
   }
@@ -336,6 +393,8 @@ const startServer = async () => {
   await Visit.sync();
   await Notification.sync();
   await Lead.sync();
+  await AuditLog.sync();
+  await SlaConfig.sync();
   await OTPModel.sync();
   server.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);

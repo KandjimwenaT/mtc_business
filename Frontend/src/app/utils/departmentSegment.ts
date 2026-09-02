@@ -20,6 +20,30 @@ export function normalizeDepartmentSegment(
   return null;
 }
 
+export function isEbuDepartment(
+  department: string | null | undefined
+): boolean {
+  return normalizeDepartmentSegment(department) === "EBU";
+}
+
+export function isKeyAccountsDepartment(
+  department: string | null | undefined
+): boolean {
+  return normalizeDepartmentSegment(department) === "Key Accounts";
+}
+
+/** True when the signed-in staff profile belongs to EBU (direct or via manager). */
+export function profileIsEbu(profile: {
+  department?: string | null;
+  manager?: { department?: string | null } | null;
+} | null | undefined): boolean {
+  if (!profile) return false;
+  return (
+    isEbuDepartment(profile.department) ||
+    isEbuDepartment(profile.manager?.department)
+  );
+}
+
 export function departmentsMatch(
   a: string | null | undefined,
   b: string | null | undefined

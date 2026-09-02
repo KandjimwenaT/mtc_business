@@ -686,13 +686,13 @@ If you didn't request a password reset, please ignore this email and your passwo
             <p>Your MTC Business Portal account has been created. Below are your login credentials:</p>
             <div class="cred-box">
               <p><strong>Email:</strong> ${email}</p>
-              <p><strong>Temporary Password:</strong> <code style="background:#eee;padding:4px 8px;border-radius:4px;font-size:16px;">${tempPassword}</code></p>
+              <p><strong>One-Time Password:</strong> <code style="background:#eee;padding:4px 8px;border-radius:4px;font-size:16px;">${tempPassword}</code></p>
             </div>
             <div style="text-align: center;">
               <a href="${loginUrl}" class="button">Login to Portal</a>
             </div>
             <div class="warning">
-              <strong>Important:</strong> Please change your password after your first login. Do not share these credentials with anyone.
+              <strong>Important:</strong> This is a one-time password. After you sign in, you will be required to set a new password before you can use the portal. Do not share these credentials with anyone.
             </div>
           </div>
           <div class="footer">
@@ -701,7 +701,7 @@ If you didn't request a password reset, please ignore this email and your passwo
         </body>
         </html>
       `,
-      text: `Hello ${name},\n\nYour MTC Business Portal account has been created.\n\nEmail: ${email}\nTemporary Password: ${tempPassword}\n\nPlease login at: ${loginUrl}\nChange your password after your first login.\n\n© 2024 MTC Business.`,
+      text: `Hello ${name},\n\nYour MTC Business Portal account has been created.\n\nEmail: ${email}\nOne-Time Password: ${tempPassword}\n\nPlease login at: ${loginUrl}\nYou will be required to set a new password immediately after your first login.\n\n© 2024 MTC Business.`,
     };
 
     try {

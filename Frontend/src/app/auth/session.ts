@@ -60,6 +60,17 @@ export function hasValidSession(): boolean {
   return Boolean(localStorage.getItem("accessToken")) && !shouldForceLogout();
 }
 
+export function needsPasswordChange(): boolean {
+  try {
+    const raw = localStorage.getItem("currentUser");
+    if (!raw) return false;
+    const user = JSON.parse(raw) as { mustChangePassword?: boolean };
+    return Boolean(user?.mustChangePassword);
+  } catch {
+    return false;
+  }
+}
+
 export function redirectToLogin(): void {
   clearAuthSession();
   if (window.location.pathname !== "/" && window.location.pathname !== "/forgot-password") {

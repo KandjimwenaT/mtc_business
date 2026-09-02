@@ -5,12 +5,14 @@ import {
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow
 } from "../components/ui-components";;
 import {
-  Mail, Phone, Briefcase, FileText, Clock,
-  Settings, Plus, Trash2, X, CheckCircle, ArrowUp, Edit, Shield, Loader2, UserPlus, Key
+  Mail, Phone, Briefcase, FileText,
+  Settings, Plus, Trash2, X, CheckCircle, ArrowUp, Shield, Loader2, UserPlus, Key
 } from "lucide-react";
 import { getMyProfile } from "../api/authApi";
 import type { UserProfile } from "../api/authApi";
 import ProfileEditSection from "../components/profile-edit-section";
+import AuditLogPanel from "../components/audit-log-panel";
+import SlaConfigurationPanel from "../components/sla-configuration-panel";
 import { getAllTickets, type TicketRecord } from "../api/ticketApi";
 import { getManagerVisits, type VisitRecord } from "../api/visitApi";
 import {
@@ -26,7 +28,7 @@ import {
   type ExecutiveRecord,
 } from "../api/adminApi";
 
-type Tab = "profile" | "performance" | "templates" | "sla" | "upgrade" | "settings";
+type Tab = "profile" | "performance" | "templates" | "sla" | "upgrade" | "audit" | "settings";
 
 function monthKey(iso: string): string {
   if (!iso) return "";
@@ -357,6 +359,7 @@ export default function ManagementProfile() {
     { key: "templates", label: "Control Card Templates" },
     { key: "sla", label: "SLA Configuration" },
     { key: "upgrade", label: "Role Upgrades" },
+    { key: "audit", label: "Audit Log" },
     { key: "settings", label: "Profile Settings" },
   ];
 
@@ -552,53 +555,7 @@ export default function ManagementProfile() {
         </Card>
       )}
 
-      {/* SLA CONFIGURATION */}
-      {activeTab === "sla" && (
-        <Card>
-          <CardHeader>
-            <CardTitle className="text-base flex items-center gap-2"><Clock className="h-5 w-5 text-mtc-blue" /> SLA Configuration (per Corporate / Customer Type)</CardTitle>
-          </CardHeader>
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Corporate / Type</TableHead>
-                <TableHead>Ticket Type</TableHead>
-                <TableHead>Target (Hours)</TableHead>
-                <TableHead>Warning At</TableHead>
-                <TableHead>At Risk At</TableHead>
-                <TableHead>Auto-Escalate</TableHead>
-                <TableHead className="text-right">Edit</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {[
-                { corp: "First National Bank", type: "Complaint", target: "8", warn: "4h", risk: "6h", escalate: "L1 → L2 → GM" },
-                { corp: "First National Bank", type: "Request", target: "24", warn: "12h", risk: "18h", escalate: "L1 → L2" },
-                { corp: "Government (All)", type: "Complaint", target: "12", warn: "6h", risk: "9h", escalate: "L1 → L2 → GM" },
-                { corp: "Government (All)", type: "Request", target: "48", warn: "24h", risk: "36h", escalate: "L1" },
-                { corp: "Default (Standard)", type: "Complaint", target: "24", warn: "12h", risk: "18h", escalate: "L1 → L2" },
-                { corp: "Default (Standard)", type: "Request", target: "48", warn: "24h", risk: "36h", escalate: "L1" },
-                { corp: "Critical Outage (Any)", type: "Complaint", target: "4", warn: "2h", risk: "3h", escalate: "L1 → L2 → GM (Immediate)" },
-              ].map((sla, i) => (
-                <TableRow key={`${sla.corp}-${sla.type}-${i}`}>
-                  <TableCell className="font-medium text-slate-900">{sla.corp}</TableCell>
-                  <TableCell><Badge variant={sla.type === "Complaint" ? "danger" : "default"}>{sla.type}</Badge></TableCell>
-                  <TableCell className="font-bold">{sla.target}h</TableCell>
-                  <TableCell>{sla.warn}</TableCell>
-                  <TableCell>{sla.risk}</TableCell>
-                  <TableCell><span className="text-xs text-slate-600">{sla.escalate}</span></TableCell>
-                  <TableCell className="text-right">
-                    <Button variant="ghost" size="sm"><Edit className="h-4 w-4" /></Button>
-                  </TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-          <div className="p-4 border-t border-slate-200 flex justify-end">
-            <Button onClick={() => toast.success("SLA configuration saved")}>Save Changes</Button>
-          </div>
-        </Card>
-      )}
+      {activeTab === "sla" && <SlaConfigurationPanel />}
 
       {/* ROLE UPGRADES */}
       {activeTab === "upgrade" && (
@@ -950,7 +907,7 @@ export default function ManagementProfile() {
             </CardHeader>
             <CardContent className="space-y-5 pt-6">
               <p className="text-sm text-slate-600">
-                Review the details below. A temporary password will be generated and emailed to the executive.
+                Review the details below. A one-time password will be generated and emailed to the executive. They must change it on first login.
               </p>
               <div className="space-y-3 text-sm">
                 {[
@@ -1048,6 +1005,8 @@ export default function ManagementProfile() {
           </Card>
         </div>
       )}
+
+      {activeTab === "audit" && <AuditLogPanel />}
 
       {/* PROFILE SETTINGS */}
       {activeTab === "settings" && profile && (

@@ -1,10 +1,25 @@
 import { Card, CardContent, CardHeader, CardTitle } from "./ui/card";
 
-export default function EscalationWorkflowCard() {
+interface EscalationWorkflowCardProps {
+  l1Hours?: number;
+  l2Hours?: number;
+  l3Hours?: number;
+  sampleLabel?: string;
+}
+
+export default function EscalationWorkflowCard({
+  l1Hours = 24,
+  l2Hours = 48,
+  l3Hours = 72,
+  sampleLabel,
+}: EscalationWorkflowCardProps) {
   return (
     <Card>
       <CardHeader>
         <CardTitle>Escalation Workflow</CardTitle>
+        {sampleLabel ? (
+          <p className="text-xs text-slate-500 mt-1">Based on {sampleLabel}</p>
+        ) : null}
       </CardHeader>
       <CardContent>
         <div className="space-y-6 relative before:absolute before:inset-0 before:ml-5 before:-translate-x-px md:before:mx-auto md:before:translate-x-0 before:h-full before:w-0.5 before:bg-gradient-to-b before:from-transparent before:via-slate-300 before:to-transparent">
@@ -30,7 +45,9 @@ export default function EscalationWorkflowCard() {
                 <div className="font-bold text-slate-900 text-sm">Level 1</div>
               </div>
               <div className="text-slate-700 text-xs font-medium">Supervisor</div>
-              <div className="text-blue-600 text-xs mt-1 font-semibold">Trigger: Breach (+0h)</div>
+              <div className="text-blue-600 text-xs mt-1 font-semibold">
+                Trigger: {l1Hours}h after log
+              </div>
             </div>
           </div>
 
@@ -43,7 +60,7 @@ export default function EscalationWorkflowCard() {
                 <div className="font-bold text-slate-900 text-sm">Level 2</div>
               </div>
               <div className="text-slate-500 text-xs">Management</div>
-              <div className="text-slate-400 text-xs mt-1">Trigger: Breach +24h</div>
+              <div className="text-slate-400 text-xs mt-1">Trigger: {l2Hours}h after log</div>
             </div>
           </div>
 
@@ -56,7 +73,7 @@ export default function EscalationWorkflowCard() {
                 <div className="font-bold text-slate-900 text-sm">Level 3</div>
               </div>
               <div className="text-slate-500 text-xs">GM CRM</div>
-              <div className="text-slate-400 text-xs mt-1">Trigger: Breach +48h</div>
+              <div className="text-slate-400 text-xs mt-1">Trigger: {l3Hours}h after log</div>
             </div>
           </div>
         </div>

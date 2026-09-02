@@ -31,6 +31,12 @@ const User = sequelize.define(
       type: DataTypes.STRING,
       allowNull: false,
     },
+    mustChangePassword: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: false,
+      field: "must_change_password",
+    },
     role: {
       type: DataTypes.ENUM(
         "admin",

@@ -5,6 +5,7 @@ import { Clock, Filter, Loader2, Search, X } from "lucide-react";
 import { getAllTickets, getAssignedTickets, type TicketRecord } from "../api/ticketApi";
 import { getCurrentUser } from "../api/authApi";
 import { getTicketDetailPath } from "../utils/ticketNavigation";
+import { getSlaInfo } from "../utils/sla";
 import { format } from "date-fns";
 import { isSupervisorRole } from "../utils/roleCapabilities";
 import type { StaffLayoutOutletContext } from "../layoutOutletContext";
@@ -27,26 +28,6 @@ const SLA_BADGE_CLASSES: Record<string, string> = {
   danger: "bg-orange-100 text-orange-800",
   breached: "bg-red-100 text-red-800",
 };
-
-function getSlaInfo(ticket: TicketRecord): { status: "success" | "warning" | "danger" | "breached"; label: string; time: string } {
-  if (["resolved", "closed", "rejected"].includes(ticket.status) || !ticket.slaDeadline) {
-    return { status: "success", label: "—", time: "" };
-  }
-  const now = Date.now();
-  const deadline = new Date(ticket.slaDeadline).getTime();
-  const created = new Date(ticket.createdAt).getTime();
-  const diff = deadline - now;
-  const total = deadline - created;
-  const pctRemaining = total > 0 ? diff / total : 0;
-  const absDiff = Math.abs(diff);
-  const h = Math.floor(absDiff / 3_600_000);
-  const m = Math.floor((absDiff % 3_600_000) / 60_000);
-  const timeStr = diff >= 0 ? `${h}h ${m}m left` : `-${h}h ${m}m`;
-  if (diff <= 0) return { status: "breached", label: "Breached", time: timeStr };
-  if (pctRemaining <= 0.15) return { status: "danger", label: "At Risk", time: timeStr };
-  if (pctRemaining <= 0.35) return { status: "warning", label: "Warning", time: timeStr };
-  return { status: "success", label: "On Track", time: timeStr };
-}
 
 export default function Tickets() {
   const outletCtx = useOutletContext<StaffLayoutOutletContext | undefined>();

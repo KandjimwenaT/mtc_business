@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type ComponentType } from "react";
 import { useNavigate } from "react-router";
 import { getMyProfile, type UserProfile } from "../../api/authApi";
 import { getAllTickets, type TicketRecord } from "../../api/ticketApi";
+import { getSlaHealthLabel } from "../../utils/sla";
 import { getManagerVisits, type VisitRecord } from "../../api/visitApi";
 import {
   getExecutives,
@@ -64,22 +65,6 @@ function toISODate(value: string | Date): string {
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return "";
   return d.toISOString().slice(0, 10);
-}
-
-function getSlaStatus(ticket: TicketRecord): "Healthy" | "Warning" | "At Risk" | "Breached" {
-  if (!ticket.slaDeadline || ["resolved", "closed", "rejected"].includes(ticket.status)) {
-    return "Healthy";
-  }
-  const now = Date.now();
-  const deadline = new Date(ticket.slaDeadline).getTime();
-  const created = new Date(ticket.createdAt).getTime();
-  const diff = deadline - now;
-  const total = deadline - created;
-  const pctRemaining = total > 0 ? diff / total : 0;
-  if (diff <= 0) return "Breached";
-  if (pctRemaining <= 0.15) return "At Risk";
-  if (pctRemaining <= 0.35) return "Warning";
-  return "Healthy";
 }
 
 function monthKey(iso: string): string {
@@ -272,7 +257,7 @@ export default function GmDashboard() {
   }, [executives, corporates, tickets, visits]);
 
   const openTicketsCount = tickets.filter((t) => openStatuses.has(t.status)).length;
-  const breachedCount = tickets.filter((t) => getSlaStatus(t) === "Breached").length;
+  const breachedCount = tickets.filter((t) => getSlaHealthLabel(t) === "Breached").length;
 
   const now = new Date();
   const thisMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
@@ -338,7 +323,7 @@ export default function GmDashboard() {
   const slaBuckets = useMemo(() => {
     const counts = { Healthy: 0, Warning: 0, "At Risk": 0, Breached: 0 };
     tickets.forEach((t) => {
-      counts[getSlaStatus(t)] += 1;
+      counts[getSlaHealthLabel(t)] += 1;
     });
     const total = Object.values(counts).reduce((a, b) => a + b, 0);
     if (total === 0) {
@@ -365,7 +350,7 @@ export default function GmDashboard() {
       const avgR = rated.length
         ? Math.round((rated.reduce((s, v) => s + Number(v.customerRating), 0) / rated.length) * 10) / 10
         : 0;
-      const breached = exTickets.filter((t) => getSlaStatus(t) === "Breached").length;
+      const breached = exTickets.filter((t) => getSlaHealthLabel(t) === "Breached").length;
       const perf = performanceBadge(avgR || 4, breached);
       return {
         executiveId: ex.executiveId,

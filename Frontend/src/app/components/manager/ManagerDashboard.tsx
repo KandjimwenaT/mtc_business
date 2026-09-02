@@ -1,7 +1,9 @@
 import { useEffect, useMemo, useState, type ComponentType } from "react";
 import { useNavigate } from "react-router";
 import { getMyProfile, type UserProfile } from "../../api/authApi";
+import { profileIsEbu } from "../../utils/departmentSegment";
 import { getAllTickets, type TicketRecord } from "../../api/ticketApi";
+import { getSlaHealthLabel } from "../../utils/sla";
 import { getManagerVisits, type VisitRecord } from "../../api/visitApi";
 import { getTeamLeads, type TeamLeadRecord } from "../../api/leadApi";
 import {
@@ -60,22 +62,6 @@ function toISODate(value: string | Date): string {
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return "";
   return d.toISOString().slice(0, 10);
-}
-
-function getSlaStatus(ticket: TicketRecord): "Healthy" | "Warning" | "At Risk" | "Breached" {
-  if (!ticket.slaDeadline || ["resolved", "closed", "rejected"].includes(ticket.status)) {
-    return "Healthy";
-  }
-  const now = Date.now();
-  const deadline = new Date(ticket.slaDeadline).getTime();
-  const created = new Date(ticket.createdAt).getTime();
-  const diff = deadline - now;
-  const total = deadline - created;
-  const pctRemaining = total > 0 ? diff / total : 0;
-  if (diff <= 0) return "Breached";
-  if (pctRemaining <= 0.15) return "At Risk";
-  if (pctRemaining <= 0.35) return "Warning";
-  return "Healthy";
 }
 
 function monthKey(iso: string): string {
@@ -227,7 +213,9 @@ export default function ManagerDashboard() {
           managerId != null
             ? getAccounts({ managerId }).catch(() => [] as AccountRecord[])
             : getAccounts().catch(() => [] as AccountRecord[]),
-          getTeamLeads().catch(() => [] as TeamLeadRecord[]),
+          profileIsEbu(profileData)
+            ? getTeamLeads().catch(() => [] as TeamLeadRecord[])
+            : Promise.resolve([] as TeamLeadRecord[]),
           getExpiringContracts(6).catch(() => [] as ExpiringContractRecord[]),
           getManagerMonthlySpendingSummary().catch(() => ({
             total: "0.00",
@@ -278,7 +266,7 @@ export default function ManagerDashboard() {
   const openStatuses = new Set(["new", "assigned", "in_progress", "escalated"]);
 
   const openTicketsCount = scopedTickets.filter((t) => openStatuses.has(t.status)).length;
-  const breachedCount = scopedTickets.filter((t) => getSlaStatus(t) === "Breached").length;
+  const breachedCount = scopedTickets.filter((t) => getSlaHealthLabel(t) === "Breached").length;
 
   const now = new Date();
   const thisMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
@@ -347,7 +335,7 @@ export default function ManagerDashboard() {
   const slaBuckets = useMemo(() => {
     const counts = { Healthy: 0, Warning: 0, "At Risk": 0, Breached: 0 };
     scopedTickets.forEach((t) => {
-      counts[getSlaStatus(t)] += 1;
+      counts[getSlaHealthLabel(t)] += 1;
     });
     const total = Object.values(counts).reduce((a, b) => a + b, 0);
     if (total === 0) {
@@ -377,7 +365,7 @@ export default function ManagerDashboard() {
       const avgR = rated.length
         ? Math.round((rated.reduce((s, v) => s + Number(v.customerRating), 0) / rated.length) * 10) / 10
         : 0;
-      const breached = exTickets.filter((t) => getSlaStatus(t) === "Breached").length;
+      const breached = exTickets.filter((t) => getSlaHealthLabel(t) === "Breached").length;
       const perf = performanceBadge(avgR || 4, breached);
       return {
         executiveId: ex.executiveId,
@@ -394,10 +382,12 @@ export default function ManagerDashboard() {
     });
   }, [teamExecutives, scopedTickets, scopedVisits, corporates, accounts, thisMonthKey, teamLeads]);
 
+  const isEbu = profileIsEbu(profile);
+
   const activityRows = useMemo((): ActivityRow[] => {
     const rows: ActivityRow[] = [];
 
-    [...teamLeads]
+    (isEbu ? [...teamLeads] : [])
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
       .slice(0, 20)
       .forEach((lead) => {
@@ -466,7 +456,7 @@ export default function ManagerDashboard() {
     return rows
       .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0))
       .slice(0, 12);
-  }, [scopedVisits, scopedTickets, teamExecutives, teamLeads]);
+  }, [scopedVisits, scopedTickets, teamExecutives, teamLeads, isEbu]);
 
   const departmentSubtitle =
     profile?.department?.trim() ||
@@ -658,7 +648,7 @@ export default function ManagerDashboard() {
                   <TableHead className="text-right">Corporates</TableHead>
                   <TableHead className="text-right">Total Lines</TableHead>
                   <TableHead className="text-right">Open Tickets</TableHead>
-                   <TableHead className="text-right">Leads</TableHead>
+                  {isEbu ? <TableHead className="text-right">Leads</TableHead> : null}
                   <TableHead className="text-right">Visits (MTD)</TableHead>
                   <TableHead className="text-right">Avg Rating</TableHead>
                   <TableHead className="text-right">Breached SLA</TableHead>
@@ -669,7 +659,7 @@ export default function ManagerDashboard() {
               <TableBody>
                 {executiveRows.length === 0 ? (
                   <TableRow>
-                    <td colSpan={9} className="p-4 text-center text-slate-500 py-10">
+                    <td colSpan={isEbu ? 10 : 9} className="p-4 text-center text-slate-500 py-10">
                       No executives linked to your team yet.
                     </td>
                   </TableRow>
@@ -680,7 +670,9 @@ export default function ManagerDashboard() {
                       <TableCell className="text-right tabular-nums">{row.corporates}</TableCell>
                       <TableCell className="text-right tabular-nums">{row.lines}</TableCell>
                       <TableCell className="text-right tabular-nums">{row.openTickets}</TableCell>
-                      <TableCell className="text-right tabular-nums">{row.leads}</TableCell>
+                      {isEbu ? (
+                        <TableCell className="text-right tabular-nums">{row.leads}</TableCell>
+                      ) : null}
                       <TableCell className="text-right tabular-nums">{row.visitsMtd}</TableCell>
                       <TableCell className="text-right">
                         <span className="inline-flex items-center justify-end gap-1 tabular-nums">

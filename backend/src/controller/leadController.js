@@ -6,6 +6,25 @@ const {
   createForUserIds,
   resolveManagerTeamNotificationUserIds,
 } = require("../services/notificationService");
+const { resolveRequesterDepartment } = require("../services/corporateSegmentScope");
+const { isEbuDepartment } = require("../services/departmentSegment");
+
+async function assertEbuLeadsAccess(user) {
+  const department = await resolveRequesterDepartment(user);
+  if (!isEbuDepartment(department)) {
+    const err = new Error("Leads are only available for EBU staff");
+    err.statusCode = 403;
+    throw err;
+  }
+}
+
+function leadErrorResponse(res, error, fallbackLog) {
+  if (error?.statusCode === 403) {
+    return res.status(403).json({ status: "Failed", message: error.message });
+  }
+  console.error(fallbackLog, error);
+  return res.status(500).json({ status: "Failed", message: "Internal server error" });
+}
 
 const LEAD_CREATOR_ROLES = new Set(["executive_staff", "supervisor"]);
 
@@ -51,6 +70,8 @@ exports.createLead = async (req, res) => {
         message: "Only executive or supervisor users can submit leads",
       });
     }
+
+    await assertEbuLeadsAccess(req.user);
 
     const payload = req.body || {};
     const required = ["companyName", "contactPerson", "leadSource", "productInterest"];
@@ -106,8 +127,7 @@ exports.createLead = async (req, res) => {
 
     return res.status(201).json({ status: "Success", message: "Lead created", lead });
   } catch (error) {
-    console.error("Create lead error:", error);
-    return res.status(500).json({ status: "Failed", message: "Internal server error" });
+    return leadErrorResponse(res, error, "Create lead error:");
   }
 };
 
@@ -118,6 +138,8 @@ exports.getTeamLeads = async (req, res) => {
     if (!["manager", "supervisor"].includes(user.role)) {
       return res.status(403).json({ status: "Failed", message: "Unauthorized" });
     }
+
+    await assertEbuLeadsAccess(user);
 
     let executiveIds = [];
 
@@ -176,13 +198,14 @@ exports.getTeamLeads = async (req, res) => {
 
     return res.status(200).json({ status: "Success", leads: rows });
   } catch (error) {
-    console.error("Get team leads error:", error);
-    return res.status(500).json({ status: "Failed", message: "Internal server error" });
+    return leadErrorResponse(res, error, "Get team leads error:");
   }
 };
 
 exports.getMyLeads = async (req, res) => {
   try {
+    await assertEbuLeadsAccess(req.user);
+
     const leads = await Lead.findAll({
       where: { userId: req.user.id },
       order: [["createdAt", "DESC"]],
@@ -190,7 +213,6 @@ exports.getMyLeads = async (req, res) => {
 
     return res.status(200).json({ status: "Success", leads });
   } catch (error) {
-    console.error("Get leads error:", error);
-    return res.status(500).json({ status: "Failed", message: "Internal server error" });
+    return leadErrorResponse(res, error, "Get leads error:");
   }
 };

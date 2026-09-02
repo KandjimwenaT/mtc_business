@@ -16,6 +16,7 @@ const Contract = require("../models/Contract");
 const Invoice = require("../models/Invoice");
 const Notification = require("../models/Notification");
 const { createForUserIds } = require("../services/notificationService");
+const { recordAudit, actorDisplayName, clientIp } = require("../services/auditService");
 const {
   getCorporateIdsForAccountManager,
   enrichAccountsWithCorporateContact,
@@ -171,6 +172,13 @@ exports.userLogin = async (req, res) => {
     const user = await User.findOne({ where: { email } });
     if (!user) {
       securityService.recordFailedAttempt(email);
+      recordAudit({
+        actorName: email,
+        actorEmail: email,
+        actionType: "Auth",
+        message: `Failed login attempt for ${email}`,
+        ipAddress: clientIp(req),
+      });
       return res
         .status(401)
         .json({ status: "Failed", message: "Invalid credentials" });
@@ -183,6 +191,14 @@ exports.userLogin = async (req, res) => {
     );
     if (!isPasswordValid) {
       const attempt = securityService.recordFailedAttempt(email, 5, 15 * 60 * 1000);
+      recordAudit({
+        user,
+        actionType: "Auth",
+        message: attempt.isLocked
+          ? `Account locked after failed login attempts for ${email}`
+          : `Failed login attempt for ${email}`,
+        ipAddress: clientIp(req),
+      });
       if (attempt.isLocked) {
         const minutesLeft = Math.ceil((attempt.lockedUntil - Date.now()) / 60000);
         return res.status(401).json({
@@ -225,6 +241,13 @@ exports.userLogin = async (req, res) => {
     // Clear failed attempts on successful login
     securityService.clearFailedAttempts(email);
 
+    recordAudit({
+      user,
+      actionType: "Auth",
+      message: `Logged in successfully`,
+      ipAddress: clientIp(req),
+    });
+
     return res.status(200).json({
       status: "Success",
       message: "Login successful",
@@ -235,6 +258,7 @@ exports.userLogin = async (req, res) => {
         firstName: user.firstName,
         email: user.email,
         role: user.role,
+        mustChangePassword: Boolean(user.mustChangePassword),
       },
     });
   } catch (error) {
@@ -293,6 +317,13 @@ exports.userLogout = async (req, res) => {
 
   try {
     console.log(`User ${userId} logged out successfully`);
+
+    recordAudit({
+      user: req.user,
+      actionType: "Auth",
+      message: "Logged out",
+      ipAddress: clientIp(req),
+    });
 
     return res.status(200).json({
       status: "Success",
@@ -647,14 +678,21 @@ exports.resetPassword = async (req, res) => {
     // Hash new password
     const hashedPassword = await securityService.hashData(newPassword);
 
-    // Update user password
-    await user.update({ password: hashedPassword });
+    // Update user password and clear the first-login flag
+    await user.update({ password: hashedPassword, mustChangePassword: false });
 
     // Delete used OTP
     await storedOTP.destroy();
 
     // Clear any failed login attempts for this email
     securityService.clearFailedAttempts(email);
+
+    recordAudit({
+      user,
+      actionType: "Auth",
+      message: `Password reset completed for ${email}`,
+      ipAddress: clientIp(req),
+    });
 
     return res.status(200).json({
       status: "Success",
@@ -690,6 +728,7 @@ exports.getProfile = async (req, res) => {
       email: user.email,
       phone: user.phone,
       role: user.role,
+      mustChangePassword: Boolean(user.mustChangePassword),
       department: null,
       region: null,
       personId: null,
@@ -860,6 +899,13 @@ exports.updateProfile = async (req, res) => {
           : (updatedPerson?.id || null),
     };
 
+    recordAudit({
+      user,
+      actionType: "Profile",
+      message: `${actorDisplayName(user)} updated their profile`,
+      ipAddress: clientIp(req),
+    });
+
     return res.status(200).json({
       status: "Success",
       message: "Profile updated successfully",
@@ -903,6 +949,13 @@ exports.changePassword = async (req, res) => {
         .json({ status: "Failed", message: "Current password is incorrect" });
     }
 
+    if (currentPassword === newPassword) {
+      return res.status(400).json({
+        status: "Failed",
+        message: "New password must be different from your one-time password",
+      });
+    }
+
     // Validate new password strength
     const passwordCheck = securityService.validatePasswordStrength(newPassword);
     if (!passwordCheck.isValid) {
@@ -912,9 +965,16 @@ exports.changePassword = async (req, res) => {
       });
     }
 
-    // Hash and save new password
+    // Hash and save new password; one-time password is now spent
     const hashedPassword = await securityService.hashData(newPassword);
-    await user.update({ password: hashedPassword });
+    await user.update({ password: hashedPassword, mustChangePassword: false });
+
+    recordAudit({
+      user,
+      actionType: "Auth",
+      message: `${actorDisplayName(user)} changed their password`,
+      ipAddress: clientIp(req),
+    });
 
     return res.status(200).json({
       status: "Success",

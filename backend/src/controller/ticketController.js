@@ -2,6 +2,7 @@ const Ticket = require("../models/Ticket");
 const Account = require("../models/Account");
 const Corporate = require("../models/Corporate");
 const ExecutiveStaff = require("../models/ExecutiveStaff");
+const Manager = require("../models/Manager");
 const AccountManager = require("../models/AccountManager");
 const Person = require("../models/Person");
 const User = require("../models/User");
@@ -22,6 +23,7 @@ const {
   OPEN_TICKET_STATUSES,
   normalizeExecutiveProfileId,
 } = require("../services/ticketExecutiveSyncService");
+const slaService = require("../services/slaService");
 
 const hasExecutiveScope = (role) => ["executive_staff", "supervisor"].includes(role);
 const INTERNAL_NOTE_AUTHOR_ROLES = ["admin", "manager", "supervisor", "gm", "executive_staff"];
@@ -62,6 +64,30 @@ async function getStaffAssignableAccounts(user) {
     });
   }
   return [];
+}
+
+async function resolveSlaDepartmentForAccount(selectedAccount) {
+  if (!selectedAccount) return null;
+  const fromPerson = await resolveDepartmentByManagerPersonId(selectedAccount.managerId);
+  if (fromPerson) return fromPerson;
+  if (selectedAccount.managerId) {
+    const managerRow = await Manager.findByPk(selectedAccount.managerId);
+    if (managerRow?.department) return managerRow.department;
+  }
+  if (selectedAccount.executiveId) {
+    const executive = await ExecutiveStaff.findByPk(selectedAccount.executiveId);
+    if (executive?.managerId) {
+      const lineManager = await Manager.findByPk(executive.managerId);
+      if (lineManager?.department) return lineManager.department;
+    }
+  }
+  return null;
+}
+
+async function resolveSlaFieldsForAccount(selectedAccount, category, type) {
+  const department = await resolveSlaDepartmentForAccount(selectedAccount);
+  const policy = await slaService.resolvePolicy({ department, category, type });
+  return slaService.toTicketSlaFields(policy);
 }
 
 function resolvePriorityFromCategoryAndType(category, type) {
@@ -416,9 +442,8 @@ exports.createVisitActionItemTicket = async (user, selectedAccount, details, opt
   }
 
   const ticketNumber = await generateTicketNumber(category);
-  const slaHours = { critical: 4, high: 8, medium: 24, low: 48 };
   const effectivePriority = resolvePriorityFromCategoryAndType(category, type);
-  const slaDeadline = new Date(Date.now() + (slaHours[effectivePriority] || 24) * 60 * 60 * 1000);
+  const slaFields = await resolveSlaFieldsForAccount(selectedAccount, category, type);
   const actorName = `${user.firstName || ""} ${user.lastName || ""}`.trim() || user.email || "System";
   const accountContactName = `${selectedAccount.contactFirstName || ""} ${selectedAccount.contactLastName || ""}`.trim();
   const submittedByLabel = accountContactName || actorName || "Customer";
@@ -447,7 +472,7 @@ exports.createVisitActionItemTicket = async (user, selectedAccount, details, opt
       sourceContextNote: normalizedSourceContextNote,
       attachmentUrl: null,
       assignedTo,
-      slaDeadline,
+      ...slaFields,
     },
     createOpts
   );
@@ -558,10 +583,8 @@ exports.createTicket = async (req, res) => {
 
     const ticketNumber = await generateTicketNumber(category);
 
-    // SLA hours based on priority
-    const slaHours = { critical: 4, high: 8, medium: 24, low: 48 };
     const effectivePriority = resolvePriorityFromCategoryAndType(category, type);
-    const slaDeadline = new Date(Date.now() + (slaHours[effectivePriority] || 24) * 60 * 60 * 1000);
+    const slaFields = await resolveSlaFieldsForAccount(selectedAccount, category, type);
     const actorName = `${user.firstName || ""} ${user.lastName || ""}`.trim() || user.email || "System";
     const accountContactName = `${selectedAccount.contactFirstName || ""} ${selectedAccount.contactLastName || ""}`.trim();
     const submittedByLabel = isCustomerCreator
@@ -596,7 +619,7 @@ exports.createTicket = async (req, res) => {
       sourceContextNote: normalizedSourceContextNote,
       attachmentUrl,
       assignedTo,
-      slaDeadline,
+      ...slaFields,
     });
 
     await sendTicketCreationNotifications(ticket, user, isCustomerCreator);
@@ -685,6 +708,7 @@ exports.getAssignedTickets = async (req, res) => {
     });
 
     await sendTicketBreachNotificationsToManagers(tickets);
+    await slaService.applyAutoEscalations(tickets);
 
     const syncedTickets = await Promise.all(
       tickets.map((ticket) => syncOpenTicketWithAccountExecutive(ticket))
@@ -740,6 +764,8 @@ exports.getAllTickets = async (req, res) => {
       const gmProfile = await resolveGmProfile(user);
       tickets = await filterTicketsByGmScope(tickets, gmProfile);
     }
+
+    await slaService.applyAutoEscalations(tickets);
 
     if (["manager", "supervisor"].includes(user.role)) {
       await sendTicketBreachNotificationsToManagers(tickets);

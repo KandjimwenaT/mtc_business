@@ -17,6 +17,7 @@ export interface LoginResponse {
     firstName: string;
     email: string;
     role: string;
+    mustChangePassword?: boolean;
   };
 }
 
@@ -27,6 +28,7 @@ export interface UserProfile {
   email: string;
   phone: string | null;
   role: string;
+  mustChangePassword?: boolean;
   department: string | null;
   region: string | null;
   personId: number | null;
@@ -198,15 +200,26 @@ export const changePassword = async (
     body: JSON.stringify(payload),
   });
 
+  const data = await response.json().catch(() => ({}));
+
   if (response.status === 401) {
+    if (data.message === "Current password is incorrect") {
+      throw new Error(data.message);
+    }
     handleUnauthorized();
     throw new Error("Session expired");
   }
 
-  const data = await response.json();
-
   if (!response.ok) {
     throw new Error(data.message || "Failed to change password");
+  }
+
+  const currentUser = getCurrentUser();
+  if (currentUser) {
+    localStorage.setItem(
+      "currentUser",
+      JSON.stringify({ ...currentUser, mustChangePassword: false }),
+    );
   }
 
   return data;

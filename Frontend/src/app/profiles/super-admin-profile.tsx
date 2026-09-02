@@ -29,6 +29,7 @@ import {
 import { getMyProfile } from "../api/authApi";
 import type { UserProfile } from "../api/authApi";
 import ProfileEditSection from "../components/profile-edit-section";
+import AuditLogPanel from "../components/audit-log-panel";
 import PortalUserHierarchyModal from "../components/admin/PortalUserHierarchyModal";
 import {
   departmentsMatch,
@@ -176,12 +177,8 @@ export default function SuperAdminProfile() {
     { key: "users", label: "User Management", icon: <Users className="h-4 w-4" /> },
     { key: "noPortalUsers", label: "Users Without Portal Access", icon: <Lock className="h-4 w-4" /> },
     { key: "pendingExecutives", label: "Pending Imported Executives", icon: <UserCheck className="h-4 w-4" /> },
+    { key: "audit", label: "Audit Log", icon: <FileText className="h-4 w-4" /> },
     { key: "settings", label: "Profile", icon: <UserCircle className="h-4 w-4" /> },
-    // { key: "roles", label: "Role Management", icon: <Lock className="h-4 w-4" /> },
-    // { key: "sla", label: "Global SLA Settings", icon: <Clock className="h-4 w-4" /> },
-    // { key: "notifications", label: "Notification Templates", icon: <Bell className="h-4 w-4" /> },
-    // { key: "audit", label: "Audit Log", icon: <FileText className="h-4 w-4" /> },
-    // { key: "settings", label: "Profile Settings", icon: <Settings className="h-4 w-4" /> },
   ];
 
   const selectedManager = managerList.find((m) => m.id === createUserForm.managerId);
@@ -1754,7 +1751,7 @@ export default function SuperAdminProfile() {
               <div className="rounded-lg border border-blue-100 bg-blue-50/40 p-3 text-xs text-slate-600">
                 {onboardingMode === "existing"
                   ? "No credentials are generated in this mode. It only reassigns linked corporates and accounts to the selected already-onboarded executive."
-                  : "Generates a temporary password and emails it to the address you enter. The executive can then log in and immediately see all linked corporate accounts."}
+                  : "Generates a one-time password and emails it to the address you enter. The executive must change that password on first login before using the portal."}
               </div>
 
               <div className="space-y-2">
@@ -2040,6 +2037,8 @@ export default function SuperAdminProfile() {
           </div>
         </div>
       )}
+
+      {activeTab === "audit" && <AuditLogPanel />}
 
       {/* PROFILE (edit name, phone, password) */}
       {activeTab === "settings" && (

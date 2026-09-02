@@ -54,6 +54,15 @@ export interface TicketRecord {
   closedAt: string | null;
   notes: string | null;
   slaDeadline: string | null;
+  slaConfigId?: number | null;
+  slaTargetHours?: number | null;
+  slaWarningHours?: number | null;
+  slaAtRiskHours?: number | null;
+  slaEscalateL1Hours?: number | null;
+  slaEscalateL2Hours?: number | null;
+  slaEscalateL3Hours?: number | null;
+  slaAutoEscalate?: boolean;
+  slaEscalationLevel?: number;
   createdAt: string;
   updatedAt: string;
   // Populated on assigned / all tickets

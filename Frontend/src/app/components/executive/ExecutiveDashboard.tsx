@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import { getCurrentUser } from "../../api/authApi";
+import { profileIsEbu } from "../../utils/departmentSegment";
 import { getTicketDetailPath } from "../../utils/ticketNavigation";
 import { type TicketRecord } from "../../api/ticketApi";
+import { getSlaHealthLabel } from "../../utils/sla";
 import { getMyLeads, type LeadRecord as LeadApiRecord } from "../../api/leadApi";
 import { useExecutiveData } from "../../hooks/useExecutiveData";
 import { 
@@ -41,24 +43,6 @@ function toISODate(value: string | Date): string {
   return d.toISOString().slice(0, 10);
 }
 
-function getSlaStatus(ticket: TicketRecord): "Healthy" | "Warning" | "At Risk" | "Breached" {
-  if (!ticket.slaDeadline || ["resolved", "closed", "rejected"].includes(ticket.status)) {
-    return "Healthy";
-  }
-
-  const now = Date.now();
-  const deadline = new Date(ticket.slaDeadline).getTime();
-  const created = new Date(ticket.createdAt).getTime();
-  const diff = deadline - now;
-  const total = deadline - created;
-  const pctRemaining = total > 0 ? diff / total : 0;
-
-  if (diff <= 0) return "Breached";
-  if (pctRemaining <= 0.15) return "At Risk";
-  if (pctRemaining <= 0.35) return "Warning";
-  return "Healthy";
-}
-
 export default function ExecutiveDashboard() {
   const currentUser = getCurrentUser();
   const navigate = useNavigate();
@@ -76,10 +60,18 @@ export default function ExecutiveDashboard() {
     initialLoading,
     error,
   } = useExecutiveData();
+  const isEbu = profileIsEbu(profile);
 
   useEffect(() => {
     let isMounted = true;
     const loadLeads = async () => {
+      if (!isEbu) {
+        if (isMounted) {
+          setLeads([]);
+          setLeadsLoading(false);
+        }
+        return;
+      }
       try {
         const rows = await getMyLeads();
         if (isMounted) {
@@ -101,7 +93,7 @@ export default function ExecutiveDashboard() {
     return () => {
       isMounted = false;
     };
-  }, []);
+  }, [isEbu]);
 
   const monthlySpendingTotal = spendingSummary?.total || "0.00";
   const managerName = profile?.manager
@@ -164,9 +156,9 @@ export default function ExecutiveDashboard() {
 
     map.forEach((corp, corporateId) => {
       const corpTickets = tickets.filter((t) => t.corporateId === corporateId);
-      const breached = corpTickets.filter((t) => getSlaStatus(t) === "Breached").length;
-      const atRisk = corpTickets.filter((t) => getSlaStatus(t) === "At Risk").length;
-      const warning = corpTickets.filter((t) => getSlaStatus(t) === "Warning").length;
+      const breached = corpTickets.filter((t) => getSlaHealthLabel(t) === "Breached").length;
+      const atRisk = corpTickets.filter((t) => getSlaHealthLabel(t) === "At Risk").length;
+      const warning = corpTickets.filter((t) => getSlaHealthLabel(t) === "Warning").length;
       if (breached > 0) {
         corp.health = "At Risk";
         corp.healthVariant = "neutral";
@@ -196,7 +188,7 @@ export default function ExecutiveDashboard() {
     return createdAt.getMonth() === now.getMonth() && createdAt.getFullYear() === now.getFullYear();
   }).length;
   const openTicketsCount = tickets.filter((t) => !["resolved", "closed", "rejected"].includes(t.status)).length;
-  const breachedSlaCount = tickets.filter((t) => getSlaStatus(t) === "Breached").length;
+  const breachedSlaCount = tickets.filter((t) => getSlaHealthLabel(t) === "Breached").length;
   const pendingVisitsCount = visits.filter((v) => ["pending", "approved", "confirmed", "rescheduled"].includes(v.status)).length;
   const nextVisitDate = visits
     .filter((v) => ["pending", "approved", "confirmed", "rescheduled"].includes(v.status))
@@ -219,7 +211,7 @@ export default function ExecutiveDashboard() {
           : statusNormalized === "rejected"
             ? "danger"
             : "warning";
-      const slaStatus = getSlaStatus(t);
+      const slaStatus = getSlaHealthLabel(t);
       const slaVariant =
         slaStatus === "Breached"
           ? "breached"
@@ -306,7 +298,7 @@ export default function ExecutiveDashboard() {
     tickets
       .filter((t) => !["resolved", "closed", "rejected"].includes(t.status))
       .forEach((t) => {
-        counts[getSlaStatus(t)] += 1;
+        counts[getSlaHealthLabel(t)] += 1;
       });
 
     return [
@@ -397,6 +389,7 @@ export default function ExecutiveDashboard() {
           </CardContent>
         </Card>
 
+        {isEbu ? (
          <Card>
           <CardContent className="pt-6">
             <p className="text-sm font-medium text-slate-500">My Leads</p>
@@ -404,6 +397,7 @@ export default function ExecutiveDashboard() {
             <p className="text-xs text-slate-400">{leadsLoading ? "Loading leads..." : `${activeLeadsCount} active • ${monthlyLeadsCount} this month`}</p>
           </CardContent>
         </Card>
+        ) : null}
       </div>
 
       <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-7">

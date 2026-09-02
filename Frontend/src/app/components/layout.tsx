@@ -18,8 +18,9 @@ import {
 import { useEffect, useState } from "react";
 import { cn } from "./ui-components";
 import mtcLogo from "../../assets/logo.png";
-import { logoutUser, getCurrentUser } from "../api/authApi";
+import { logoutUser, getCurrentUser, getMyProfile } from "../api/authApi";
 import { getUnreadNotificationCount } from "../api/notificationsApi";
+import { profileIsEbu } from "../utils/departmentSegment";
 import { isExecutiveRole, isGmRole, isManagerRole, isSupervisorRole } from "../utils/roleCapabilities";
 import { useSupervisorHybridBadges } from "../hooks/useSupervisorHybridBadges";
 import { ExecutiveDataProvider } from "../hooks/useExecutiveData";
@@ -31,12 +32,31 @@ export default function Layout() {
   const [unreadCount, setUnreadCount] = useState(0);
   const supervisorBadges = useSupervisorHybridBadges();
   const currentUser = getCurrentUser();
+  const [showLeadsTab, setShowLeadsTab] = useState(false);
   const isCustomer = currentUser?.role === "customer";
   const isSupervisor = isSupervisorRole(currentUser?.role);
   const hasExecutiveScope = isExecutiveRole(currentUser?.role);
   const isExecutiveStaff = currentUser?.role === "executive_staff";
   const hasManagerScope = isManagerRole(currentUser?.role);
   const isGm = isGmRole(currentUser?.role);
+
+  useEffect(() => {
+    if (isCustomer || (!hasManagerScope && !isExecutiveStaff)) {
+      setShowLeadsTab(false);
+      return;
+    }
+    let cancelled = false;
+    getMyProfile()
+      .then((profile) => {
+        if (!cancelled) setShowLeadsTab(profileIsEbu(profile));
+      })
+      .catch(() => {
+        if (!cancelled) setShowLeadsTab(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isCustomer, hasManagerScope, isExecutiveStaff]);
   const notificationsHref =
     hasExecutiveScope ? "/executive-notifications" : "/notifications";
 
@@ -90,10 +110,10 @@ export default function Layout() {
       ]
     : [
         { name: "Dashboard", href: "/dashboard", icon: LayoutDashboard },
-        ...(hasManagerScope
+        ...(showLeadsTab && hasManagerScope
           ? [{ name: "Leads", href: "/manager-leads", icon: FileText }]
           : []),
-        ...(isExecutiveStaff
+        ...(showLeadsTab && isExecutiveStaff
           ? [{ name: "Leads", href: "/executive-leads", icon: FileText }]
           : []),
         {

@@ -28,6 +28,11 @@ const Login: React.FC = () => {
       localStorage.setItem("currentUser", JSON.stringify(response.user));
       touchSession();
 
+      if (response.user.mustChangePassword) {
+        navigate("/change-password", { replace: true });
+        return;
+      }
+
       navigate(response.user.role === "customer" ? "/customerAccount" : "/dashboard", { replace: true });
     } catch (error) {
       const message =
