@@ -20,6 +20,7 @@ const { reassignOpenTicketsForCorporate } = require("../services/ticketExecutive
 const Service = require("../models/Service");
 const Invoice = require("../models/Invoice");
 const Notification = require("../models/Notification");
+const AuditLog = require("../models/AuditLog");
 const { createForUserIds } = require("../services/notificationService");
 const {
   propagateContactPersonToCorporateAccounts,
@@ -897,6 +898,229 @@ exports.getPortalUsers = async (req, res) => {
     return res.status(200).json({ status: "Success", users: enrichedUsers });
   } catch (error) {
     console.error("Get portal users error:", error);
+    return res
+      .status(500)
+      .json({ status: "Failed", message: "Internal server error" });
+  }
+};
+
+function startOfDay(date) {
+  const d = new Date(date);
+  d.setHours(0, 0, 0, 0);
+  return d;
+}
+
+function startOfMonth(date) {
+  return new Date(date.getFullYear(), date.getMonth(), 1);
+}
+
+function toDateOnly(date) {
+  return date.toISOString().slice(0, 10);
+}
+
+// ── System health / admin overview aggregates ────────────────────
+exports.getSystemHealth = async (req, res) => {
+  try {
+    const now = new Date();
+    const today = startOfDay(now);
+    const last30Min = new Date(now.getTime() - 30 * 60 * 1000);
+    const last24h = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    const thisMonthStart = startOfMonth(now);
+    const lastMonthStart = startOfMonth(new Date(now.getFullYear(), now.getMonth() - 1, 1));
+    const inSixMonths = new Date(now);
+    inSixMonths.setMonth(inSixMonths.getMonth() + 6);
+    const todayStr = toDateOnly(now);
+    const inSixMonthsStr = toDateOnly(inSixMonths);
+
+    const openTicketStatuses = { [Op.notIn]: ["resolved", "closed", "rejected"] };
+    const pendingVisitStatuses = { [Op.in]: ["pending", "approved", "confirmed", "rescheduled"] };
+
+    const dbStarted = Date.now();
+    let database = { status: "ok", latencyMs: 0 };
+    try {
+      await sequelize.authenticate();
+      database = { status: "ok", latencyMs: Date.now() - dbStarted };
+    } catch {
+      database = { status: "error", latencyMs: Date.now() - dbStarted };
+    }
+
+    const [
+      portalUsers,
+      usersByRoleRows,
+      people,
+      peopleWithoutPortal,
+      pendingImportedExecutives,
+      auditEntries24h,
+      activeUsers30m,
+      corporates,
+      corporatesApproved,
+      corporatesWaitingApproval,
+      accounts,
+      accountsActive,
+      openTickets,
+      unassignedTickets,
+      breachedSlas,
+      ticketsCreatedToday,
+      ticketsCreatedThisMonth,
+      ticketsCreatedLastMonth,
+      ticketsResolvedMtd,
+      pendingVisits,
+      visitsCompletedMtd,
+      ratingAgg,
+      nextVisit,
+      contractsExpiring6m,
+    ] = await Promise.all([
+      User.count(),
+      User.findAll({
+        attributes: ["role", [sequelize.fn("COUNT", sequelize.col("user_id")), "count"]],
+        group: ["role"],
+        raw: true,
+      }),
+      Person.count(),
+      Person.count({ where: { hasPortalAccess: false } }),
+      ExecutiveStaff.count({ where: { userId: null } }),
+      AuditLog.count({ where: { createdAt: { [Op.gte]: last24h } } }),
+      AuditLog.count({
+        distinct: true,
+        col: "actorUserId",
+        where: {
+          createdAt: { [Op.gte]: last30Min },
+          actorUserId: { [Op.ne]: null },
+        },
+      }),
+      Corporate.count(),
+      Corporate.count({ where: { approvalStatus: "approved" } }),
+      Corporate.count({ where: { approvalStatus: "waiting_approval" } }),
+      Account.count(),
+      Account.count({ where: { isActive: true } }),
+      Ticket.count({ where: { status: openTicketStatuses } }),
+      Ticket.count({
+        where: {
+          status: openTicketStatuses,
+          [Op.or]: [{ assignedTo: null }, { assignedTo: "" }],
+        },
+      }),
+      Ticket.count({
+        where: {
+          status: openTicketStatuses,
+          slaDeadline: { [Op.ne]: null, [Op.lt]: now },
+        },
+      }),
+      Ticket.count({ where: { createdAt: { [Op.gte]: today } } }),
+      Ticket.count({ where: { createdAt: { [Op.gte]: thisMonthStart } } }),
+      Ticket.count({
+        where: {
+          createdAt: { [Op.gte]: lastMonthStart, [Op.lt]: thisMonthStart },
+        },
+      }),
+      Ticket.count({
+        where: {
+          status: { [Op.in]: ["resolved", "closed"] },
+          [Op.or]: [
+            { resolvedAt: { [Op.gte]: thisMonthStart } },
+            { closedAt: { [Op.gte]: thisMonthStart } },
+          ],
+        },
+      }),
+      Visit.count({ where: { status: pendingVisitStatuses } }),
+      Visit.count({
+        where: {
+          status: { [Op.in]: ["completed", "follow_up_pending"] },
+          updatedAt: { [Op.gte]: thisMonthStart },
+        },
+      }),
+      Visit.findOne({
+        attributes: [
+          [sequelize.fn("AVG", sequelize.col("customer_rating")), "avg"],
+          [sequelize.fn("COUNT", sequelize.col("customer_rating")), "count"],
+        ],
+        where: { customerRating: { [Op.ne]: null } },
+        raw: true,
+      }),
+      Visit.findOne({
+        where: {
+          status: pendingVisitStatuses,
+          visitDate: { [Op.gte]: todayStr },
+        },
+        order: [
+          ["visit_date", "ASC"],
+          ["start_time", "ASC"],
+        ],
+        attributes: ["visitDate", "startTime", "accountName"],
+      }),
+      Contract.count({
+        where: {
+          contractEndDate: {
+            [Op.not]: null,
+            [Op.gte]: todayStr,
+            [Op.lte]: inSixMonthsStr,
+          },
+        },
+      }),
+    ]);
+
+    const usersByRole = {};
+    for (const row of usersByRoleRows) {
+      usersByRole[row.role] = Number(row.count) || 0;
+    }
+
+    const ratingRow = ratingAgg || {};
+    const avgRating = ratingRow?.avg != null ? Number(Number(ratingRow.avg).toFixed(1)) : null;
+    const ratingCount = Number(ratingRow?.count) || 0;
+
+    return res.status(200).json({
+      status: "Success",
+      generatedAt: now.toISOString(),
+      database,
+      users: {
+        portal: portalUsers,
+        byRole: usersByRole,
+        rolesConfigured: Object.keys(usersByRole).length,
+        activeLast30Min: activeUsers30m,
+        directory: people,
+        withoutPortalAccess: peopleWithoutPortal,
+        pendingImportedExecutives,
+      },
+      audit: {
+        entriesLast24h: auditEntries24h,
+      },
+      corporates: {
+        total: corporates,
+        approved: corporatesApproved,
+        waitingApproval: corporatesWaitingApproval,
+      },
+      accounts: {
+        total: accounts,
+        active: accountsActive,
+      },
+      tickets: {
+        open: openTickets,
+        unassigned: unassignedTickets,
+        breachedSla: breachedSlas,
+        createdToday: ticketsCreatedToday,
+        createdThisMonth: ticketsCreatedThisMonth,
+        createdLastMonth: ticketsCreatedLastMonth,
+        resolvedMtd: ticketsResolvedMtd,
+      },
+      visits: {
+        pending: pendingVisits,
+        completedMtd: visitsCompletedMtd,
+        avgRating,
+        ratingCount,
+        nextVisit: nextVisit
+          ? {
+              visitDate: nextVisit.visitDate,
+              startTime: nextVisit.startTime,
+              accountName: nextVisit.accountName,
+            }
+          : null,
+      },
+      contracts: {
+        expiringWithin6Months: contractsExpiring6m,
+      },
+    });
+  } catch (error) {
+    console.error("Get system health error:", error);
     return res
       .status(500)
       .json({ status: "Failed", message: "Internal server error" });

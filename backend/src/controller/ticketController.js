@@ -726,7 +726,7 @@ exports.getAssignedTickets = async (req, res) => {
   }
 };
 
-// All tickets (manager/gm/supervisor: all; admin: only tickets under their linked executives)
+// All tickets (manager/gm/supervisor: all; departmented admin: own segment; super-admin: all)
 exports.getAllTickets = async (req, res) => {
   try {
     const user = req.user;
@@ -746,18 +746,19 @@ exports.getAllTickets = async (req, res) => {
       }
 
       const adminDepartment = await resolveDepartmentForAdminPerson(adminPerson);
-      if (!adminDepartment) {
-        return res.status(200).json({ status: "Success", tickets: [] });
+      // Super-admins have no department and should see all tickets.
+      // Departmented admins only see tickets in their segment.
+      if (adminDepartment) {
+        const resolved = await Promise.all(
+          tickets.map(async (ticket) => ({
+            ticket,
+            department: await resolveTicketDepartmentByTicket(ticket),
+          }))
+        );
+        tickets = resolved
+          .filter((entry) => entry.department && entry.department === adminDepartment)
+          .map((entry) => entry.ticket);
       }
-      const resolved = await Promise.all(
-        tickets.map(async (ticket) => ({
-          ticket,
-          department: await resolveTicketDepartmentByTicket(ticket),
-        }))
-      );
-      tickets = resolved
-        .filter((entry) => entry.department && entry.department === adminDepartment)
-        .map((entry) => entry.ticket);
     }
 
     if (user.role === "gm") {

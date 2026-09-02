@@ -13,7 +13,7 @@ import {
   UserCheck, Upload, FileSpreadsheet,
 } from "lucide-react";
 import {
-  createPerson, getPersonsByType, createPortalAccess, getPortalUsers, revokePortalAccess, deletePersonWithoutPortalAccess,
+  createPerson, getPersonsByType, createPortalAccess, getPortalUsers, getSystemHealth, revokePortalAccess, deletePersonWithoutPortalAccess,
   getExecutives, getCorporatesWithoutContactPersons,
   createAccount, getAccounts, createContract, createService, getAccountServices, getAccountContracts,
   getPendingImportedExecutives, completeImportedExecutive, importKeyAccountsFromExcel,
@@ -25,6 +25,7 @@ import {
   type ServicePayload, type ServiceRecord,
   type PendingImportedExecutive,
   type ManagerRecord,
+  type SystemHealth,
 } from "../api/adminApi";
 import { getMyProfile } from "../api/authApi";
 import type { UserProfile } from "../api/authApi";
@@ -62,6 +63,9 @@ export default function SuperAdminProfile() {
   const [searchUsers, setSearchUsers] = useState("");
   const [showCreateUser, setShowCreateUser] = useState(false);
   const [userProfile, setUserProfile] = useState<UserProfile | null>(null);
+  const [systemHealth, setSystemHealth] = useState<SystemHealth | null>(null);
+  const [loadingSystemHealth, setLoadingSystemHealth] = useState(false);
+  const [systemHealthError, setSystemHealthError] = useState("");
 
   useEffect(() => {
     getMyProfile().then(setUserProfile).catch(() => toast.error("Failed to load profile"));
@@ -326,6 +330,19 @@ export default function SuperAdminProfile() {
     }
   }, [effectiveImportMode]);
 
+  const fetchSystemHealth = useCallback(async () => {
+    setLoadingSystemHealth(true);
+    setSystemHealthError("");
+    try {
+      const data = await getSystemHealth();
+      setSystemHealth(data);
+    } catch (err: unknown) {
+      setSystemHealthError(err instanceof Error ? err.message : "Failed to load system health");
+    } finally {
+      setLoadingSystemHealth(false);
+    }
+  }, []);
+
   // ── Fetch portal users when User Management tab is active ───────
   const fetchPortalUsers = useCallback(async () => {
     setLoadingPortalUsers(true);
@@ -510,13 +527,14 @@ export default function SuperAdminProfile() {
     if (activeTab === "noPortalUsers") fetchNoPortalUsers();
     if (activeTab === "pendingExecutives") fetchPendingExecutives();
     if (activeTab === "profile") {
+      void fetchSystemHealth();
       setLoadingHierarchy(true);
       Promise.all([getPersonsByType("gm"), getPersonsByType("manager"), getPersonsByType("executive_staff")])
         .then(([gms, managers, executives]) => { setGmList(gms); setManagerList(managers); setExecutivePersonList(executives); })
         .catch(() => {})
         .finally(() => setLoadingHierarchy(false));
     }
-  }, [activeTab, fetchPortalUsers, fetchAccounts, fetchNoPortalUsers, fetchPendingExecutives]);
+  }, [activeTab, fetchPortalUsers, fetchAccounts, fetchNoPortalUsers, fetchPendingExecutives, fetchSystemHealth]);
 
   // ── Fetch persons by type for portal access ─────────────────────
   useEffect(() => {
@@ -963,21 +981,88 @@ export default function SuperAdminProfile() {
               </CardContent>
             </Card>
             <Card className="md:col-span-2">
-              <CardHeader><CardTitle className="text-base">System Health</CardTitle></CardHeader>
-              <CardContent>
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4">
-                  {[
-                    { label: "Total Users", value: "42", color: "text-mtc-blue" },
-                    { label: "Active Sessions", value: "18", color: "text-green-600" },
-                    { label: "Roles Configured", value: "7", color: "text-slate-900" },
-                    { label: "Audit Entries (24h)", value: "1,247", color: "text-amber-600" },
-                  ].map((m) => (
-                    <div key={m.label} className="text-center p-4 rounded-lg bg-slate-50 border border-slate-100">
-                      <span className={`text-xl sm:text-2xl font-bold ${m.color}`}>{m.value}</span>
-                      <p className="text-xs text-slate-500 mt-1">{m.label}</p>
-                    </div>
-                  ))}
+              <CardHeader className="flex flex-row items-start justify-between gap-3 space-y-0">
+                <div>
+                  <CardTitle className="text-base">System Health</CardTitle>
+                  <p className="text-xs text-slate-500 mt-1">Live counts from the database</p>
                 </div>
+                <div className="flex items-center gap-2">
+                  {systemHealth && (
+                    <Badge variant={systemHealth.database.status === "ok" ? "success" : "danger"}>
+                      DB {systemHealth.database.status === "ok" ? "connected" : "error"}
+                      {systemHealth.database.status === "ok" ? ` · ${systemHealth.database.latencyMs}ms` : ""}
+                    </Badge>
+                  )}
+                  <Button size="sm" variant="outline" onClick={() => void fetchSystemHealth()} disabled={loadingSystemHealth}>
+                    {loadingSystemHealth ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4" />}
+                  </Button>
+                </div>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {systemHealthError ? (
+                  <p className="text-sm text-red-600">{systemHealthError}</p>
+                ) : loadingSystemHealth && !systemHealth ? (
+                  <p className="text-sm text-slate-500 flex items-center gap-2">
+                    <Loader2 className="h-4 w-4 animate-spin" /> Loading system health...
+                  </p>
+                ) : systemHealth ? (
+                  <>
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                      {[
+                        { label: "Portal users", value: systemHealth.users.portal, color: "text-mtc-blue" },
+                        { label: "Active (30 min)", value: systemHealth.users.activeLast30Min, color: "text-green-600" },
+                        { label: "Roles in use", value: systemHealth.users.rolesConfigured, color: "text-slate-900" },
+                        { label: "Audit entries (24h)", value: systemHealth.audit.entriesLast24h, color: "text-amber-600" },
+                        { label: "Directory people", value: systemHealth.users.directory, color: "text-slate-900" },
+                        { label: "No portal access", value: systemHealth.users.withoutPortalAccess, color: "text-slate-700" },
+                        { label: "Pending executives", value: systemHealth.users.pendingImportedExecutives, color: "text-amber-600" },
+                        { label: "Open tickets", value: systemHealth.tickets.open, color: "text-mtc-blue" },
+                      ].map((m) => (
+                        <div key={m.label} className="text-center p-3 rounded-lg bg-slate-50 border border-slate-100">
+                          <span className={`text-xl sm:text-2xl font-bold tabular-nums ${m.color}`}>
+                            {m.value.toLocaleString()}
+                          </span>
+                          <p className="text-xs text-slate-500 mt-1">{m.label}</p>
+                        </div>
+                      ))}
+                    </div>
+                    <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-sm">
+                      <div className="rounded-lg border border-slate-100 p-3">
+                        <p className="text-xs text-slate-500">Corporates</p>
+                        <p className="font-semibold text-slate-900 tabular-nums">{systemHealth.corporates.total.toLocaleString()}</p>
+                        <p className="text-xs text-slate-400">{systemHealth.corporates.waitingApproval} awaiting approval</p>
+                      </div>
+                      <div className="rounded-lg border border-slate-100 p-3">
+                        <p className="text-xs text-slate-500">Accounts</p>
+                        <p className="font-semibold text-slate-900 tabular-nums">{systemHealth.accounts.active.toLocaleString()} active</p>
+                        <p className="text-xs text-slate-400">{systemHealth.accounts.total.toLocaleString()} total</p>
+                      </div>
+                      <div className="rounded-lg border border-slate-100 p-3">
+                        <p className="text-xs text-slate-500">Pending visits</p>
+                        <p className="font-semibold text-slate-900 tabular-nums">{systemHealth.visits.pending.toLocaleString()}</p>
+                        <p className="text-xs text-slate-400">
+                          {systemHealth.visits.nextVisit
+                            ? `Next: ${systemHealth.visits.nextVisit.accountName}`
+                            : "None upcoming"}
+                        </p>
+                      </div>
+                      <div className="rounded-lg border border-slate-100 p-3">
+                        <p className="text-xs text-slate-500">Contracts expiring (6 mo)</p>
+                        <p className="font-semibold text-slate-900 tabular-nums">{systemHealth.contracts.expiringWithin6Months.toLocaleString()}</p>
+                        <p className="text-xs text-slate-400">SLA breached: {systemHealth.tickets.breachedSla}</p>
+                      </div>
+                    </div>
+                    {Object.keys(systemHealth.users.byRole).length > 0 && (
+                      <div className="flex flex-wrap gap-2">
+                        {Object.entries(systemHealth.users.byRole).map(([role, count]) => (
+                          <Badge key={role} variant="neutral">
+                            {ROLE_LABELS[role] || role}: {count}
+                          </Badge>
+                        ))}
+                      </div>
+                    )}
+                  </>
+                ) : null}
               </CardContent>
             </Card>
           </div>

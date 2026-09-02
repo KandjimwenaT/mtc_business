@@ -337,6 +337,62 @@ export const getPortalUsers = async (): Promise<PortalUser[]> => {
   return data.users ?? [];
 };
 
+export interface SystemHealth {
+  generatedAt: string;
+  database: { status: "ok" | "error"; latencyMs: number };
+  users: {
+    portal: number;
+    byRole: Record<string, number>;
+    rolesConfigured: number;
+    activeLast30Min: number;
+    directory: number;
+    withoutPortalAccess: number;
+    pendingImportedExecutives: number;
+  };
+  audit: { entriesLast24h: number };
+  corporates: { total: number; approved: number; waitingApproval: number };
+  accounts: { total: number; active: number };
+  tickets: {
+    open: number;
+    unassigned: number;
+    breachedSla: number;
+    createdToday: number;
+    createdThisMonth: number;
+    createdLastMonth: number;
+    resolvedMtd: number;
+  };
+  visits: {
+    pending: number;
+    completedMtd: number;
+    avgRating: number | null;
+    ratingCount: number;
+    nextVisit: { visitDate: string; startTime: string; accountName: string } | null;
+  };
+  contracts: { expiringWithin6Months: number };
+}
+
+export const getSystemHealth = async (): Promise<SystemHealth> => {
+  const res = await fetch(`${API_BASE_URL}/admin/system-health`, {
+    headers: authHeaders(),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    handleUnauthorized(res.status);
+    throw new Error(data.message || "Failed to fetch system health");
+  }
+  return {
+    generatedAt: data.generatedAt,
+    database: data.database,
+    users: data.users,
+    audit: data.audit,
+    corporates: data.corporates,
+    accounts: data.accounts,
+    tickets: data.tickets,
+    visits: data.visits,
+    contracts: data.contracts,
+  };
+};
+
 export const revokePortalAccess = async (userId: number): Promise<void> => {
   const res = await fetch(`${API_BASE_URL}/admin/portal-users/${userId}`, {
     method: "DELETE",
