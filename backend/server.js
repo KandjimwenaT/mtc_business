@@ -12,6 +12,7 @@ const authRoutes = require('./src/routes/authRoutes');
 const adminRoutes = require('./src/routes/adminRoutes');
 const auth = require('./src/middleware/auth');
 const { superAdminOnly, adminOrManager, blockGmWrites } = require('./src/middleware/adminAuth');
+const User = require('./src/models/User');
 const Person = require('./src/models/Person');
 const GM = require('./src/models/GM');
 const Manager = require('./src/models/Manager');
@@ -29,6 +30,7 @@ const Ticket = require('./src/models/Ticket');
 const TicketInternalNote = require('./src/models/TicketInternalNote');
 const TicketActivityLog = require('./src/models/TicketActivityLog');
 const Visit = require('./src/models/Visit');
+const ControlCard = require('./src/models/ControlCard');
 const OTPModel = require('./src/models/otpModel');
 const complaintRoutes = require('./src/routes/complaintRoutes');
 const accountRequestRoutes = require('./src/routes/accountRequestRoutes');
@@ -373,7 +375,8 @@ const startServer = async () => {
   } catch (err) {
     // Fresh environments may not have services table yet; Service.sync will create it.
   }
-  // Sync all models (tables already exist — use plain sync to avoid index accumulation)
+  // Create missing tables; existing tables are left unchanged (no alter).
+  await User.sync();
   await Person.sync();
   await GM.sync();
   await Manager.sync();
@@ -391,6 +394,7 @@ const startServer = async () => {
   await TicketInternalNote.sync();
   await TicketActivityLog.sync();
   await Visit.sync();
+  await ControlCard.sync();
   await Notification.sync();
   await Lead.sync();
   await AuditLog.sync();
