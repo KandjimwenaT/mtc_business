@@ -114,6 +114,28 @@ function requireArg(condition, message) {
   }
 }
 
+function resolveSheetName(workbook, requestedSheetName = "") {
+  const sheetNames = Array.isArray(workbook?.SheetNames) ? workbook.SheetNames : [];
+  if (!sheetNames.length) {
+    return "";
+  }
+
+  const trimmed = String(requestedSheetName || "").trim();
+  if (trimmed) {
+    const exact = sheetNames.find((name) => name === trimmed);
+    if (exact) return exact;
+
+    const normalizedRequested = normalizeHeader(trimmed);
+    const normalizeMatch = sheetNames.find((name) => normalizeHeader(name) === normalizedRequested);
+    if (normalizeMatch) return normalizeMatch;
+
+    const looseMatch = sheetNames.find((name) => normalizeHeader(name).includes(normalizedRequested));
+    if (looseMatch) return looseMatch;
+  }
+
+  return sheetNames[0];
+}
+
 async function ensureServiceMsisdnDuplicatesAllowed() {
   const queryInterface = sequelize.getQueryInterface();
   const indexes = await queryInterface.showIndex("services");
