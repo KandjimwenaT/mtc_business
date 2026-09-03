@@ -7,6 +7,7 @@ const keyAccountsImportUpload = require("../middleware/keyAccountsImportUpload")
 // All routes are protected by auth + superAdminAuth middleware (applied in server.js)
 
 router.get("/system-health", adminController.getSystemHealth);
+router.post("/test-email", superAdminOnly, adminController.sendTestEmail);
 
 // Person management (database records)
 router.post("/persons", adminController.createPerson);

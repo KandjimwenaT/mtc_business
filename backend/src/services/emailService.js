@@ -770,6 +770,88 @@ If you didn't request a password reset, please ignore this email and your passwo
   }
 
   /**
+   * Send a diagnostic test email (admin-only). Returns the SMTP accepted/rejected payload.
+   */
+  async sendTestEmail(to, subject, message) {
+    const from = {
+      name: "MTC Business",
+      address: process.env.EMAIL_FROM || process.env.EMAIL_USER || "noreply@mtcbusiness.com",
+    };
+    const sentAt = new Date().toISOString();
+    const bodyText =
+      message ||
+      `This is a test email from the MTC Business portal.\n\nSent at: ${sentAt}\nRecipient: ${to}`;
+    const escapedBody = String(bodyText)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/\n/g, "<br/>");
+
+    const mailOptions = {
+      from,
+      to,
+      subject: subject || "MTC Business — test email",
+      html: `
+        <!DOCTYPE html>
+        <html lang="en">
+        <body style="font-family: Arial, sans-serif; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+          <h2>MTC Business test email</h2>
+          <p>${escapedBody}</p>
+          <p style="color:#666;font-size:13px;">From: ${from.address}<br/>Sent at: ${sentAt}</p>
+        </body>
+        </html>
+      `,
+      text: `${bodyText}\n\nFrom: ${from.address}\nSent at: ${sentAt}`,
+    };
+
+    if (!this.transporter) {
+      const smtp = {
+        to,
+        from,
+        transporterReady: false,
+        emailUserSet: Boolean(process.env.EMAIL_USER),
+        emailPassSet: Boolean(process.env.EMAIL_PASS),
+      };
+      console.error("📧 Test email NOT sent — SMTP transporter is not initialized", smtp);
+      const err = new Error("Email transporter not initialized");
+      err.smtp = smtp;
+      throw err;
+    }
+
+    try {
+      const result = await this.transporter.sendMail(mailOptions);
+      const smtp = {
+        to,
+        from,
+        transporterReady: true,
+        messageId: result.messageId,
+        accepted: result.accepted,
+        rejected: result.rejected,
+        pending: result.pending,
+        response: result.response,
+        envelope: result.envelope,
+      };
+      console.log("📧 Test email SMTP response:", smtp);
+      return {
+        success: !(result.rejected && result.rejected.length > 0),
+        messageId: result.messageId,
+        smtp,
+      };
+    } catch (error) {
+      console.error("Test email send error:", {
+        to,
+        message: error.message,
+        code: error.code,
+        command: error.command,
+        response: error.response,
+        responseCode: error.responseCode,
+      });
+      throw error;
+    }
+  }
+
+  /**
    * Send assignment update email to an executive when reassigned.
    */
   async sendExecutiveReassignmentEmail(email, name, corporateName) {

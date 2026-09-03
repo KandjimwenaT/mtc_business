@@ -1007,6 +1007,57 @@ export const getManagerMonthlySpendingTrend = async (months = 6): Promise<Spendi
   return (data.trend ?? []) as SpendingTrendRecord[];
 };
 
+export interface TestEmailDelivery {
+  success: boolean;
+  messageId?: string;
+  smtp?: {
+    to?: string;
+    from?: { name?: string; address?: string };
+    transporterReady?: boolean;
+    messageId?: string;
+    accepted?: string[];
+    rejected?: string[];
+    pending?: string[];
+    response?: string;
+    envelope?: { from?: string; to?: string[] };
+    emailUserSet?: boolean;
+    emailPassSet?: boolean;
+  };
+  error?: string;
+  code?: string;
+  response?: string;
+  responseCode?: number;
+}
+
+export interface TestEmailResponse {
+  status: string;
+  message: string;
+  emailSent: boolean;
+  emailDelivery: TestEmailDelivery;
+}
+
+export const sendTestEmail = async (payload: {
+  to: string;
+  subject?: string;
+  message?: string;
+}): Promise<TestEmailResponse> => {
+  const res = await fetch(`${API_BASE_URL}/admin/test-email`, {
+    method: "POST",
+    headers: authHeaders(),
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    handleUnauthorized(res.status);
+    const err = new Error(data.message || "Failed to send test email") as Error & {
+      emailDelivery?: TestEmailDelivery;
+    };
+    err.emailDelivery = data.emailDelivery;
+    throw err;
+  }
+  return data as TestEmailResponse;
+};
+
 export const approveAccount = async (
   accountId: number,
   executiveId: number

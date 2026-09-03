@@ -3256,6 +3256,49 @@ exports.completeImportedExecutiveOnboarding = async (req, res) => {
   }
 };
 
+exports.sendTestEmail = async (req, res) => {
+  const { to, subject, message } = req.body || {};
+  const recipient = String(to || "").trim().toLowerCase();
+
+  if (!recipient) {
+    return res.status(400).json({ status: "Failed", message: "Recipient email is required" });
+  }
+  if (!securityService.validateEmail(recipient)) {
+    return res.status(400).json({ status: "Failed", message: "Invalid email format" });
+  }
+
+  const safeSubject = subject ? String(subject).trim().slice(0, 120) : undefined;
+  const safeMessage = message ? String(message).trim().slice(0, 4000) : undefined;
+
+  try {
+    const delivery = await emailService.sendTestEmail(recipient, safeSubject, safeMessage);
+    console.log("Test email result:", delivery);
+    return res.status(200).json({
+      status: "Success",
+      message: delivery.success
+        ? `SMTP accepted the message for ${recipient}`
+        : `SMTP rejected the message for ${recipient}`,
+      emailSent: delivery.success,
+      emailDelivery: delivery,
+    });
+  } catch (error) {
+    console.error("Test email endpoint error:", error);
+    return res.status(500).json({
+      status: "Failed",
+      message: error.message || "Failed to send test email",
+      emailSent: false,
+      emailDelivery: {
+        success: false,
+        error: error.message,
+        code: error.code,
+        response: error.response,
+        responseCode: error.responseCode,
+        smtp: error.smtp || null,
+      },
+    });
+  }
+};
+
 /** Super-admin: full key-accounts import from uploaded .xlsx (same behavior as CLI with all include flags). */
 // POST /admin/imports/key-accounts
 //
