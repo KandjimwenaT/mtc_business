@@ -291,9 +291,10 @@ export default function SuperAdminProfile() {
     filteredImportManagers,
   ]);
 
-  // ExecutiveRecord has no department field. Derive it via
-  // executive.managerId -> Manager.department using the same managers list
-  // we already loaded for the import dropdown.
+  // ExecutiveRecord has no department field. Derive it from the linked manager
+  // profile, or from the executive's Person directory row (department lives
+  // there for executives created in User Management). managerId on
+  // executive_staff is managers.manager_id, but some rows store persons.id.
   const managerDepartmentById = useMemo(() => {
     const map = new Map<number, string | null>();
     for (const m of importManagersEnriched) {
@@ -302,17 +303,63 @@ export default function SuperAdminProfile() {
     return map;
   }, [importManagersEnriched]);
 
-  const onboardingExistingExecutiveOptions = (() => {
-    const onboarded = executiveList.filter((ex) => !!ex.userId);
+  const onboardingExistingExecutiveOptions = useMemo(() => {
+    const emailKey = (email: string | null | undefined) =>
+      String(email || "").trim().toLowerCase();
+
+    const personByEmail = new Map(
+      executivePersonList.map((p) => [emailKey(p.email), p])
+    );
+    const managerPersonById = new Map<number, PersonRecord>();
+    for (const p of [...managerList, ...supervisorPersonList]) {
+      managerPersonById.set(p.id, p);
+    }
+
+    const resolveExecutiveDepartment = (ex: ExecutiveRecord): string | null => {
+      if (ex.managerId != null) {
+        const fromProfile = managerDepartmentById.get(ex.managerId);
+        if (fromProfile) return fromProfile;
+        const managerPerson = managerPersonById.get(ex.managerId);
+        if (managerPerson?.department) return managerPerson.department;
+        const portal = managerPerson
+          ? importManagersEnriched.find((m) => emailKey(m.email) === emailKey(managerPerson.email))
+          : undefined;
+        if (portal?.department) return portal.department;
+      }
+
+      const person = personByEmail.get(emailKey(ex.email));
+      if (person?.department) return person.department;
+      if (person?.managerId != null) {
+        const managerPerson = managerPersonById.get(person.managerId);
+        if (managerPerson?.department) return managerPerson.department;
+        const portal = managerPerson
+          ? importManagersEnriched.find((m) => emailKey(m.email) === emailKey(managerPerson.email))
+          : undefined;
+        if (portal?.department) return portal.department;
+      }
+      return null;
+    };
+
+    const hasPortal = (ex: ExecutiveRecord) => {
+      if (ex.userId) return true;
+      return !!personByEmail.get(emailKey(ex.email))?.hasPortalAccess;
+    };
+
+    const onboarded = executiveList.filter(hasPortal);
     if (!isDepartmentedAdmin) return onboarded;
-    return onboarded.filter((ex) => {
-      if (ex.managerId == null) return false; // orphans hidden from departmented admins
-      return departmentsMatch(
-        managerDepartmentById.get(ex.managerId),
-        importDepartmentLabel
-      );
-    });
-  })();
+    return onboarded.filter((ex) =>
+      departmentsMatch(resolveExecutiveDepartment(ex), importDepartmentLabel)
+    );
+  }, [
+    executiveList,
+    executivePersonList,
+    managerList,
+    supervisorPersonList,
+    managerDepartmentById,
+    importManagersEnriched,
+    isDepartmentedAdmin,
+    importDepartmentLabel,
+  ]);
 
   // Reset the manager selection whenever the effective mode changes; the
   // previously chosen manager almost certainly doesn't belong to the new
@@ -387,20 +434,20 @@ export default function SuperAdminProfile() {
   const fetchPendingExecutives = useCallback(async () => {
     setLoadingPendingExecutives(true);
     try {
-      const [pending, managers, supervisors, portalManagers] = await Promise.all([
+      const [pending, managers, supervisors, portalManagers, execs, execPersons] = await Promise.all([
         getPendingImportedExecutives(),
         getPersonsByType("manager"),
         getPersonsByType("supervisor"),
         getManagers(),
+        getExecutives(),
+        getPersonsByType("executive_staff"),
       ]);
       setPendingExecutives(pending);
       setManagerList(managers);
       setSupervisorPersonList(supervisors);
       setKeyAccountsImportManagers(portalManagers);
-      if (executiveList.length === 0) {
-        const execs = await getExecutives();
-        setExecutiveList(execs);
-      }
+      setExecutiveList(execs);
+      setExecutivePersonList(execPersons);
     } catch (err: unknown) {
       toast.error("Failed to load pending executives", { description: err instanceof Error ? err.message : undefined });
     } finally {
@@ -759,12 +806,11 @@ export default function SuperAdminProfile() {
     setSubmittingOnboarding(true);
     try {
       if (onboardingMode === "existing") {
-        const onboardedExecutiveList = executiveList.filter((ex) => !!ex.userId);
         if (!onboardingForm.existingExecutiveId) {
           toast.error("Please select an existing executive");
           return;
         }
-        const selectedExisting = onboardedExecutiveList.find(
+        const selectedExisting = onboardingExistingExecutiveOptions.find(
           (ex) => ex.executiveId === onboardingForm.existingExecutiveId
         );
         if (!selectedExisting) {

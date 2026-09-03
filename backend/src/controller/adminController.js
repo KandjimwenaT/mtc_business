@@ -835,6 +835,13 @@ exports.createPortalAccess = async (req, res) => {
           phone: person.phone,
           region: person.region || null,
         });
+      } else {
+        const execUpdates = {};
+        if (!existing.userId) execUpdates.userId = userRecord.id;
+        if (!existing.managerId && resolvedManagerProfileId) {
+          execUpdates.managerId = resolvedManagerProfileId;
+        }
+        if (Object.keys(execUpdates).length) await existing.update(execUpdates);
       }
     }
 
@@ -3061,10 +3068,16 @@ exports.completeImportedExecutiveOnboarding = async (req, res) => {
         });
       }
       if (!targetExecutive.userId) {
-        return res.status(400).json({
-          status: "Failed",
-          message: "Selected executive has no portal access yet",
+        const linkedUser = await User.findOne({
+          where: { email: targetExecutive.email, role: { [Op.in]: ["executive_staff", "supervisor"] } },
         });
+        if (!linkedUser) {
+          return res.status(400).json({
+            status: "Failed",
+            message: "Selected executive has no portal access yet",
+          });
+        }
+        await targetExecutive.update({ userId: linkedUser.id });
       }
 
       const [corporateCount, accountCount] = await sequelize.transaction(async (t) => {
