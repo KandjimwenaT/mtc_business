@@ -3205,12 +3205,17 @@ exports.completeImportedExecutiveOnboarding = async (req, res) => {
     });
 
     let emailSent = true;
+    let emailDelivery = null;
     try {
-      await emailService.sendPortalCredentialsEmail(
+      emailDelivery = await emailService.sendPortalCredentialsEmail(
         normalizedEmail,
         firstNameValue,
         tempPassword
       );
+      console.log("Onboarding credentials email result:", emailDelivery);
+      if (emailDelivery?.success === false) {
+        emailSent = false;
+      }
       if (process.env.NODE_ENV !== "production") {
         console.log(
           `[DEV] Portal temp password for ${normalizedEmail}: ${tempPassword}`
@@ -3219,6 +3224,13 @@ exports.completeImportedExecutiveOnboarding = async (req, res) => {
     } catch (emailErr) {
       console.error("Failed to send credentials email:", emailErr);
       emailSent = false;
+      emailDelivery = {
+        success: false,
+        error: emailErr.message,
+        code: emailErr.code,
+        response: emailErr.response,
+        responseCode: emailErr.responseCode,
+      };
     }
 
     return res.status(201).json({
@@ -3227,6 +3239,7 @@ exports.completeImportedExecutiveOnboarding = async (req, res) => {
         ? "Executive onboarded successfully. Credentials sent via email."
         : "Executive onboarded but credentials email failed to send. Share the temporary password manually.",
       emailSent,
+      emailDelivery,
       user: {
         id: userRecord.id,
         firstName: userRecord.firstName,

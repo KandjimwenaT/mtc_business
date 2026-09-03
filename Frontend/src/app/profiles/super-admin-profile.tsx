@@ -794,6 +794,7 @@ export default function SuperAdminProfile() {
           phone: onboardingForm.phone.trim() || undefined,
           managerPersonId: onboardingForm.managerPersonId,
         });
+        console.log("Onboarding credentials email response:", response);
         const emailSent = response.emailSent !== false;
         toast.success("Executive onboarded", {
           description: emailSent

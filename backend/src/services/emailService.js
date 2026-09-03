@@ -13,7 +13,10 @@ class EmailService {
     const emailPass = process.env.EMAIL_PASS;
 
     if (!emailUser || !emailPass) {
-      console.warn("⚠️  EMAIL_USER or EMAIL_PASS not set — emails will be logged to console only");
+      console.warn("⚠️  EMAIL_USER or EMAIL_PASS not set — emails will be logged to console only", {
+        emailUserSet: Boolean(emailUser),
+        emailPassSet: Boolean(emailPass),
+      });
       this.transporter = null;
       return;
     }
@@ -30,9 +33,18 @@ class EmailService {
       });
 
       await this.transporter.verify();
-      console.log("✅ Email service initialized successfully");
+      console.log("✅ Email service initialized successfully", {
+        smtpUser: emailUser,
+        emailFrom: process.env.EMAIL_FROM || "noreply@mtcbusiness.com",
+      });
     } catch (error) {
-      console.error("❌ Email service initialization failed:", error);
+      console.error("❌ Email service initialization failed:", {
+        message: error.message,
+        code: error.code,
+        command: error.command,
+        response: error.response,
+        responseCode: error.responseCode,
+      });
       this.transporter = null;
     }
   }
@@ -706,21 +718,54 @@ If you didn't request a password reset, please ignore this email and your passwo
 
     try {
       if (!this.transporter) {
-        console.log(`📧 Portal credentials email would be sent to: ${email}`);
-        console.log(`🔑 Temp password: ${tempPassword}`);
-        return { success: true, messageId: "console-log", previewUrl: null };
+        console.error("📧 Portal credentials email NOT sent — SMTP transporter is not initialized", {
+          to: email,
+          from: mailOptions.from,
+          emailUserSet: Boolean(process.env.EMAIL_USER),
+          emailPassSet: Boolean(process.env.EMAIL_PASS),
+        });
+        console.log(`🔑 Temp password (fallback, email not delivered): ${tempPassword}`);
+        throw new Error("Email transporter not initialized");
       }
 
       const result = await this.transporter.sendMail(mailOptions);
+      const smtpSummary = {
+        to: email,
+        from: mailOptions.from,
+        messageId: result.messageId,
+        accepted: result.accepted,
+        rejected: result.rejected,
+        pending: result.pending,
+        response: result.response,
+        envelope: result.envelope,
+      };
+      console.log("📧 Portal credentials SMTP response:", smtpSummary);
+      if (result.rejected && result.rejected.length > 0) {
+        console.error("📧 SMTP rejected recipient(s):", result.rejected);
+      }
+
       const previewUrl =
         process.env.NODE_ENV !== "production"
           ? nodemailer.getTestMessageUrl(result)
           : null;
 
-      return { success: true, messageId: result.messageId, previewUrl };
+      return {
+        success: !(result.rejected && result.rejected.length > 0),
+        messageId: result.messageId,
+        previewUrl,
+        smtp: smtpSummary,
+      };
     } catch (error) {
-      console.error("Portal credentials email send error:", error);
-      throw new Error("Failed to send portal credentials email");
+      console.error("Portal credentials email send error:", {
+        to: email,
+        message: error.message,
+        code: error.code,
+        command: error.command,
+        response: error.response,
+        responseCode: error.responseCode,
+        stack: error.stack,
+      });
+      throw error;
     }
   }
 
