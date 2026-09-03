@@ -14,7 +14,6 @@ import {
    Star,
    CalendarDays,
    FileText,
-  Mail,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { cn } from "./ui-components";
@@ -131,9 +130,6 @@ export default function Layout() {
           : []),
         ...(currentUser?.role !== "admin" ? [{ name: "Vehicles", href: "/vehicles", icon: Car }] : []),
         { name: "Notifications", href: notificationsHref, icon: Bell },
-        ...(currentUser?.role === "admin"
-          ? [{ name: "Test Email", href: "/test-email", icon: Mail }]
-          : []),
         { name: "My Profile", href: profileHref, icon: UserCircle },
       ];
 

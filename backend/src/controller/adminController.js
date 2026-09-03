@@ -604,25 +604,26 @@ exports.createPortalAccess = async (req, res) => {
 
       await accountManager.update({ hasPortalAccess: true });
 
-      try {
-        await emailService.sendPortalCredentialsEmail(
-          accountManager.email,
-          accountManager.firstName,
-          tempPassword
-        );
-      } catch (emailErr) {
-        console.error("Failed to send credentials email:", emailErr);
-      }
+      const delivery = await sendCredentialsAndCapture(
+        accountManager.email,
+        accountManager.firstName,
+        tempPassword
+      );
 
       return res.status(201).json({
         status: "Success",
-        message: "Portal access created successfully. Credentials sent via email.",
+        message: delivery.emailSent
+          ? "Portal access created successfully. Credentials sent via email."
+          : "Portal access created but credentials email failed to send. Share the temporary password manually.",
+        emailSent: delivery.emailSent,
+        emailDelivery: delivery.emailDelivery,
         user: {
           id: userRecord.id,
           firstName: userRecord.firstName,
           lastName: userRecord.lastName,
           email: userRecord.email,
           role: userRecord.role,
+          ...(delivery.password ? { password: delivery.password } : {}),
         },
       });
     }
@@ -674,25 +675,26 @@ exports.createPortalAccess = async (req, res) => {
 
       await accountManager.update({ hasPortalAccess: true });
 
-      try {
-        await emailService.sendPortalCredentialsEmail(
-          accountManager.email,
-          accountManager.firstName,
-          tempPassword
-        );
-      } catch (emailErr) {
-        console.error("Failed to send credentials email:", emailErr);
-      }
+      const delivery = await sendCredentialsAndCapture(
+        accountManager.email,
+        accountManager.firstName,
+        tempPassword
+      );
 
       return res.status(201).json({
         status: "Success",
-        message: "Portal access created successfully. Credentials sent via email.",
+        message: delivery.emailSent
+          ? "Portal access created successfully. Credentials sent via email."
+          : "Portal access created but credentials email failed to send. Share the temporary password manually.",
+        emailSent: delivery.emailSent,
+        emailDelivery: delivery.emailDelivery,
         user: {
           id: userRecord.id,
           firstName: userRecord.firstName,
           lastName: userRecord.lastName,
           email: userRecord.email,
           role: userRecord.role,
+          ...(delivery.password ? { password: delivery.password } : {}),
         },
       });
     }
@@ -838,28 +840,26 @@ exports.createPortalAccess = async (req, res) => {
 
     await person.update({ hasPortalAccess: true });
 
-    try {
-      await emailService.sendPortalCredentialsEmail(
-        person.email,
-        person.firstName,
-        tempPassword
-      );
-      if (process.env.NODE_ENV !== "production") {
-        console.log(`[DEV] Portal temp password for ${person.email}: ${tempPassword}`);
-      }
-    } catch (emailErr) {
-      console.error("Failed to send credentials email:", emailErr);
-    }
+    const delivery = await sendCredentialsAndCapture(
+      person.email,
+      person.firstName,
+      tempPassword
+    );
 
     return res.status(201).json({
       status: "Success",
-      message: "Portal access created successfully. Credentials sent via email.",
+      message: delivery.emailSent
+        ? "Portal access created successfully. Credentials sent via email."
+        : "Portal access created but credentials email failed to send. Share the temporary password manually.",
+      emailSent: delivery.emailSent,
+      emailDelivery: delivery.emailDelivery,
       user: {
         id: userRecord.id,
         firstName: userRecord.firstName,
         lastName: userRecord.lastName,
         email: userRecord.email,
         role: userRecord.role,
+        ...(delivery.password ? { password: delivery.password } : {}),
       },
     });
   } catch (error) {
@@ -2823,19 +2823,11 @@ exports.approveAccount = async (req, res) => {
       approvalStatus: "approved",
     });
 
-    // Send credentials email
-    try {
-      await emailService.sendPortalCredentialsEmail(
-        account.contactEmail,
-        account.contactFirstName,
-        tempPassword
-      );
-      if (process.env.NODE_ENV !== "production") {
-        console.log(`[DEV] Portal temp password for ${account.contactEmail}: ${tempPassword}`);
-      }
-    } catch (emailErr) {
-      console.error("Failed to send customer credentials email:", emailErr);
-    }
+    const delivery = await sendCredentialsAndCapture(
+      account.contactEmail,
+      account.contactFirstName,
+      tempPassword
+    );
 
     const reloaded = (await account.reload()).toJSON();
     reloaded.executiveFirstName = execStaff.firstName;
@@ -2843,7 +2835,11 @@ exports.approveAccount = async (req, res) => {
 
     return res.status(200).json({
       status: "Success",
-      message: "Account approved. Customer credentials sent via email.",
+      message: delivery.emailSent
+        ? "Account approved. Customer credentials sent via email."
+        : "Account approved but credentials email failed to send. Share the temporary password manually.",
+      emailSent: delivery.emailSent,
+      emailDelivery: delivery.emailDelivery,
       account: reloaded,
     });
   } catch (error) {
@@ -3204,34 +3200,13 @@ exports.completeImportedExecutiveOnboarding = async (req, res) => {
       await executive.update({ userId: userRecord.id }, { transaction: t });
     });
 
-    let emailSent = true;
-    let emailDelivery = null;
-    try {
-      emailDelivery = await emailService.sendPortalCredentialsEmail(
-        normalizedEmail,
-        firstNameValue,
-        tempPassword
-      );
-      console.log("Onboarding credentials email result:", emailDelivery);
-      if (emailDelivery?.success === false) {
-        emailSent = false;
-      }
-      if (process.env.NODE_ENV !== "production") {
-        console.log(
-          `[DEV] Portal temp password for ${normalizedEmail}: ${tempPassword}`
-        );
-      }
-    } catch (emailErr) {
-      console.error("Failed to send credentials email:", emailErr);
-      emailSent = false;
-      emailDelivery = {
-        success: false,
-        error: emailErr.message,
-        code: emailErr.code,
-        response: emailErr.response,
-        responseCode: emailErr.responseCode,
-      };
-    }
+    const delivery = await sendCredentialsAndCapture(
+      normalizedEmail,
+      firstNameValue,
+      tempPassword
+    );
+    const emailSent = delivery.emailSent;
+    const emailDelivery = delivery.emailDelivery;
 
     return res.status(201).json({
       status: "Success",
@@ -3246,6 +3221,7 @@ exports.completeImportedExecutiveOnboarding = async (req, res) => {
         lastName: userRecord.lastName,
         email: userRecord.email,
         role: userRecord.role,
+        ...(delivery.password ? { password: delivery.password } : {}),
       },
     });
   } catch (error) {
@@ -3253,49 +3229,6 @@ exports.completeImportedExecutiveOnboarding = async (req, res) => {
     return res
       .status(500)
       .json({ status: "Failed", message: "Internal server error" });
-  }
-};
-
-exports.sendTestEmail = async (req, res) => {
-  const { to, subject, message } = req.body || {};
-  const recipient = String(to || "").trim().toLowerCase();
-
-  if (!recipient) {
-    return res.status(400).json({ status: "Failed", message: "Recipient email is required" });
-  }
-  if (!securityService.validateEmail(recipient)) {
-    return res.status(400).json({ status: "Failed", message: "Invalid email format" });
-  }
-
-  const safeSubject = subject ? String(subject).trim().slice(0, 120) : undefined;
-  const safeMessage = message ? String(message).trim().slice(0, 4000) : undefined;
-
-  try {
-    const delivery = await emailService.sendTestEmail(recipient, safeSubject, safeMessage);
-    console.log("Test email result:", delivery);
-    return res.status(200).json({
-      status: "Success",
-      message: delivery.success
-        ? `SMTP accepted the message for ${recipient}`
-        : `SMTP rejected the message for ${recipient}`,
-      emailSent: delivery.success,
-      emailDelivery: delivery,
-    });
-  } catch (error) {
-    console.error("Test email endpoint error:", error);
-    return res.status(500).json({
-      status: "Failed",
-      message: error.message || "Failed to send test email",
-      emailSent: false,
-      emailDelivery: {
-        success: false,
-        error: error.message,
-        code: error.code,
-        response: error.response,
-        responseCode: error.responseCode,
-        smtp: error.smtp || null,
-      },
-    });
   }
 };
 
@@ -3605,12 +3538,45 @@ exports.getEbuImportJob = (req, res) => {
   });
 };
 
+async function sendCredentialsAndCapture(email, name, tempPassword) {
+  try {
+    const emailDelivery = await emailService.sendPortalCredentialsEmail(
+      email,
+      name,
+      tempPassword
+    );
+    console.log("Credentials email result:", emailDelivery);
+    const emailSent = emailDelivery?.success !== false;
+    if (process.env.NODE_ENV !== "production") {
+      console.log(`[DEV] Portal temp password for ${email}: ${tempPassword}`);
+    }
+    return {
+      emailSent,
+      emailDelivery,
+      password: emailSent ? undefined : tempPassword,
+    };
+  } catch (emailErr) {
+    console.error("Failed to send credentials email:", emailErr);
+    return {
+      emailSent: false,
+      emailDelivery: {
+        success: false,
+        error: emailErr.message,
+        code: emailErr.code,
+        response: emailErr.response,
+        responseCode: emailErr.responseCode,
+      },
+      password: tempPassword,
+    };
+  }
+}
+
 // ── Helper: generate a readable but secure temporary password ────
 function generateSecurePassword() {
   const upper = "ABCDEFGHJKLMNPQRSTUVWXYZ";
   const lower = "abcdefghjkmnpqrstuvwxyz";
   const digits = "23456789";
-  const special = "!@#$%&*";
+  const special = "!@#$%*";
 
   const pick = (chars) => chars[crypto.randomInt(chars.length)];
 

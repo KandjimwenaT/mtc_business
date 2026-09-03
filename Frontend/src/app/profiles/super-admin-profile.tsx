@@ -701,8 +701,14 @@ export default function SuperAdminProfile() {
     if (!selectedPerson) return;
     setGrantingAccess(true);
     try {
-      await createPortalAccess(selectedPerson.id, selectedPerson.type);
-      toast.success("Portal access granted!", { description: `Credentials sent to ${selectedPerson.email}` });
+      const response = await createPortalAccess(selectedPerson.id, selectedPerson.type);
+      const emailSent = response.emailSent !== false;
+      const tempPassword = (response.user as { password?: string } | undefined)?.password;
+      toast.success("Portal access granted", {
+        description: emailSent
+          ? `Account details sent to ${selectedPerson.email}`
+          : `Email delivery failed.${tempPassword ? ` Temp password: ${tempPassword}` : " Check server logs."}`,
+      });
       setSelectedPerson(null);
       setPortalType("");
       setShowPortalAccess(false);

@@ -25,7 +25,6 @@ import ManagerVisits from "./components/manager/ManagerVisits";
 import ManagerLeads from "./components/manager/ManagerLeads";
 import ForgotPassword from "./view/forgot-password";
 import AdminCorporate from "./components/admin/adminCorporate";
-import TestEmailPage from "./components/admin/test-email";
 import {
   ChangePasswordEntry,
   LoginEntry,
@@ -78,10 +77,7 @@ export const router = createBrowserRouter([
           },
           {
             element: <RequireRole allowed={["admin"]} />,
-            children: [
-              { path: "admin-corporates", Component: AdminCorporate },
-              { path: "test-email", Component: TestEmailPage },
-            ],
+            children: [{ path: "admin-corporates", Component: AdminCorporate }],
           },
           {
             element: <RequireRole allowed={["admin", "executive_staff", "manager", "supervisor", "gm"]} />,

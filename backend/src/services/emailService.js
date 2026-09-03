@@ -8,6 +8,21 @@ class EmailService {
     this.initializeTransporter();
   }
 
+  getMailFrom() {
+    return {
+      name: "MTC Business",
+      address: process.env.EMAIL_FROM || process.env.EMAIL_USER || "noreply@mtcbusiness.com",
+    };
+  }
+
+  escapeHtml(value) {
+    return String(value ?? "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;");
+  }
+
   async initializeTransporter() {
     const emailUser = process.env.EMAIL_USER;
     const emailPass = process.env.EMAIL_PASS;
@@ -35,7 +50,7 @@ class EmailService {
       await this.transporter.verify();
       console.log("✅ Email service initialized successfully", {
         smtpUser: emailUser,
-        emailFrom: process.env.EMAIL_FROM || "noreply@mtcbusiness.com",
+        emailFrom: this.getMailFrom().address,
       });
     } catch (error) {
       console.error("❌ Email service initialization failed:", {
@@ -662,58 +677,35 @@ If you didn't request a password reset, please ignore this email and your passwo
    * Send portal credentials email to a newly created portal user
    */
   async sendPortalCredentialsEmail(email, name, tempPassword) {
-    const loginUrl = `${process.env.FRONTEND_URL || "http://localhost:5173"}`;
+    const loginUrl = process.env.FRONTEND_URL || "http://localhost:5173";
+    const from = this.getMailFrom();
+    const sentAt = new Date().toISOString();
+    const safeName = this.escapeHtml(name);
+    const safeEmail = this.escapeHtml(email);
+    const safeCode = this.escapeHtml(tempPassword);
+    const safeLoginUrl = this.escapeHtml(loginUrl);
+
+    const bodyText =
+      `Hello ${name || ""},\n\n` +
+      `Your MTC Business portal account is ready.\n\n` +
+      `Sign-in email: ${email}\n` +
+      `Temporary sign-in code: ${tempPassword}\n\n` +
+      `Portal address: ${loginUrl}\n\n` +
+      `After you sign in, you will be asked to choose a new sign-in code.\n`;
 
     const mailOptions = {
-      from: {
-        name: "MTC Business",
-        address: process.env.EMAIL_FROM || "noreply@mtcbusiness.com",
-      },
+      from,
       to: email,
-      subject: "Your MTC Business Portal Credentials",
-      html: `
-        <!DOCTYPE html>
-        <html lang="en">
-        <head>
-          <meta charset="UTF-8">
-          <meta name="viewport" content="width=device-width, initial-scale=1.0">
-          <title>Portal Credentials - MTC Business</title>
-          <style>
-            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; }
-            .header { background: linear-gradient(135deg, #1a1a2e, #16213e); color: white; padding: 30px; text-align: center; border-radius: 10px 10px 0 0; }
-            .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 10px 10px; }
-            .cred-box { background: white; border: 2px solid #1a1a2e; padding: 20px; border-radius: 8px; margin: 20px 0; }
-            .button { display: inline-block; background: #1a1a2e; color: white; padding: 15px 30px; text-decoration: none; border-radius: 5px; margin: 20px 0; }
-            .footer { text-align: center; margin-top: 30px; color: #666; font-size: 14px; }
-            .warning { background: #f8d7da; border: 1px solid #f5c6cb; padding: 15px; border-radius: 5px; margin: 20px 0; color: #721c24; }
-          </style>
-        </head>
-        <body>
-          <div class="header">
-            <h1>Welcome to MTC Business Portal</h1>
-            <p>Your login credentials are ready</p>
-          </div>
-          <div class="content">
-            <h2>Hello ${name},</h2>
-            <p>Your MTC Business Portal account has been created. Below are your login credentials:</p>
-            <div class="cred-box">
-              <p><strong>Email:</strong> ${email}</p>
-              <p><strong>One-Time Password:</strong> <code style="background:#eee;padding:4px 8px;border-radius:4px;font-size:16px;">${tempPassword}</code></p>
-            </div>
-            <div style="text-align: center;">
-              <a href="${loginUrl}" class="button">Login to Portal</a>
-            </div>
-            <div class="warning">
-              <strong>Important:</strong> This is a one-time password. After you sign in, you will be required to set a new password before you can use the portal. Do not share these credentials with anyone.
-            </div>
-          </div>
-          <div class="footer">
-            <p>&copy; 2024 MTC Business. All rights reserved.</p>
-          </div>
-        </body>
-        </html>
-      `,
-      text: `Hello ${name},\n\nYour MTC Business Portal account has been created.\n\nEmail: ${email}\nOne-Time Password: ${tempPassword}\n\nPlease login at: ${loginUrl}\nYou will be required to set a new password immediately after your first login.\n\n© 2024 MTC Business.`,
+      subject: "MTC Business portal account",
+      html: this.getPortalCredentialsEmailTemplate({
+        name: safeName,
+        email: safeEmail,
+        code: safeCode,
+        loginUrl: safeLoginUrl,
+        fromAddress: this.escapeHtml(from.address),
+        sentAt,
+      }),
+      text: `${bodyText}\nFrom: ${from.address}\nSent at: ${sentAt}`,
     };
 
     try {
@@ -769,86 +761,76 @@ If you didn't request a password reset, please ignore this email and your passwo
     }
   }
 
-  /**
-   * Send a diagnostic test email (admin-only). Returns the SMTP accepted/rejected payload.
-   */
-  async sendTestEmail(to, subject, message) {
-    const from = {
-      name: "MTC Business",
-      address: process.env.EMAIL_FROM || process.env.EMAIL_USER || "noreply@mtcbusiness.com",
-    };
-    const sentAt = new Date().toISOString();
-    const bodyText =
-      message ||
-      `This is a test email from the MTC Business portal.\n\nSent at: ${sentAt}\nRecipient: ${to}`;
-    const escapedBody = String(bodyText)
-      .replace(/&/g, "&amp;")
-      .replace(/</g, "&lt;")
-      .replace(/>/g, "&gt;")
-      .replace(/"/g, "&quot;")
-      .replace(/\n/g, "<br/>");
-
-    const mailOptions = {
-      from,
-      to,
-      subject: subject || "MTC Business — test email",
-      html: `
-        <!DOCTYPE html>
-        <html lang="en">
-        <body style="font-family: Arial, sans-serif; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
-          <h2>MTC Business test email</h2>
-          <p>${escapedBody}</p>
-          <p style="color:#666;font-size:13px;">From: ${from.address}<br/>Sent at: ${sentAt}</p>
-        </body>
-        </html>
-      `,
-      text: `${bodyText}\n\nFrom: ${from.address}\nSent at: ${sentAt}`,
-    };
-
-    if (!this.transporter) {
-      const smtp = {
-        to,
-        from,
-        transporterReady: false,
-        emailUserSet: Boolean(process.env.EMAIL_USER),
-        emailPassSet: Boolean(process.env.EMAIL_PASS),
-      };
-      console.error("📧 Test email NOT sent — SMTP transporter is not initialized", smtp);
-      const err = new Error("Email transporter not initialized");
-      err.smtp = smtp;
-      throw err;
-    }
-
-    try {
-      const result = await this.transporter.sendMail(mailOptions);
-      const smtp = {
-        to,
-        from,
-        transporterReady: true,
-        messageId: result.messageId,
-        accepted: result.accepted,
-        rejected: result.rejected,
-        pending: result.pending,
-        response: result.response,
-        envelope: result.envelope,
-      };
-      console.log("📧 Test email SMTP response:", smtp);
-      return {
-        success: !(result.rejected && result.rejected.length > 0),
-        messageId: result.messageId,
-        smtp,
-      };
-    } catch (error) {
-      console.error("Test email send error:", {
-        to,
-        message: error.message,
-        code: error.code,
-        command: error.command,
-        response: error.response,
-        responseCode: error.responseCode,
-      });
-      throw error;
-    }
+  getPortalCredentialsEmailTemplate({ name, email, code, loginUrl, fromAddress, sentAt }) {
+    return `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MTC Business portal account</title>
+</head>
+<body style="margin:0;padding:0;background-color:#eef3f8;font-family:Arial,Helvetica,sans-serif;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#eef3f8;padding:32px 12px;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="560" cellpadding="0" cellspacing="0" style="max-width:560px;width:100%;background-color:#ffffff;border-radius:16px;overflow:hidden;box-shadow:0 8px 24px rgba(0,59,113,0.12);">
+          <tr>
+            <td style="background-color:#003B71;padding:28px 32px;text-align:center;">
+              <div style="display:inline-block;background-color:#FFD100;color:#003B71;font-size:11px;font-weight:700;letter-spacing:1.5px;padding:4px 10px;border-radius:999px;margin-bottom:12px;">MTC BUSINESS</div>
+              <h1 style="margin:12px 0 6px;color:#ffffff;font-size:24px;line-height:1.3;font-weight:700;">Your portal account is ready</h1>
+              <p style="margin:0;color:#b3d4f0;font-size:14px;">Sign in with the details below to get started</p>
+            </td>
+          </tr>
+          <tr>
+            <td style="height:4px;background-color:#FFD100;font-size:0;line-height:0;">&nbsp;</td>
+          </tr>
+          <tr>
+            <td style="padding:32px;">
+              <p style="margin:0 0 20px;color:#0A1628;font-size:16px;line-height:1.5;">Hello ${name || "there"},</p>
+              <p style="margin:0 0 28px;color:#334155;font-size:15px;line-height:1.6;">
+                An MTC Business portal account has been created for you. Use these details the first time you sign in. You will then be asked to choose a new sign-in code.
+              </p>
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background-color:#f4f8fc;border:1px solid #ccdde9;border-radius:12px;">
+                <tr>
+                  <td style="padding:18px 22px;border-bottom:1px solid #ccdde9;">
+                    <p style="margin:0 0 6px;color:#005ba5;font-size:11px;font-weight:700;letter-spacing:0.8px;text-transform:uppercase;">Sign-in email</p>
+                    <p style="margin:0;color:#0A1628;font-size:16px;font-weight:600;word-break:break-all;">${email}</p>
+                  </td>
+                </tr>
+                <tr>
+                  <td style="padding:18px 22px;">
+                    <p style="margin:0 0 10px;color:#005ba5;font-size:11px;font-weight:700;letter-spacing:0.8px;text-transform:uppercase;">Temporary sign-in code</p>
+                    <p style="margin:0;background-color:#ffffff;border:1px dashed #3b8fc7;border-radius:8px;padding:12px 14px;color:#003B71;font-size:20px;font-weight:700;letter-spacing:1px;font-family:Consolas,'Courier New',monospace;text-align:center;">${code}</p>
+                  </td>
+                </tr>
+              </table>
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="margin:28px 0 8px;">
+                <tr>
+                  <td align="center">
+                    <a href="${loginUrl}" style="display:inline-block;background-color:#003B71;color:#ffffff;text-decoration:none;font-size:15px;font-weight:700;padding:14px 28px;border-radius:8px;">Open the portal</a>
+                  </td>
+                </tr>
+              </table>
+              <p style="margin:16px 0 0;color:#64748b;font-size:13px;line-height:1.5;text-align:center;word-break:break-all;">
+                Or copy this address into your browser:<br>
+                <span style="color:#005ba5;">${loginUrl}</span>
+              </p>
+            </td>
+          </tr>
+          <tr>
+            <td style="background-color:#f8fafc;border-top:1px solid #e2e8f0;padding:18px 32px;text-align:center;">
+              <p style="margin:0 0 4px;color:#64748b;font-size:12px;">MTC Business Portal</p>
+              <p style="margin:0;color:#94a3b8;font-size:11px;">From ${fromAddress} · ${sentAt}</p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>
+    `;
   }
 
   /**
