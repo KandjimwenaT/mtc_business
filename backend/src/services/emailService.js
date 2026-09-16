@@ -27,29 +27,32 @@ class EmailService {
     const emailUser = process.env.EMAIL_USER;
     const emailPass = process.env.EMAIL_PASS;
 
-    if (!emailUser || !emailPass) {
-      console.warn("⚠️  EMAIL_USER or EMAIL_PASS not set — emails will be logged to console only", {
-        emailUserSet: Boolean(emailUser),
-        emailPassSet: Boolean(emailPass),
-      });
-      this.transporter = null;
-      return;
-    }
+    // if (!emailUser || !emailPass) {
+    //   console.warn("⚠️  EMAIL_USER or EMAIL_PASS not set — emails will be logged to console only", {
+    //     emailUserSet: Boolean(emailUser),
+    //     emailPassSet: Boolean(emailPass),
+    //   });
+    //   this.transporter = null;
+    //   return;
+    // }
 
     try {
       this.transporter = nodemailer.createTransport({
-        host: "smtp.gmail.com",
-        port: 587,
-        secure: false, // STARTTLS
+        host: "mail.mtc.com.na",
+        port: 25,
+        secure: false,
+        tls: {
+          rejectUnauthorized: false,
+        }, // STARTTLS
         auth: {
-          user: emailUser,
-          pass: emailPass,
+          user: '',
+          pass: '',
         },
       });
 
       await this.transporter.verify();
       console.log("✅ Email service initialized successfully", {
-        smtpUser: emailUser,
+        smtpUser: '',
         emailFrom: this.getMailFrom().address,
       });
     } catch (error) {
@@ -134,7 +137,7 @@ class EmailService {
     const mailOptions = {
       from: {
         name: "MTC Business",
-        address: process.env.EMAIL_FROM || "noreply@mtcbusiness.com",
+        address: process.env.EMAIL_FROM || "mtc-no-reply@mtc.com.na",
       },
       to: email,
       subject: "Verify Your Email - MTC Business",
