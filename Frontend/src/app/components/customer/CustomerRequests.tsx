@@ -9,6 +9,7 @@ import { Badge } from '../ui/badge';
 import { CheckCircle2, Clock, FileText, Send, XCircle, Loader2 } from 'lucide-react';
 import { submitAccountRequest, getMyAccountRequests, type AccountRequestRecord } from '../../api/accountRequestApi';
 import { format } from 'date-fns';
+import { useLiveRefresh } from '../../hooks/useLiveRefresh';
 
 export function CustomerRequests() {
   const [showForm, setShowForm] = useState(false);
@@ -37,6 +38,12 @@ export function CustomerRequests() {
   useEffect(() => {
     fetchRequests();
   }, []);
+
+  useLiveRefresh(["tickets"], () => {
+    void getMyAccountRequests()
+      .then(setRequests)
+      .catch(() => {});
+  });
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

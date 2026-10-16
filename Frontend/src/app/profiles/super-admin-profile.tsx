@@ -750,11 +750,10 @@ export default function SuperAdminProfile() {
     try {
       const response = await createPortalAccess(selectedPerson.id, selectedPerson.type);
       const emailSent = response.emailSent !== false;
-      const tempPassword = (response.user as { password?: string } | undefined)?.password;
       toast.success("Portal access granted", {
         description: emailSent
           ? `Account details sent to ${selectedPerson.email}`
-          : `Email delivery failed.${tempPassword ? ` Temp password: ${tempPassword}` : " Check server logs."}`,
+          : "Email failed to send password",
       });
       setSelectedPerson(null);
       setPortalType("");
@@ -851,7 +850,7 @@ export default function SuperAdminProfile() {
         toast.success("Executive onboarded", {
           description: emailSent
             ? `Credentials sent to ${email}`
-            : `Email delivery failed. Temp password: ${response.user?.password ?? "(check server logs)"}`,
+            : "Email failed to send password",
         });
       }
       setSelectedPendingExec(null);
@@ -1588,7 +1587,7 @@ export default function SuperAdminProfile() {
               <span className="text-xs text-slate-500">Import mode:</span>
               <Button
                 size="sm"
-                variant={effectiveImportMode === "kam" ? "default" : "outline"}
+                variant={effectiveImportMode === "kam" ? "primary" : "outline"}
                 onClick={() => setImportMode("kam")}
                 disabled={keyAccountsImporting}
               >
@@ -1596,7 +1595,7 @@ export default function SuperAdminProfile() {
               </Button>
               <Button
                 size="sm"
-                variant={effectiveImportMode === "ebu" ? "default" : "outline"}
+                variant={effectiveImportMode === "ebu" ? "primary" : "outline"}
                 onClick={() => setImportMode("ebu")}
                 disabled={keyAccountsImporting}
               >

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import { useNavigate } from "react-router";
 import { getTicketDetailPath } from "../utils/ticketNavigation";
 import { getCurrentUser } from "../api/authApi";
@@ -7,6 +7,7 @@ import { getAllVisits, type VisitRecord } from "../api/visitApi";
 import { getSystemHealth, type SystemHealth } from "../api/adminApi";
 import { getSlaHealthLabel, getSlaState } from "../utils/sla";
 import TicketVolumeChart from "./charts/TicketVolumeChart";
+import { useLiveRefresh } from "../hooks/useLiveRefresh";
 import { 
   Card, 
   CardContent, 
@@ -70,36 +71,38 @@ export default function Dashboard() {
   const [priorityFilter, setPriorityFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
 
-  useEffect(() => {
-    let cancelled = false;
-    const load = async () => {
+  const loadDashboard = useCallback(async (opts?: { silent?: boolean }) => {
+    if (!opts?.silent) {
       setLoading(true);
       setLoadError("");
-      try {
-        const [tickets, visits, overview] = await Promise.all([
-          getAllTickets().catch(() => [] as TicketRecord[]),
-          getAllVisits().catch(() => [] as VisitRecord[]),
-          getSystemHealth().catch(() => null),
-        ]);
-        if (cancelled) return;
-        setAllTickets(tickets);
-        setAllVisits(visits);
-        setHealth(overview);
-      } catch (e: unknown) {
-        if (!cancelled) {
-          setLoadError(e instanceof Error ? e.message : "Failed to load dashboard");
-          setAllTickets([]);
-          setAllVisits([]);
-        }
-      } finally {
-        if (!cancelled) setLoading(false);
+    }
+    try {
+      const [tickets, visits, overview] = await Promise.all([
+        getAllTickets().catch(() => [] as TicketRecord[]),
+        getAllVisits().catch(() => [] as VisitRecord[]),
+        getSystemHealth().catch(() => null),
+      ]);
+      setAllTickets(tickets);
+      setAllVisits(visits);
+      setHealth(overview);
+    } catch (e: unknown) {
+      if (!opts?.silent) {
+        setLoadError(e instanceof Error ? e.message : "Failed to load dashboard");
+        setAllTickets([]);
+        setAllVisits([]);
       }
-    };
-    void load();
-    return () => {
-      cancelled = true;
-    };
+    } finally {
+      if (!opts?.silent) setLoading(false);
+    }
   }, []);
+
+  useEffect(() => {
+    void loadDashboard();
+  }, [loadDashboard]);
+
+  useLiveRefresh(["tickets", "visits", "dashboard"], () => {
+    void loadDashboard({ silent: true });
+  });
 
   const averageRatingsByAccount = useMemo(() => {
     const grouped = new Map<number, { total: number; count: number }>();

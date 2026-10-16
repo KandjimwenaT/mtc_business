@@ -28,6 +28,7 @@ import {
   type SlaStateKey,
 } from "../utils/sla";
 import { getSlaConfigs, type SlaConfigRecord } from "../api/slaApi";
+import { useLiveRefresh } from "../hooks/useLiveRefresh";
 
 const STATE_FILTERS: { key: "all" | SlaStateKey; label: string }[] = [
   { key: "all", label: "All open" },
@@ -76,6 +77,12 @@ export default function SLAMonitoring() {
       cancelled = true;
     };
   }, []);
+
+  useLiveRefresh(["tickets"], () => {
+    void getAllTickets()
+      .then(setTickets)
+      .catch(() => {});
+  });
 
   const openTickets = useMemo(
     () => tickets.filter((t) => !["resolved", "closed", "rejected"].includes(t.status)),

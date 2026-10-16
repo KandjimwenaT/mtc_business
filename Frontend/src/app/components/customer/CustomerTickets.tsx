@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useSearchParams } from "react-router";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Button } from "../ui/button";
@@ -11,6 +11,7 @@ import { Search, Plus, Filter, Clock, X, Loader2, Send, AlertCircle, Zap, AlertT
 import { createTicket, getMyTickets, type TicketRecord } from "../../api/ticketApi";
 import { format } from "date-fns";
 import EscalationWorkflowCard from "../EscalationWorkflowCard";
+import { useLiveRefresh } from "../../hooks/useLiveRefresh";
 
 const REQUEST_TYPES = [
   { value: "request_meeting", label: "Request Meeting" },
@@ -138,21 +139,25 @@ export default function CustomerTickets() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
-  const fetchTickets = async () => {
+  const fetchTickets = useCallback(async (opts?: { silent?: boolean }) => {
     try {
-      setLoading(true);
+      if (!opts?.silent) setLoading(true);
       const data = await getMyTickets();
       setTickets(data);
     } catch (err: any) {
-      setError(err.message || "Failed to load tickets");
+      if (!opts?.silent) setError(err.message || "Failed to load tickets");
     } finally {
-      setLoading(false);
+      if (!opts?.silent) setLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
-    fetchTickets();
-  }, []);
+    void fetchTickets();
+  }, [fetchTickets]);
+
+  useLiveRefresh(["tickets"], () => {
+    void fetchTickets({ silent: true });
+  });
 
   useEffect(() => {
     const prefill = searchParams.get("newRequest");

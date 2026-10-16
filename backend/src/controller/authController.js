@@ -1204,7 +1204,9 @@ exports.getMyExpiringContracts = async (req, res) => {
         for (const item of candidateAlerts) {
           if (existingTitleSet.has(item.notificationTitle)) continue;
           try {
-            await createForUserIds([user.id], {
+            await createForUserIds(
+              [user.id],
+              {
               type: "sla",
               title: item.notificationTitle,
               message: `${item.corporateName || item.account.accountName} contract (${item.contract.contractType}) expires in ${item.daysRemaining} day(s).`,
@@ -1217,7 +1219,9 @@ exports.getMyExpiringContracts = async (req, res) => {
                 contractEndDate: item.contract.contractEndDate,
                 daysRemaining: item.daysRemaining,
               },
-            });
+              },
+              { skipEmail: true }
+            );
           } catch (notifyErr) {
             console.error("Failed to create contract expiry notification:", notifyErr);
           }

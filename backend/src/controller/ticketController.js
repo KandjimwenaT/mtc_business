@@ -12,6 +12,7 @@ const TicketActivityLog = require("../models/TicketActivityLog");
 const emailService = require("../services/emailService");
 const { Op } = require("sequelize");
 const { createForUserIds, resolveManagerTeamNotificationUserIds } = require("../services/notificationService");
+const realtime = require("../services/realtimeService");
 const {
   getAccountsForCustomerUser,
   getAccountManagerIdsForCorporate,
@@ -352,7 +353,9 @@ async function sendTicketCreationNotifications(ticket, user, isCustomerCreator) 
   const uniqueRecipientIds = Array.from(new Set(recipientUserIds.filter(Boolean)));
   const nonCustomerRecipientIds = uniqueRecipientIds.filter((id) => !customerUserIdSet.has(id));
 
-  await createForUserIds(nonCustomerRecipientIds, {
+  await createForUserIds(
+    nonCustomerRecipientIds,
+    {
     type: "ticket",
     title: `Ticket Created - ${ticket.ticketNumber}`,
     message: `${ticket.title} has been created with status ${ticket.status.replace(/_/g, " ")}.`,
@@ -365,12 +368,16 @@ async function sendTicketCreationNotifications(ticket, user, isCustomerCreator) 
       sourceChannel: ticket.sourceChannel,
       createdBy: ticket.createdByName,
     },
-  });
+    },
+    { excludeUserIds: [user.id] }
+  );
   if (customerUserIds.length > 0) {
     const customerMessage = isCustomerCreator
       ? `${ticket.title} has been created with status ${ticket.status.replace(/_/g, " ")}.`
       : `Ticket created by ${actorName} on your behalf via ${ticket.sourceChannel}.`;
-    await createForUserIds(customerUserIds, {
+    await createForUserIds(
+      customerUserIds,
+      {
       type: "ticket",
       title: `Ticket Created - ${ticket.ticketNumber}`,
       message: customerMessage,
@@ -383,7 +390,9 @@ async function sendTicketCreationNotifications(ticket, user, isCustomerCreator) 
         sourceChannel: ticket.sourceChannel,
         createdBy: ticket.createdByName,
       },
-    });
+      },
+      { excludeUserIds: [user.id] }
+    );
   }
 }
 
@@ -480,6 +489,7 @@ exports.createVisitActionItemTicket = async (user, selectedAccount, details, opt
   if (!skipNotifications) {
     await sendTicketCreationNotifications(ticket, user, false);
   }
+  realtime.broadcastResources(["tickets", "dashboard"]);
   return ticket;
 };
 
@@ -623,6 +633,7 @@ exports.createTicket = async (req, res) => {
     });
 
     await sendTicketCreationNotifications(ticket, user, isCustomerCreator);
+    realtime.broadcastResources(["tickets", "dashboard"]);
 
     return res.status(201).json({
       status: "Success",
@@ -892,7 +903,9 @@ exports.updateTicket = async (req, res) => {
     const executiveUserId = await resolveExecutiveUserIdByExecutiveProfileId(ticket.executiveId);
     const managerTeamIds = await resolveManagerTeamNotificationUserIds(ticket.executiveId);
     const execIds = executiveUserId != null ? [executiveUserId] : [];
-    await createForUserIds([...customerUserIds, ...execIds, ...managerTeamIds], {
+    await createForUserIds(
+      [...customerUserIds, ...execIds, ...managerTeamIds],
+      {
       type: "ticket",
       title: `Ticket Updated - ${ticket.ticketNumber}`,
       message: `${ticket.title} status is now ${ticket.status.replace(/_/g, " ")}.`,
@@ -902,9 +915,12 @@ exports.updateTicket = async (req, res) => {
         ticketNumber: ticket.ticketNumber,
         status: ticket.status,
       },
-    });
+      },
+      { excludeUserIds: [user.id] }
+    );
 
     const payload = await buildTicketDetailPayload(ticket);
+    realtime.broadcastResources(["tickets", "dashboard"]);
 
     return res.status(200).json({
       status: "Success",
@@ -968,7 +984,9 @@ exports.addInternalNote = async (req, res) => {
       .map((u) => u.id)
       .filter((id) => Number.isInteger(id) && id > 0 && id !== user.id);
 
-    await createForUserIds(notifyUserIds, {
+    await createForUserIds(
+      notifyUserIds,
+      {
       type: "ticket",
       title: `Internal Note - ${ticket.ticketNumber}`,
       message: `${actorLabel} added an internal note on ${ticket.ticketNumber}.`,
@@ -979,7 +997,9 @@ exports.addInternalNote = async (req, res) => {
         kind: "ticket_internal_note",
         authorRole: user.role,
       },
-    });
+      },
+      { skipEmail: true }
+    );
 
     await Promise.all(
       recipientUsers
@@ -999,6 +1019,8 @@ exports.addInternalNote = async (req, res) => {
           }
         })
     );
+
+    realtime.broadcastResources(["tickets"]);
 
     return res.status(201).json({
       status: "Success",

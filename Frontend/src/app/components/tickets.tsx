@@ -10,6 +10,7 @@ import { format } from "date-fns";
 import { isSupervisorRole } from "../utils/roleCapabilities";
 import type { StaffLayoutOutletContext } from "../layoutOutletContext";
 import { defaultSupervisorBadges } from "../hooks/useSupervisorHybridBadges";
+import { useLiveRefresh } from "../hooks/useLiveRefresh";
 import StaffTicketCreate from "./staff/StaffTicketCreate";
 
 const STATUS_CONFIG: Record<string, { label: string; className: string }> = {
@@ -46,17 +47,17 @@ export default function Tickets() {
   const canCreateTicket = ["admin", "executive_staff", "supervisor", "manager"].includes(currentUser?.role || "");
 
   const refreshBadges = supervisorBadges.refresh;
-  const fetchTickets = useCallback(async () => {
+  const fetchTickets = useCallback(async (opts?: { silent?: boolean }) => {
     try {
-      setLoading(true);
+      if (!opts?.silent) setLoading(true);
       const data = isSupervisor && supervisorView === "executive"
         ? await getAssignedTickets()
         : await getAllTickets();
       setTickets(data);
     } catch (err: any) {
-      setError(err.message || "Failed to load tickets");
+      if (!opts?.silent) setError(err.message || "Failed to load tickets");
     } finally {
-      setLoading(false);
+      if (!opts?.silent) setLoading(false);
       if (isSupervisor) void refreshBadges();
     }
   }, [isSupervisor, supervisorView, refreshBadges]);
@@ -64,6 +65,10 @@ export default function Tickets() {
   useEffect(() => {
     void fetchTickets();
   }, [fetchTickets]);
+
+  useLiveRefresh(["tickets"], () => {
+    void fetchTickets({ silent: true });
+  });
 
   const filteredTickets = tickets.filter((ticket) => {
     const q = searchQuery.toLowerCase();

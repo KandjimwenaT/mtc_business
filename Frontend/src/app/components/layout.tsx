@@ -24,6 +24,7 @@ import { profileIsEbu } from "../utils/departmentSegment";
 import { isExecutiveRole, isGmRole, isManagerRole, isSupervisorRole } from "../utils/roleCapabilities";
 import { useSupervisorHybridBadges } from "../hooks/useSupervisorHybridBadges";
 import { ExecutiveDataProvider } from "../hooks/useExecutiveData";
+import { LiveUpdatesProvider } from "../realtime/LiveUpdatesProvider";
 
 export default function Layout() {
   const navigate = useNavigate();
@@ -259,9 +260,11 @@ export default function Layout() {
         {/* Main Content Scrollable Area */}
         <main className="flex-1 overflow-y-auto p-6">
           <div className="mx-auto max-w-7xl">
-             <ExecutiveDataProvider>
-               <Outlet context={{ role: currentUser?.role ?? "", supervisorBadges }} />
-             </ExecutiveDataProvider>
+             <LiveUpdatesProvider>
+               <ExecutiveDataProvider>
+                 <Outlet context={{ role: currentUser?.role ?? "", supervisorBadges }} />
+               </ExecutiveDataProvider>
+             </LiveUpdatesProvider>
           </div>
         </main>
       </div>

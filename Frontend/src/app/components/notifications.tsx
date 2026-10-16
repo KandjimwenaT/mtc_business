@@ -37,6 +37,7 @@ import {
 import { getCurrentUser } from "../api/authApi";
 import { isExecutiveRole } from "../utils/roleCapabilities";
 import { getTicketDetailPath, getTicketsListPath } from "../utils/ticketNavigation";
+import { useLiveRefresh } from "../hooks/useLiveRefresh";
 import {
   getNotifications,
   markAllNotificationsRead,
@@ -131,6 +132,12 @@ export default function Notifications() {
 
     run();
   }, []);
+
+  useLiveRefresh(["notifications"], () => {
+    void getNotifications()
+      .then(setNotifications)
+      .catch(() => {});
+  });
 
   const filtered = useMemo(
     () =>

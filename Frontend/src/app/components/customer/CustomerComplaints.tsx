@@ -9,6 +9,7 @@ import { Badge } from '../ui/badge';
 import { AlertCircle, CheckCircle2, Clock, FileText, Send, Loader2 } from 'lucide-react';
 import { submitComplaint, getMyComplaints, type ComplaintRecord } from '../../api/complaintApi';
 import { format } from 'date-fns';
+import { useLiveRefresh } from '../../hooks/useLiveRefresh';
 
 export function CustomerComplaints() {
   const [showForm, setShowForm] = useState(false);
@@ -37,6 +38,12 @@ export function CustomerComplaints() {
   useEffect(() => {
     fetchComplaints();
   }, []);
+
+  useLiveRefresh(["tickets"], () => {
+    void getMyComplaints()
+      .then(setAccountComplaints)
+      .catch(() => {});
+  });
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

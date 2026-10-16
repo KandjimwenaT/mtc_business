@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ComponentType } from "react";
+import { useEffect, useMemo, useState, useCallback, type ComponentType } from "react";
 import { useNavigate } from "react-router";
 import { getMyProfile, type UserProfile } from "../../api/authApi";
 import { profileIsEbu } from "../../utils/departmentSegment";
@@ -19,12 +19,15 @@ import {
   type ExpiringContractRecord,
   type SpendingTrendRecord,
 } from "../../api/adminApi";
+import { useLiveRefresh } from "../../hooks/useLiveRefresh";
 import {
   Card,
   CardContent,
   CardHeader,
   CardTitle,
   Badge,
+  Button,
+  Input,
   Table,
   TableBody,
   TableCell,
@@ -56,7 +59,10 @@ import {
   List,
   Trophy,
   Loader2,
+  Search,
 } from "lucide-react";
+
+const EXEC_PAGE_SIZE = 8;
 
 function toISODate(value: string | Date): string {
   const d = new Date(value);
@@ -184,65 +190,72 @@ export default function ManagerDashboard() {
   const [monthlySpendingTotal, setMonthlySpendingTotal] = useState("0.00");
   const [spendingTrend, setSpendingTrend] = useState<SpendingTrendRecord[]>([]);
 
-  useEffect(() => {
-    const run = async () => {
-      try {
+  const loadDashboard = useCallback(async (opts?: { silent?: boolean }) => {
+    try {
+      if (!opts?.silent) {
         setLoading(true);
         setError("");
-        const profileData = await getMyProfile();
-        setProfile(profileData);
-        const managerId = profileData.roleProfileId ?? undefined;
-
-        const [
-          ticketsRes,
-          visitsRes,
-          execRes,
-          corpRes,
-          accRes,
-          leadsRes,
-          expContractsRes,
-          spendingSummaryRes,
-          spendingTrendRes,
-        ] = await Promise.all([
-          getAllTickets().catch(() => [] as TicketRecord[]),
-          getManagerVisits().catch(() => [] as VisitRecord[]),
-          getExecutives().catch(() => [] as ExecutiveRecord[]),
-          managerId != null
-            ? getCorporates(managerId).catch(() => [] as CorporateRecord[])
-            : Promise.resolve([] as CorporateRecord[]),
-          managerId != null
-            ? getAccounts({ managerId }).catch(() => [] as AccountRecord[])
-            : getAccounts().catch(() => [] as AccountRecord[]),
-          profileIsEbu(profileData)
-            ? getTeamLeads().catch(() => [] as TeamLeadRecord[])
-            : Promise.resolve([] as TeamLeadRecord[]),
-          getExpiringContracts(6).catch(() => [] as ExpiringContractRecord[]),
-          getManagerMonthlySpendingSummary().catch(() => ({
-            total: "0.00",
-            currency: "NAD",
-            byCorporate: {},
-            byAccount: {},
-          })),
-          getManagerMonthlySpendingTrend(6).catch(() => [] as SpendingTrendRecord[]),
-        ]);
-
-        setTickets(ticketsRes);
-        setVisits(visitsRes);
-        setExecutives(execRes);
-        setCorporates(corpRes);
-        setAccounts(accRes);
-        setTeamLeads(leadsRes);
-        setExpiringContracts(expContractsRes);
-        setMonthlySpendingTotal(spendingSummaryRes.total || "0.00");
-        setSpendingTrend(spendingTrendRes);
-      } catch (e: unknown) {
-        setError(e instanceof Error ? e.message : "Failed to load dashboard");
-      } finally {
-        setLoading(false);
       }
-    };
-    void run();
+      const profileData = await getMyProfile();
+      setProfile(profileData);
+      const managerId = profileData.roleProfileId ?? undefined;
+
+      const [
+        ticketsRes,
+        visitsRes,
+        execRes,
+        corpRes,
+        accRes,
+        leadsRes,
+        expContractsRes,
+        spendingSummaryRes,
+        spendingTrendRes,
+      ] = await Promise.all([
+        getAllTickets().catch(() => [] as TicketRecord[]),
+        getManagerVisits().catch(() => [] as VisitRecord[]),
+        getExecutives().catch(() => [] as ExecutiveRecord[]),
+        managerId != null
+          ? getCorporates(managerId).catch(() => [] as CorporateRecord[])
+          : Promise.resolve([] as CorporateRecord[]),
+        managerId != null
+          ? getAccounts({ managerId }).catch(() => [] as AccountRecord[])
+          : getAccounts().catch(() => [] as AccountRecord[]),
+        profileIsEbu(profileData)
+          ? getTeamLeads().catch(() => [] as TeamLeadRecord[])
+          : Promise.resolve([] as TeamLeadRecord[]),
+        getExpiringContracts(6).catch(() => [] as ExpiringContractRecord[]),
+        getManagerMonthlySpendingSummary().catch(() => ({
+          total: "0.00",
+          currency: "NAD",
+          byCorporate: {},
+          byAccount: {},
+        })),
+        getManagerMonthlySpendingTrend(6).catch(() => [] as SpendingTrendRecord[]),
+      ]);
+
+      setTickets(ticketsRes);
+      setVisits(visitsRes);
+      setExecutives(execRes);
+      setCorporates(corpRes);
+      setAccounts(accRes);
+      setTeamLeads(leadsRes);
+      setExpiringContracts(expContractsRes);
+      setMonthlySpendingTotal(spendingSummaryRes.total || "0.00");
+      setSpendingTrend(spendingTrendRes);
+    } catch (e: unknown) {
+      if (!opts?.silent) setError(e instanceof Error ? e.message : "Failed to load dashboard");
+    } finally {
+      if (!opts?.silent) setLoading(false);
+    }
   }, []);
+
+  useEffect(() => {
+    void loadDashboard();
+  }, [loadDashboard]);
+
+  useLiveRefresh(["tickets", "visits", "leads", "corporates", "dashboard"], () => {
+    void loadDashboard({ silent: true });
+  });
 
   const managerProfileId = profile?.roleProfileId ?? null;
 
@@ -381,6 +394,32 @@ export default function ManagerDashboard() {
       };
     });
   }, [teamExecutives, scopedTickets, scopedVisits, corporates, accounts, thisMonthKey, teamLeads]);
+
+  const [execSearch, setExecSearch] = useState("");
+  const [execPage, setExecPage] = useState(1);
+
+  const filteredExecutiveRows = useMemo(() => {
+    const q = execSearch.trim().toLowerCase();
+    if (!q) return executiveRows;
+    return executiveRows.filter((row) =>
+      row.name.toLowerCase().includes(q) ||
+      row.perf.label.toLowerCase().includes(q)
+    );
+  }, [executiveRows, execSearch]);
+
+  const execTotalPages = Math.max(1, Math.ceil(filteredExecutiveRows.length / EXEC_PAGE_SIZE));
+  const paginatedExecutiveRows = useMemo(() => {
+    const start = (execPage - 1) * EXEC_PAGE_SIZE;
+    return filteredExecutiveRows.slice(start, start + EXEC_PAGE_SIZE);
+  }, [filteredExecutiveRows, execPage]);
+
+  useEffect(() => {
+    setExecPage(1);
+  }, [execSearch]);
+
+  useEffect(() => {
+    if (execPage > execTotalPages) setExecPage(execTotalPages);
+  }, [execPage, execTotalPages]);
 
   const isEbu = profileIsEbu(profile);
 
@@ -635,9 +674,20 @@ export default function ManagerDashboard() {
       </Card>
 
       <Card className="rounded-xl border border-slate-200/90 shadow-sm overflow-hidden">
-        <CardHeader className="flex flex-row items-center gap-2 space-y-0 border-b border-slate-100 bg-white pb-4">
-          <Users className="h-5 w-5 text-mtc-blue shrink-0" />
-          <CardTitle className="text-lg">Executive Performance Overview</CardTitle>
+        <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between space-y-0 border-b border-slate-100 bg-white pb-4">
+          <div className="flex items-center gap-2">
+            <Users className="h-5 w-5 text-mtc-blue shrink-0" />
+            <CardTitle className="text-lg">Executive Performance Overview</CardTitle>
+          </div>
+          <div className="relative w-full sm:max-w-xs">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400 pointer-events-none" />
+            <Input
+              value={execSearch}
+              onChange={(e) => setExecSearch(e.target.value)}
+              placeholder="Search executives..."
+              className="pl-9"
+            />
+          </div>
         </CardHeader>
         <CardContent className="p-0">
           <div className="overflow-x-auto">
@@ -663,8 +713,14 @@ export default function ManagerDashboard() {
                       No executives linked to your team yet.
                     </td>
                   </TableRow>
+                ) : paginatedExecutiveRows.length === 0 ? (
+                  <TableRow>
+                    <td colSpan={isEbu ? 10 : 9} className="p-4 text-center text-slate-500 py-10">
+                      No executives match your search.
+                    </td>
+                  </TableRow>
                 ) : (
-                  executiveRows.map((row) => (
+                  paginatedExecutiveRows.map((row) => (
                     <TableRow key={row.executiveId} className="border-slate-100">
                       <TableCell className="font-medium text-slate-900">{row.name}</TableCell>
                       <TableCell className="text-right tabular-nums">{row.corporates}</TableCell>
@@ -715,6 +771,33 @@ export default function ManagerDashboard() {
               </TableBody>
             </Table>
           </div>
+          {filteredExecutiveRows.length > 0 && (
+            <div className="p-4 border-t border-slate-100 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+              <span className="text-xs text-slate-500">
+                Showing {(execPage - 1) * EXEC_PAGE_SIZE + (paginatedExecutiveRows.length > 0 ? 1 : 0)}–
+                {(execPage - 1) * EXEC_PAGE_SIZE + paginatedExecutiveRows.length} of {filteredExecutiveRows.length}
+              </span>
+              <div className="flex items-center gap-2 justify-between sm:justify-end">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setExecPage((p) => Math.max(1, p - 1))}
+                  disabled={execPage === 1}
+                >
+                  Previous
+                </Button>
+                <span className="text-xs text-slate-500">Page {execPage} of {execTotalPages}</span>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => setExecPage((p) => Math.min(execTotalPages, p + 1))}
+                  disabled={execPage >= execTotalPages}
+                >
+                  Next
+                </Button>
+              </div>
+            </div>
+          )}
         </CardContent>
       </Card>
 

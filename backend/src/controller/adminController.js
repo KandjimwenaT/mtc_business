@@ -22,6 +22,7 @@ const Invoice = require("../models/Invoice");
 const Notification = require("../models/Notification");
 const AuditLog = require("../models/AuditLog");
 const { createForUserIds } = require("../services/notificationService");
+const realtime = require("../services/realtimeService");
 const {
   propagateContactPersonToCorporateAccounts,
   enrichAccountsWithCorporateContact,
@@ -87,6 +88,50 @@ async function resolveManagerDepartment(managerProfile) {
     attributes: ["department"],
   });
   return person?.department || null;
+}
+
+async function resolveManagerPersonIdForCreate(user, requestedManagerId) {
+  const requested = Number(requestedManagerId);
+  const requestedId = Number.isInteger(requested) && requested > 0 ? requested : null;
+
+  if (user?.role === "executive_staff" || user?.role === "supervisor") {
+    const person = await Person.findOne({ where: { email: user.email } });
+    if (person?.managerId) return person.managerId;
+  }
+
+  const requesterDept = await resolveRequesterDepartment(user);
+  if (requesterDept) {
+    const mgrs = await Person.findAll({
+      where: { type: { [Op.in]: ["manager", "supervisor"] } },
+      attributes: ["id", "department"],
+    });
+    const match = mgrs.filter((m) => departmentsMatch(m.department, requesterDept));
+    if (requestedId && match.some((m) => m.id === requestedId)) return requestedId;
+    if (match.length >= 1) return match[0].id;
+  }
+
+  return requestedId;
+}
+
+async function resolveManagerPortalUserId(managerId) {
+  if (!managerId) return null;
+  const managerProfile = await Manager.findByPk(managerId);
+  if (managerProfile?.userId) return managerProfile.userId;
+
+  const person = await Person.findByPk(managerId);
+  if (!person?.email) return null;
+
+  const profileByEmail = await Manager.findOne({ where: { email: person.email } });
+  if (profileByEmail?.userId) return profileByEmail.userId;
+
+  const user = await User.findOne({
+    where: {
+      email: person.email,
+      role: { [Op.in]: ["manager", "supervisor"] },
+    },
+    attributes: ["id"],
+  });
+  return user?.id || null;
 }
 
 async function resolveExecutiveUserIdByExecutiveProfileId(executiveProfileId) {
@@ -614,7 +659,7 @@ exports.createPortalAccess = async (req, res) => {
         status: "Success",
         message: delivery.emailSent
           ? "Portal access created successfully. Credentials sent via email."
-          : "Portal access created but credentials email failed to send. Share the temporary password manually.",
+          : "Portal access created but credentials email failed to send password.",
         emailSent: delivery.emailSent,
         emailDelivery: delivery.emailDelivery,
         user: {
@@ -623,7 +668,6 @@ exports.createPortalAccess = async (req, res) => {
           lastName: userRecord.lastName,
           email: userRecord.email,
           role: userRecord.role,
-          ...(delivery.password ? { password: delivery.password } : {}),
         },
       });
     }
@@ -685,7 +729,7 @@ exports.createPortalAccess = async (req, res) => {
         status: "Success",
         message: delivery.emailSent
           ? "Portal access created successfully. Credentials sent via email."
-          : "Portal access created but credentials email failed to send. Share the temporary password manually.",
+          : "Portal access created but credentials email failed to send password.",
         emailSent: delivery.emailSent,
         emailDelivery: delivery.emailDelivery,
         user: {
@@ -694,7 +738,6 @@ exports.createPortalAccess = async (req, res) => {
           lastName: userRecord.lastName,
           email: userRecord.email,
           role: userRecord.role,
-          ...(delivery.password ? { password: delivery.password } : {}),
         },
       });
     }
@@ -857,7 +900,7 @@ exports.createPortalAccess = async (req, res) => {
       status: "Success",
       message: delivery.emailSent
         ? "Portal access created successfully. Credentials sent via email."
-        : "Portal access created but credentials email failed to send. Share the temporary password manually.",
+        : "Portal access created but credentials email failed to send password.",
       emailSent: delivery.emailSent,
       emailDelivery: delivery.emailDelivery,
       user: {
@@ -866,7 +909,6 @@ exports.createPortalAccess = async (req, res) => {
         lastName: userRecord.lastName,
         email: userRecord.email,
         role: userRecord.role,
-        ...(delivery.password ? { password: delivery.password } : {}),
       },
     });
   } catch (error) {
@@ -1260,7 +1302,9 @@ exports.promoteExecutiveToSupervisor = async (req, res) => {
       await supervisorManagerProfile.update({ userId: user.id });
     }
 
-    await createForUserIds([user.id, req.user.id], {
+    await createForUserIds(
+      [user.id, req.user.id],
+      {
       type: "role",
       title: "Role Upgrade Applied",
       message: `${executivePerson.firstName} ${executivePerson.lastName} has been promoted to Supervisor.`,
@@ -1270,7 +1314,9 @@ exports.promoteExecutiveToSupervisor = async (req, res) => {
         email: executivePerson.email,
         role: "supervisor",
       },
-    });
+      },
+      { excludeUserIds: [req.user.id] }
+    );
 
     return res.status(200).json({
       status: "Success",
@@ -1345,7 +1391,9 @@ exports.demoteSupervisorToExecutive = async (req, res) => {
       await executiveProfile.update({ userId: user.id, managerId: managerProfile.managerId });
     }
 
-    await createForUserIds([user.id, req.user.id], {
+    await createForUserIds(
+      [user.id, req.user.id],
+      {
       type: "role",
       title: "Role Downgrade Applied",
       message: `${supervisorPerson.firstName} ${supervisorPerson.lastName} has been moved back to Executive Staff.`,
@@ -1355,7 +1403,9 @@ exports.demoteSupervisorToExecutive = async (req, res) => {
         email: supervisorPerson.email,
         role: "executive_staff",
       },
-    });
+      },
+      { excludeUserIds: [req.user.id] }
+    );
 
     return res.status(200).json({
       status: "Success",
@@ -1371,12 +1421,12 @@ exports.demoteSupervisorToExecutive = async (req, res) => {
 
 // ── Create Corporate ──────────────────────────────────────────────
 exports.createCorporate = async (req, res) => {
-  const { corporateNumber, corporateName, corporateType, businessEmail, industry, managerId, isActive } = req.body;
+  const { corporateNumber, corporateName, corporateType, businessEmail, industry, managerId, executiveId, isActive } = req.body;
 
-  if (!corporateNumber || !corporateName || !corporateType || !businessEmail || !managerId) {
+  if (!corporateNumber || !corporateName || !corporateType || !businessEmail) {
     return res.status(400).json({
       status: "Failed",
-      message: "Corporate number, name, type, business email, and assigned manager are required",
+      message: "Corporate number, name, type, and business email are required",
     });
   }
 
@@ -1385,6 +1435,44 @@ exports.createCorporate = async (req, res) => {
   }
 
   try {
+    const resolvedManagerId = await resolveManagerPersonIdForCreate(req.user, managerId);
+    if (!resolvedManagerId) {
+      return res.status(400).json({
+        status: "Failed",
+        message: "Assigned manager is required. Choose the Key Accounts or EBU segment so a manager can be selected.",
+      });
+    }
+
+    const managerPerson = await Person.findByPk(resolvedManagerId);
+    if (!managerPerson || !["manager", "supervisor"].includes(managerPerson.type)) {
+      return res.status(400).json({ status: "Failed", message: "Assigned manager was not found" });
+    }
+
+    const managerDepartment = managerPerson.department || null;
+    let resolvedExecutiveStaffId = null;
+
+    if (executiveId) {
+      const executive = await Person.findByPk(executiveId);
+      if (!executive || !["executive_staff", "supervisor"].includes(executive.type)) {
+        return res.status(404).json({ status: "Failed", message: "Executive not found" });
+      }
+      const execStaff = await ExecutiveStaff.findOne({ where: { email: executive.email } });
+      if (!execStaff) {
+        return res.status(400).json({
+          status: "Failed",
+          message: "This executive does not have portal access yet. Please grant portal access first.",
+        });
+      }
+      resolvedExecutiveStaffId = execStaff.executiveId;
+    }
+
+    if (isEbuDepartment(managerDepartment) && !resolvedExecutiveStaffId) {
+      return res.status(400).json({
+        status: "Failed",
+        message: "An EBU executive must be assigned when creating an EBU corporate",
+      });
+    }
+
     const existingByNumber = await Corporate.findOne({ where: { corporateNumber } });
     if (existingByNumber) {
       return res.status(400).json({ status: "Failed", message: "A corporate with this corporate number already exists" });
@@ -1401,10 +1489,13 @@ exports.createCorporate = async (req, res) => {
       corporateType,
       businessEmail,
       industry: industry || null,
-      managerId: managerId || null,
+      managerId: resolvedManagerId,
+      executiveId: isEbuDepartment(managerDepartment) ? resolvedExecutiveStaffId : null,
       isActive: isActive !== undefined ? isActive : true,
+      approvalStatus: "pending",
     });
 
+    realtime.broadcastResources(["corporates", "dashboard"]);
     return res.status(201).json({ status: "Success", message: "Corporate created successfully", corporate });
   } catch (error) {
     console.error("Create corporate error:", error);
@@ -1550,10 +1641,9 @@ exports.getCorporates = async (req, res) => {
   }
 };
 
-// ── Submit Corporate Approval (admin finalizes) ────────────────
-// Admin can request approval only after:
-// - the corporate has at least one account
-// - a contact person (Account Manager) is linked to the corporate
+// ── Submit Corporate Approval ─────────────────────────────────────
+// Creator submits a draft corporate; the assigned manager is then notified
+// and can approve (Key Accounts managers also assign an executive).
 exports.submitCorporateApproval = async (req, res) => {
   const { corporateId } = req.params;
 
@@ -1561,8 +1651,8 @@ exports.submitCorporateApproval = async (req, res) => {
     return res.status(400).json({ status: "Failed", message: "Corporate ID is required" });
   }
 
-  if (req.user?.role !== "admin") {
-    return res.status(403).json({ status: "Failed", message: "Only admins can submit corporates for approval" });
+  if (!["admin", "executive_staff"].includes(req.user?.role)) {
+    return res.status(403).json({ status: "Failed", message: "Only creators can submit corporates for approval" });
   }
 
   try {
@@ -1578,25 +1668,29 @@ exports.submitCorporateApproval = async (req, res) => {
       });
     }
 
-    const accountCount = await Account.count({ where: { corporateId: corporate.corporateId } });
-    if (accountCount < 1) {
-      return res.status(400).json({
-        status: "Failed",
-        message: "Add at least one account before submitting for approval",
-      });
-    }
-
-    const hasContact = await AccountManager.findOne({ where: { corporateId: corporate.corporateId } });
-    if (!hasContact) {
-      return res.status(400).json({
-        status: "Failed",
-        message: "Add a contact person (Account Manager) before submitting for approval",
-      });
-    }
-
-    // Move the corporate from "pending setup" to "waiting for manager approval"
     await corporate.update({ approvalStatus: "waiting_approval" });
 
+    try {
+      const managerUserId = await resolveManagerPortalUserId(corporate.managerId);
+      if (managerUserId) {
+        await createForUserIds([managerUserId], {
+          type: "assignment",
+          title: `Corporate Awaiting Approval - ${corporate.corporateName}`,
+          message: `${corporate.corporateName} (${corporate.corporateNumber}) has been submitted for your approval. Please review it, assign an executive, and approve.`,
+          priority: "high",
+          metadata: {
+            corporateId: corporate.corporateId,
+            corporateName: corporate.corporateName,
+            corporateNumber: corporate.corporateNumber,
+            kind: "corporate_submitted_for_approval",
+          },
+        });
+      }
+    } catch (notifyError) {
+      console.error("Corporate submit manager notification failed:", notifyError?.message || notifyError);
+    }
+
+    realtime.broadcastResources(["corporates", "dashboard", "notifications"]);
     return res.status(200).json({
       status: "Success",
       message: "Corporate submitted for approval (waiting manager approval)",
@@ -1639,7 +1733,7 @@ exports.approveCorporate = async (req, res) => {
     // 1) managers.manager_id (current profile table id), or
     // 2) persons.id for a manager (legacy/person-driven flows)
     const managerPerson = await Person.findOne({
-      where: { email: managerProfile.email, type: "manager" },
+      where: { email: managerProfile.email, type: { [Op.in]: ["manager", "supervisor"] } },
     });
     const managerPersonId = managerPerson ? managerPerson.id : null;
     const isAssignedManager = await managerHasCorporateScope(corporate, managerProfile, managerPersonId);
@@ -1671,12 +1765,6 @@ exports.approveCorporate = async (req, res) => {
     }
 
     const childAccounts = await Account.findAll({ where: { corporateId: corporate.corporateId } });
-    if (childAccounts.length === 0) {
-      return res.status(400).json({ status: "Failed", message: "Corporate has no accounts to approve" });
-    }
-
-    // Approve each child account under the selected executive.
-    // Credential provisioning is no longer part of this flow.
     for (const account of childAccounts) {
       await account.update({
         executiveId: execStaff.executiveId,
@@ -1688,6 +1776,7 @@ exports.approveCorporate = async (req, res) => {
       executiveId: execStaff.executiveId,
       approvalStatus: "approved",
     });
+    realtime.broadcastResources(["corporates", "dashboard"]);
     return res.status(200).json({
       status: "Success",
       message: "Corporate approved successfully",
@@ -1819,7 +1908,9 @@ exports.reassignCorporateExecutive = async (req, res) => {
     }
 
     if (newExecutiveUserId) {
-      await createForUserIds([newExecutiveUserId], {
+      await createForUserIds(
+        [newExecutiveUserId],
+        {
         type: "assignment",
         title: `New Account Assignment - ${corporate.corporateName}`,
         message: `You are now assigned to manage ${corporate.corporateName}.`,
@@ -1829,7 +1920,9 @@ exports.reassignCorporateExecutive = async (req, res) => {
           corporateName: corporate.corporateName,
           kind: "executive_reassigned_to",
         },
-      });
+        },
+        { skipEmail: true }
+      );
     }
 
     if (ticketReassignment.reassignedCount > 0) {
@@ -1914,6 +2007,7 @@ exports.reassignCorporateExecutive = async (req, res) => {
       console.error("Failed to send reassignment email:", emailErr);
     }
 
+    realtime.broadcastResources(["corporates", "tickets", "dashboard"]);
     return res.status(200).json({
       status: "Success",
       message: "Corporate executive reassigned successfully",
@@ -2694,7 +2788,9 @@ exports.getExpiringContracts = async (req, res) => {
       });
       if (existing) continue;
 
-      await createForUserIds([req.user.id], {
+      await createForUserIds(
+        [req.user.id],
+        {
         type: "sla",
         title: notificationTitle,
         message: `${corporateName || account.accountName} contract (${contract.contractType}) expires in ${daysRemaining} day(s).`,
@@ -2707,7 +2803,9 @@ exports.getExpiringContracts = async (req, res) => {
           contractEndDate: contract.contractEndDate,
           daysRemaining,
         },
-      });
+        },
+        { skipEmail: true }
+      );
 
       try {
         await emailService.sendContractExpiryAlertEmail(
@@ -2844,7 +2942,7 @@ exports.approveAccount = async (req, res) => {
       status: "Success",
       message: delivery.emailSent
         ? "Account approved. Customer credentials sent via email."
-        : "Account approved but credentials email failed to send. Share the temporary password manually.",
+        : "Account approved but credentials email failed to send password.",
       emailSent: delivery.emailSent,
       emailDelivery: delivery.emailDelivery,
       account: reloaded,
@@ -3225,7 +3323,7 @@ exports.completeImportedExecutiveOnboarding = async (req, res) => {
       status: "Success",
       message: emailSent
         ? "Executive onboarded successfully. Credentials sent via email."
-        : "Executive onboarded but credentials email failed to send. Share the temporary password manually.",
+        : "Executive onboarded but credentials email failed to send password.",
       emailSent,
       emailDelivery,
       user: {
@@ -3234,7 +3332,6 @@ exports.completeImportedExecutiveOnboarding = async (req, res) => {
         lastName: userRecord.lastName,
         email: userRecord.email,
         role: userRecord.role,
-        ...(delivery.password ? { password: delivery.password } : {}),
       },
     });
   } catch (error) {
@@ -3560,16 +3657,18 @@ async function sendCredentialsAndCapture(email, name, tempPassword) {
     );
     console.log("Credentials email result:", emailDelivery);
     const emailSent = emailDelivery?.success !== false;
-    if (process.env.NODE_ENV !== "production") {
+    if (!emailSent && process.env.NODE_ENV !== "production") {
       console.log(`[DEV] Portal temp password for ${email}: ${tempPassword}`);
     }
     return {
       emailSent,
       emailDelivery,
-      password: emailSent ? undefined : tempPassword,
     };
   } catch (emailErr) {
     console.error("Failed to send credentials email:", emailErr);
+    if (process.env.NODE_ENV !== "production") {
+      console.log(`[DEV] Portal temp password for ${email}: ${tempPassword}`);
+    }
     return {
       emailSent: false,
       emailDelivery: {
@@ -3579,7 +3678,6 @@ async function sendCredentialsAndCapture(email, name, tempPassword) {
         response: emailErr.response,
         responseCode: emailErr.responseCode,
       },
-      password: tempPassword,
     };
   }
 }

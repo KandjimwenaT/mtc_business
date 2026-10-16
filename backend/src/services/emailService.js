@@ -26,7 +26,8 @@ class EmailService {
   async initializeTransporter() {
     const emailUser = process.env.EMAIL_USER;
     const emailPass = process.env.EMAIL_PASS;
-
+    console.log("emailUser", emailUser);
+    console.log("emailPass", emailPass);
     // if (!emailUser || !emailPass) {
     //   console.warn("⚠️  EMAIL_USER or EMAIL_PASS not set — emails will be logged to console only", {
     //     emailUserSet: Boolean(emailUser),
@@ -37,18 +38,16 @@ class EmailService {
     // }
 
     try {
-      this.transporter = nodemailer.createTransport({
+      const transporterOptions = {
         host: "mail.mtc.com.na",
         port: 25,
         secure: false,
         tls: {
           rejectUnauthorized: false,
-        }, // STARTTLS
-        auth: {
-          user: '',
-          pass: '',
         },
-      });
+      };
+      
+      this.transporter = nodemailer.createTransport(transporterOptions);
 
       await this.transporter.verify();
       console.log("✅ Email service initialized successfully", {
@@ -680,7 +679,7 @@ If you didn't request a password reset, please ignore this email and your passwo
    * Send portal credentials email to a newly created portal user
    */
   async sendPortalCredentialsEmail(email, name, tempPassword) {
-    const loginUrl = process.env.FRONTEND_URL || "http://localhost:5173";
+    const loginUrl = process.env.FRONTEND_URL;
     const from = this.getMailFrom();
     const sentAt = new Date().toISOString();
     const safeName = this.escapeHtml(name);
@@ -1050,6 +1049,95 @@ If you didn't request a password reset, please ignore this email and your passwo
     } catch (error) {
       console.error("Ticket internal note email send error:", error);
       throw new Error("Failed to send ticket internal note email");
+    }
+  }
+
+  portalPathForRole(role, type) {
+    const t = String(type || "").toLowerCase();
+    const r = String(role || "");
+    if (r === "customer") {
+      if (t === "visit" || t === "rating") return "/visitCalendar";
+      if (t === "ticket" || t === "sla" || t === "escalation") return "/customerTickets";
+      return "/notifications";
+    }
+    if (t === "visit" || t === "rating") {
+      return r === "executive_staff" ? "/executive-visits" : "/manager-visits";
+    }
+    if (t === "lead") {
+      return r === "executive_staff" ? "/executive-leads" : "/manager-leads";
+    }
+    if (t === "assignment") {
+      return "/corporates";
+    }
+    if (t === "ticket" || t === "sla" || t === "escalation") {
+      return r === "executive_staff" ? "/executive-tickets" : "/tickets";
+    }
+    return "/notifications";
+  }
+
+  /**
+   * Generic portal alert matching an in-app notification.
+   * Best-effort: logs and returns instead of throwing when SMTP is down.
+   */
+  async sendPortalNotificationEmail(email, name, { title, message, type, role }) {
+    if (!email) return { success: false, skipped: true };
+    const origin = String(process.env.FRONTEND_URL || "http://localhost:5173").replace(/\/$/, "");
+    const actionUrl = `${origin}${this.portalPathForRole(role, type)}`;
+    const safeName = this.escapeHtml(name || "there");
+    const safeTitle = this.escapeHtml(title || "MTC Business notification");
+    const safeMessage = this.escapeHtml(message || "");
+    const typeLabel = String(type || "update").replace(/_/g, " ");
+
+    const mailOptions = {
+      from: this.getMailFrom(),
+      to: email,
+      subject: String(title || "MTC Business notification"),
+      html: `
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+          <meta charset="UTF-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <title>${safeTitle}</title>
+          <style>
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; }
+            .header { background: linear-gradient(135deg, #1a1a2e, #16213e); color: white; padding: 24px; text-align: center; border-radius: 10px 10px 0 0; }
+            .content { background: #f9f9f9; padding: 24px; border-radius: 0 0 10px 10px; }
+            .info-box { background: #fff; border: 1px solid #d1d5db; border-left: 4px solid #1a1a2e; padding: 14px; border-radius: 6px; margin-top: 12px; }
+            .button { display: inline-block; background: #1a1a2e; color: white; padding: 10px 18px; text-decoration: none; border-radius: 5px; margin-top: 16px; }
+            .footer { text-align: center; margin-top: 24px; color: #666; font-size: 13px; }
+          </style>
+        </head>
+        <body>
+          <div class="header">
+            <h2>MTC Business</h2>
+            <p>${this.escapeHtml(typeLabel)}</p>
+          </div>
+          <div class="content">
+            <p>Hello ${safeName},</p>
+            <p><strong>${safeTitle}</strong></p>
+            <div class="info-box">${safeMessage}</div>
+            <a href="${actionUrl}" class="button">Open portal</a>
+          </div>
+          <div class="footer">
+            <p>&copy; ${new Date().getFullYear()} MTC Business. All rights reserved.</p>
+          </div>
+        </body>
+        </html>
+      `,
+      text: `Hello ${name || "there"},\n\n${title}\n${message}\n\nOpen portal: ${actionUrl}\n`,
+    };
+
+    try {
+      if (!this.transporter) {
+        console.log(`📧 Portal notification email would be sent to: ${email} (${title})`);
+        return { success: true, messageId: "console-log", previewUrl: null };
+      }
+      const result = await this.transporter.sendMail(mailOptions);
+      return { success: true, messageId: result.messageId };
+    } catch (error) {
+      console.error("Portal notification email send error:", error?.message || error);
+      return { success: false, error: error?.message || String(error) };
     }
   }
 }

@@ -7,6 +7,7 @@ const {
   resolveManagerTeamNotificationUserIds,
 } = require("../services/notificationService");
 const { resolveRequesterDepartment } = require("../services/corporateSegmentScope");
+const realtime = require("../services/realtimeService");
 const { isEbuDepartment } = require("../services/departmentSegment");
 
 async function assertEbuLeadsAccess(user) {
@@ -125,6 +126,7 @@ exports.createLead = async (req, res) => {
       console.error("Lead notification error:", notifyError);
     }
 
+    realtime.broadcastResources(["leads", "dashboard"]);
     return res.status(201).json({ status: "Success", message: "Lead created", lead });
   } catch (error) {
     return leadErrorResponse(res, error, "Create lead error:");

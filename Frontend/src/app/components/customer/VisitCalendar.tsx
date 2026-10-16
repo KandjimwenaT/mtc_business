@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   Calendar,
   ChevronLeft,
@@ -29,6 +29,7 @@ import { Tabs, TabsList, TabsTrigger, TabsContent } from '../../components/ui/ta
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '../../components/ui/collapsible';
 import { getCustomerVisits, respondToVisit, submitVisitRating, getControlCard, type VisitRecord, type ControlCardRecord } from '../../api/visitApi';
 import { toast } from 'sonner';
+import { useLiveRefresh } from '../../hooks/useLiveRefresh';
 import { format, addDays, startOfWeek, endOfWeek, eachDayOfInterval, isSameDay, addMonths, startOfMonth, endOfMonth } from 'date-fns';
 
 function trimStr(v: unknown): string {
@@ -524,12 +525,11 @@ export function VisitCalendar() {
   const [submittingRating, setSubmittingRating] = useState(false);
   const [controlCards, setControlCards] = useState<Record<number, ControlCardRecord>>({});
 
-  const fetchVisits = async () => {
+  const fetchVisits = useCallback(async (opts?: { silent?: boolean }) => {
     try {
-      setLoading(true);
+      if (!opts?.silent) setLoading(true);
       const data = await getCustomerVisits();
       setVisits(data);
-      // Control cards once the executive has submitted the meeting report (rating + customer UI)
       const reportVisits = data.filter((v) => visitMeetingReportEligible(v.status));
       const cards: Record<number, ControlCardRecord> = {};
       await Promise.all(
@@ -544,13 +544,19 @@ export function VisitCalendar() {
       );
       setControlCards(cards);
     } catch (err: unknown) {
-      toast.error('Failed to load visits', { description: err instanceof Error ? err.message : 'Unknown error' });
+      if (!opts?.silent) {
+        toast.error('Failed to load visits', { description: err instanceof Error ? err.message : 'Unknown error' });
+      }
     } finally {
-      setLoading(false);
+      if (!opts?.silent) setLoading(false);
     }
-  };
+  }, []);
 
-  useEffect(() => { fetchVisits(); }, []);
+  useEffect(() => { void fetchVisits(); }, [fetchVisits]);
+
+  useLiveRefresh(["visits"], () => {
+    void fetchVisits({ silent: true });
+  });
 
   const weekStart = startOfWeek(currentDate, { weekStartsOn: 1 });
   const weekEnd = endOfWeek(currentDate, { weekStartsOn: 1 });

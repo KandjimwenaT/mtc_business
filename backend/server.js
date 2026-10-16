@@ -48,7 +48,7 @@ const slaRoutes = require('./src/routes/slaRoutes');
 require('dotenv').config();
 
 const app = express();
-const PORT = 3003;
+const PORT = 3004;
 
 // nginx (or similar) forwards X-Forwarded-For; required for req.ip and express-rate-limit.
 app.set('trust proxy', 1);
@@ -72,6 +72,7 @@ const allowedOrigins = [
   process.env.CORS_ORIGINS,
   'http://localhost:5173',
   'http://41.219.71.112:8081',
+  'http://172.19.20.201:8080',
 ]
   .filter(Boolean)
   .flatMap((entry) => entry.split(','))
@@ -176,6 +177,8 @@ app.use((err, req, res, next) => {
 });
 
 const server = http.createServer(app);
+const { initRealtime } = require("./src/services/realtimeService");
+initRealtime(server, uniqueAllowedOrigins);
 
 const startServer = async () => {
   await connectDB();

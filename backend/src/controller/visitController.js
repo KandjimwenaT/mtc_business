@@ -9,6 +9,7 @@ const Corporate = require("../models/Corporate");
 const User = require("../models/User");
 const Notification = require("../models/Notification");
 const { createForUserIds, resolveManagerTeamNotificationUserIds } = require("../services/notificationService");
+const realtime = require("../services/realtimeService");
 const emailService = require("../services/emailService");
 const {
   getAccountsForCustomerUser,
@@ -328,6 +329,7 @@ exports.createVisit = async (req, res) => {
             kind: "attendee_invitation",
           },
         },
+        { skipEmail: true },
       );
 
       // Best-effort emails: failures are logged but never break visit creation.
@@ -347,6 +349,7 @@ exports.createVisit = async (req, res) => {
       );
     }
 
+    realtime.broadcastResources(["visits", "dashboard"]);
     return res.status(201).json({ status: "Success", visit });
   } catch (error) {
     console.error("Create visit error:", error);
@@ -508,9 +511,31 @@ exports.respondToVisit = async (req, res) => {
       }
       await pushVisitCalendarSync(visit);
     } else if (action === "decline") {
+      const execRow = await ExecutiveStaff.findByPk(visit.executiveId, { attributes: ["userId"] });
+      const managerTeamIds = await resolveManagerTeamNotificationUserIds(visit.executiveId);
+      const declineIds = [...(execRow?.userId ? [execRow.userId] : []), ...managerTeamIds];
+      await createForUserIds(declineIds, {
+        type: "visit",
+        title: `Visit Declined - ${visit.visitNumber}`,
+        message: `${visit.accountName} declined the visit on ${visit.visitDate}${customerResponse ? `: ${customerResponse}` : "."}`,
+        priority: "high",
+        metadata: { visitId: visit.visitId, visitNumber: visit.visitNumber, kind: "visit_declined" },
+      });
       await pushVisitCalendarSync(visit, { cancel: true });
+    } else if (action === "reschedule") {
+      const execRow = await ExecutiveStaff.findByPk(visit.executiveId, { attributes: ["userId"] });
+      const managerTeamIds = await resolveManagerTeamNotificationUserIds(visit.executiveId);
+      const rescheduleIds = [...(execRow?.userId ? [execRow.userId] : []), ...managerTeamIds];
+      await createForUserIds(rescheduleIds, {
+        type: "visit",
+        title: `Customer Reschedule - ${visit.visitNumber}`,
+        message: `${visit.accountName} requested a new time: ${rescheduleDate} ${rescheduleStartTime}–${rescheduleEndTime}.`,
+        priority: "high",
+        metadata: { visitId: visit.visitId, visitNumber: visit.visitNumber, kind: "customer_reschedule" },
+      });
     }
 
+    realtime.broadcastResources(["visits", "dashboard"]);
     return res.status(200).json({ status: "Success", visit });
   } catch (error) {
     console.error("Respond to visit error:", error);
@@ -570,6 +595,7 @@ exports.requestReschedule = async (req, res) => {
       },
     });
 
+    realtime.broadcastResources(["visits", "dashboard"]);
     return res.status(200).json({ status: "Success", visit });
   } catch (error) {
     console.error("Request reschedule error:", error);
@@ -639,6 +665,26 @@ exports.approveReschedule = async (req, res) => {
     }
 
     await visit.reload();
+    const execRow = await ExecutiveStaff.findByPk(visit.executiveId, { attributes: ["userId"] });
+    if (execRow?.userId) {
+      const approved = decision === "approved";
+      await createForUserIds(
+        [execRow.userId],
+        {
+          type: "visit",
+          title: approved
+            ? `Reschedule Approved - ${visit.visitNumber}`
+            : `Reschedule Rejected - ${visit.visitNumber}`,
+          message: approved
+            ? `${managerName} approved your reschedule for ${visit.accountName} to ${visit.visitDate} ${visit.startTime || ""}.`
+            : `${managerName} rejected the reschedule request for ${visit.accountName} (${visit.visitNumber}).`,
+          priority: approved ? "normal" : "high",
+          metadata: { visitId: visit.visitId, visitNumber: visit.visitNumber, kind: "reschedule_decision" },
+        },
+        { excludeUserIds: [user.id] }
+      );
+    }
+    realtime.broadcastResources(["visits", "dashboard"]);
     return res.status(200).json({ status: "Success", visit });
   } catch (error) {
     console.error("Approve reschedule error:", error);
@@ -743,6 +789,7 @@ exports.updateVisit = async (req, res) => {
       } else if (status === "cancelled") {
         await pushVisitCalendarSync(visit, { cancel: true });
       }
+      realtime.broadcastResources(["visits", "dashboard"]);
       return res.status(200).json({ status: "Success", visit });
     }
 
@@ -855,6 +902,7 @@ exports.submitControlCard = async (req, res) => {
 
     const controlCard = await ControlCard.findOne({ where: { visitId } });
 
+    realtime.broadcastResources(["visits", "tickets", "dashboard"]);
     return res.status(201).json({
       status: "Success",
       controlCard,
@@ -1045,6 +1093,7 @@ exports.updateControlCard = async (req, res) => {
     }
     if (visitRow) await visitRow.reload();
 
+    realtime.broadcastResources(["visits", "dashboard"]);
     return res.status(200).json({ status: "Success", controlCard, visit: visitRow });
   } catch (error) {
     console.error("Update control card error:", error);
@@ -1103,6 +1152,21 @@ exports.submitRating = async (req, res) => {
     });
     await visit.reload();
 
+    const execRow = await ExecutiveStaff.findByPk(visit.executiveId, { attributes: ["userId"] });
+    const managerTeamIds = await resolveManagerTeamNotificationUserIds(visit.executiveId);
+    await createForUserIds(
+      [...(execRow?.userId ? [execRow.userId] : []), ...managerTeamIds],
+      {
+        type: "rating",
+        title: `Visit Rated - ${visit.visitNumber}`,
+        message: `${visit.accountName} rated the visit ${rating}/5${comment ? `: ${String(comment).slice(0, 180)}` : "."}`,
+        priority: "normal",
+        metadata: { visitId: visit.visitId, visitNumber: visit.visitNumber, rating, kind: "customer_rating" },
+      },
+      { excludeUserIds: [user.id] }
+    );
+
+    realtime.broadcastResources(["visits", "dashboard"]);
     return res.status(200).json({ status: "Success", visit });
   } catch (error) {
     console.error("Submit rating error:", error);

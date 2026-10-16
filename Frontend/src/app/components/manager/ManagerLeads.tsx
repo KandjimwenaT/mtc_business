@@ -13,6 +13,7 @@ import {
 } from "../ui-components";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../ui/dialog";
 import { getTeamLeads, type TeamLeadRecord } from "../../api/leadApi";
+import { useLiveRefresh } from "../../hooks/useLiveRefresh";
 
 type LeadStatus = "in_progress" | "ongoing" | "completed" | "pending";
 type TimeRange = "all" | "week" | "month" | "quarter";
@@ -100,6 +101,12 @@ export default function ManagerLeads() {
 
     void fetchLeads();
   }, []);
+
+  useLiveRefresh(["leads"], () => {
+    void getTeamLeads()
+      .then((rows) => setLeads(rows.map(normalizeLead)))
+      .catch(() => {});
+  });
 
   const filteredLeads = useMemo(() => {
     const now = new Date();

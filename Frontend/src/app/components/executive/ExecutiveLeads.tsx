@@ -4,6 +4,7 @@ import { Plus, Search } from "lucide-react";
 import { toast } from "sonner";
 import { createLead, getMyLeads, type LeadRecord as ApiLeadRecord } from "../../api/leadApi";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "../ui/dialog";
+import { useLiveRefresh } from "../../hooks/useLiveRefresh";
 
 type LeadStatus = "in_progress" | "ongoing" | "completed" | "pending";
 type TimeRange = "all" | "week" | "month" | "quarter";
@@ -95,6 +96,12 @@ export default function ExecutiveLeads() {
 
     void fetchLeads();
   }, []);
+
+  useLiveRefresh(["leads"], () => {
+    void getMyLeads()
+      .then((rows) => setLeads(rows.map(normalizeLead)))
+      .catch(() => {});
+  });
 
   const filteredLeads = useMemo(() => {
     const now = new Date();

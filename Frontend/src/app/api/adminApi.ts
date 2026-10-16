@@ -119,6 +119,8 @@ export interface CorporatePayload {
   businessEmail: string;
   industry?: string;
   managerId: number;
+  /** Person.id of the EBU executive to assign at create time. */
+  executiveId?: number | null;
   isActive?: boolean;
 }
 

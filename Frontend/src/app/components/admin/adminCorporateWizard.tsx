@@ -1,5 +1,5 @@
-import type { Dispatch, SetStateAction } from "react";
-import { X, Loader2 } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
+import { Check, ChevronDown, Loader2, Search, X } from "lucide-react";
 import { Button, Input, Select } from "../ui-components";
 import type {
   AccountPayload,
@@ -8,6 +8,148 @@ import type {
   PersonRecord,
   ServicePayload,
 } from "../../api/adminApi";
+import {
+  departmentsMatch,
+  isEbuDepartment,
+  normalizeDepartmentSegment,
+  type DepartmentSegment,
+} from "../../utils/departmentSegment";
+
+const INDUSTRY_OPTIONS = [
+  "Agriculture",
+  "Automotive",
+  "Banking & Financial Services",
+  "Construction",
+  "Education",
+  "Energy & Utilities",
+  "Engineering",
+  "Fisheries",
+  "Government & Public Sector",
+  "Healthcare",
+  "Hospitality & Tourism",
+  "Information Technology",
+  "Insurance",
+  "Manufacturing",
+  "Media & Entertainment",
+  "Mining",
+  "NGOs & Non-Profit",
+  "Oil & Gas",
+  "Professional Services",
+  "Real Estate",
+  "Retail & Wholesale",
+  "Telecommunications",
+  "Transportation & Logistics",
+  "Travel & Aviation",
+  "Other",
+] as const;
+
+function SearchableIndustrySelect({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (next: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  const inputRef = useRef<HTMLInputElement | null>(null);
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return INDUSTRY_OPTIONS;
+    return INDUSTRY_OPTIONS.filter((item) => item.toLowerCase().includes(q));
+  }, [query]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: MouseEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) {
+        setOpen(false);
+        setQuery("");
+      }
+    };
+    document.addEventListener("mousedown", onPointerDown);
+    return () => document.removeEventListener("mousedown", onPointerDown);
+  }, [open]);
+
+  useEffect(() => {
+    if (open) inputRef.current?.focus();
+  }, [open]);
+
+  return (
+    <div ref={rootRef} className="relative">
+      <button
+        type="button"
+        onClick={() => {
+          setOpen((prev) => !prev);
+          setQuery("");
+        }}
+        className="flex h-10 w-full items-center justify-between rounded-md border border-slate-300 bg-transparent px-3 py-2 text-sm text-left focus:outline-none focus:ring-2 focus:ring-mtc-blue"
+      >
+        <span className={value ? "text-slate-900 truncate" : "text-slate-400"}>
+          {value || "Search industry..."}
+        </span>
+        <ChevronDown className="h-4 w-4 shrink-0 text-slate-400" />
+      </button>
+      {open && (
+        <div className="absolute z-20 mt-1 w-full rounded-md border border-slate-200 bg-white shadow-lg">
+          <div className="flex items-center gap-2 border-b border-slate-100 px-3 py-2">
+            <Search className="h-4 w-4 text-slate-400" />
+            <input
+              ref={inputRef}
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Type to search..."
+              className="w-full bg-transparent text-sm outline-none placeholder:text-slate-400"
+            />
+          </div>
+          <div className="max-h-56 overflow-y-auto py-1">
+            {filtered.length === 0 ? (
+              <p className="px-3 py-2 text-sm text-slate-500">No matching industry</p>
+            ) : (
+              filtered.map((item) => (
+                <button
+                  key={item}
+                  type="button"
+                  className="flex w-full items-center justify-between px-3 py-2 text-sm text-left hover:bg-slate-50"
+                  onClick={() => {
+                    onChange(item);
+                    setOpen(false);
+                    setQuery("");
+                  }}
+                >
+                  <span>{item}</span>
+                  {value === item ? <Check className="h-4 w-4 text-mtc-blue" /> : null}
+                </button>
+              ))
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function pickManagerId(
+  managers: PersonRecord[],
+  segment: DepartmentSegment | "",
+  executives: PersonRecord[],
+  currentUserEmail?: string
+): number {
+  if (!segment) return 0;
+  if (currentUserEmail) {
+    const me = executives.find(
+      (e) => e.email?.toLowerCase() === currentUserEmail.toLowerCase()
+    );
+    if (me?.managerId) {
+      const mgr = managers.find((m) => m.id === me.managerId);
+      if (mgr && departmentsMatch(mgr.department, segment)) return mgr.id;
+    }
+  }
+  const matches = managers.filter((m) => departmentsMatch(m.department, segment));
+  return matches[0]?.id ?? 0;
+}
 
 type ChildAccountExtraForm = {
   billCycleDay: string;
@@ -23,6 +165,9 @@ type Props = {
   resetCreateWizard: () => void;
   submittingWizard: boolean;
   managers: PersonRecord[];
+  executives: PersonRecord[];
+  userDepartment: DepartmentSegment | null;
+  currentUserEmail?: string;
   corporateForm: CorporatePayload;
   setCorporateForm: Dispatch<SetStateAction<CorporatePayload>>;
   childAccountForm: AccountPayload;
@@ -47,6 +192,9 @@ export default function AdminCorporateWizard(props: Props) {
     resetCreateWizard,
     submittingWizard,
     managers,
+    executives,
+    userDepartment,
+    currentUserEmail,
     corporateForm,
     setCorporateForm,
     childAccountForm,
@@ -62,6 +210,58 @@ export default function AdminCorporateWizard(props: Props) {
     handleCreateContractStep,
     handleCreateServicesStep,
   } = props;
+
+  const [segment, setSegment] = useState<DepartmentSegment | "">(userDepartment ?? "");
+
+  useEffect(() => {
+    if (!show) return;
+    setSegment(userDepartment ?? "");
+  }, [show, userDepartment]);
+
+  useEffect(() => {
+    if (!show || wizardStep !== 1) return;
+    const nextSegment = (userDepartment || segment) as DepartmentSegment | "";
+    const managerId = pickManagerId(managers, nextSegment, executives, currentUserEmail);
+    const me = currentUserEmail
+      ? executives.find((e) => e.email?.toLowerCase() === currentUserEmail.toLowerCase())
+      : undefined;
+
+    setCorporateForm((f) => {
+      const next: CorporatePayload = { ...f, managerId };
+      if (nextSegment !== "EBU") {
+        next.executiveId = null;
+      } else if (!f.executiveId && me && me.managerId === managerId) {
+        next.executiveId = me.id;
+      }
+      if (f.managerId === next.managerId && f.executiveId === next.executiveId) return f;
+      return next;
+    });
+  }, [
+    show,
+    wizardStep,
+    userDepartment,
+    segment,
+    managers,
+    executives,
+    currentUserEmail,
+    setCorporateForm,
+  ]);
+
+  const assignedManager = managers.find((m) => m.id === corporateForm.managerId) ?? null;
+  const effectiveSegment =
+    userDepartment ||
+    segment ||
+    normalizeDepartmentSegment(assignedManager?.department);
+
+  const ebuExecutives = useMemo(() => {
+    return executives.filter((e) => {
+      if (e.managerId == null) return false;
+      const mgr = managers.find((m) => m.id === e.managerId);
+      if (!isEbuDepartment(mgr?.department)) return false;
+      if (corporateForm.managerId) return e.managerId === corporateForm.managerId;
+      return true;
+    });
+  }, [executives, managers, corporateForm.managerId]);
 
   if (!show) return null;
 
@@ -139,33 +339,68 @@ export default function AdminCorporateWizard(props: Props) {
                   }
                 />
               </div>
+              {!userDepartment && (
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-slate-700">Segment *</label>
+                  <Select
+                    value={segment}
+                    onChange={(e) => {
+                      const next = e.target.value as DepartmentSegment | "";
+                      setSegment(next);
+                      setCorporateForm((f) => ({
+                        ...f,
+                        executiveId: next === "EBU" ? f.executiveId : null,
+                      }));
+                    }}
+                  >
+                    <option value="">Select segment...</option>
+                    <option value="Key Accounts">Key Accounts</option>
+                    <option value="EBU">EBU</option>
+                  </Select>
+                </div>
+              )}
               <div className="space-y-2">
                 <label className="text-sm font-medium text-slate-700">Assigned Manager *</label>
-                <Select
-                  value={corporateForm.managerId ? corporateForm.managerId.toString() : ""}
-                  onChange={(e) =>
-                    setCorporateForm((f) => ({
-                      ...f,
-                      managerId: e.target.value ? Number(e.target.value) : 0,
-                    }))
+                <Input
+                  readOnly
+                  disabled
+                  value={
+                    assignedManager
+                      ? `${assignedManager.firstName} ${assignedManager.lastName}${
+                          assignedManager.department ? ` — ${assignedManager.department}` : ""
+                        }`
+                      : effectiveSegment
+                        ? `No ${effectiveSegment} manager found`
+                        : "Select a segment to auto-assign a manager"
                   }
-                >
-                  <option value="">Select manager...</option>
-                  {managers.map((manager) => (
-                    <option key={manager.id} value={manager.id}>
-                      {manager.firstName} {manager.lastName}
-                      {manager.department ? ` — ${manager.department}` : ""}
-                    </option>
-                  ))}
-                </Select>
+                />
               </div>
+              {effectiveSegment === "EBU" && (
+                <div className="space-y-2">
+                  <label className="text-sm font-medium text-slate-700">EBU Executive *</label>
+                  <Select
+                    value={corporateForm.executiveId ? String(corporateForm.executiveId) : ""}
+                    onChange={(e) =>
+                      setCorporateForm((f) => ({
+                        ...f,
+                        executiveId: e.target.value ? Number(e.target.value) : null,
+                      }))
+                    }
+                  >
+                    <option value="">Select EBU executive...</option>
+                    {ebuExecutives.map((exec) => (
+                      <option key={exec.id} value={exec.id}>
+                        {exec.firstName} {exec.lastName}
+                      </option>
+                    ))}
+                  </Select>
+                </div>
+              )}
               <div className="space-y-2">
                 <label className="text-sm font-medium text-slate-700">Industry</label>
-                <Input
+                <SearchableIndustrySelect
                   value={corporateForm.industry ?? ""}
-                  onChange={(e) =>
-                    setCorporateForm((f) => ({ ...f, industry: e.target.value }))
-                  }
+                  onChange={(industry) => setCorporateForm((f) => ({ ...f, industry }))}
                 />
               </div>
             </div>

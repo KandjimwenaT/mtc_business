@@ -140,9 +140,9 @@ export function TableBody({ className, ...props }: React.HTMLAttributes<HTMLTabl
 export function TableRow({ className, ...props }: React.HTMLAttributes<HTMLTableRowElement>) {
   return <tr className={cn("border-b border-slate-200 transition-colors hover:bg-slate-50/50 data-[state=selected]:bg-slate-50", className)} {...props} />;
 }
-export function TableHead({ className, ...props }: React.HTMLAttributes<HTMLTableCellElement>) {
+export function TableHead({ className, ...props }: React.ComponentPropsWithoutRef<"th">) {
   return <th className={cn("h-10 px-2 sm:px-4 text-left align-middle font-medium text-slate-500 [&:has([role=checkbox])]:pr-0", className)} {...props} />;
 }
-export function TableCell({ className, ...props }: React.HTMLAttributes<HTMLTableCellElement>) {
+export function TableCell({ className, ...props }: React.ComponentPropsWithoutRef<"td">) {
   return <td className={cn("p-2 sm:p-4 align-middle [&:has([role=checkbox])]:pr-0", className)} {...props} />;
 }

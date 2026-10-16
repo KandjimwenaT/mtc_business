@@ -47,11 +47,13 @@ import AdminCorporateWizard from "./admin/adminCorporateWizard";
 import { isExecutiveRole, isGmRole, isManagerRole, isSupervisorRole } from "../utils/roleCapabilities";
 import {
   departmentsMatch,
+  isEbuDepartment,
   normalizeDepartmentSegment,
 } from "../utils/departmentSegment";
 import type { StaffLayoutOutletContext } from "../layoutOutletContext";
 import { defaultSupervisorBadges } from "../hooks/useSupervisorHybridBadges";
 import { useExecutiveData } from "../hooks/useExecutiveData";
+import { useLiveRefresh } from "../hooks/useLiveRefresh";
 
 const mockCorporates = [
   { 
@@ -116,6 +118,13 @@ const formatContactEmail = (acc: AccountContactLike | null | undefined) => {
   if (!acc) return "Not assigned";
   if (isAccountContactMissing(acc)) return "Not assigned";
   return (acc.contactEmail || "").trim() || "Not assigned";
+};
+
+const corporateApprovalLabel = (status: CorporateRecord["approvalStatus"] | undefined) => {
+  if (status === "approved") return "Approved";
+  if (status === "rejected") return "Rejected";
+  if (status === "waiting_approval") return "Pending Approval";
+  return "Draft";
 };
 
 export default function Corporates() {
@@ -223,6 +232,7 @@ export default function Corporates() {
     corporateType: "",
     businessEmail: "",
     managerId: 0,
+    executiveId: null,
     industry: "",
     isActive: true,
   });
@@ -297,8 +307,8 @@ export default function Corporates() {
   });
 
   // Fetch accounts & executives for manager
-  const fetchAccounts = useCallback(async () => {
-    setLoadingAccounts(true);
+  const fetchAccounts = useCallback(async (opts?: { silent?: boolean }) => {
+    if (!opts?.silent) setLoadingAccounts(true);
     try {
       const [accs, corps, execs, supervisorExecs, mgrs, acctMgrs] = await Promise.all([
         getAccounts(),
@@ -327,9 +337,11 @@ export default function Corporates() {
         });
       }
     } catch (err) {
-      toast.error("Failed to load accounts", { description: err instanceof Error ? err.message : undefined });
+      if (!opts?.silent) {
+        toast.error("Failed to load accounts", { description: err instanceof Error ? err.message : undefined });
+      }
     } finally {
-      setLoadingAccounts(false);
+      if (!opts?.silent) setLoadingAccounts(false);
     }
   }, [showCorporatePanel]);
 
@@ -367,6 +379,24 @@ export default function Corporates() {
   useEffect(() => {
     if (showCorporatePanel) fetchAccounts();
   }, [showCorporatePanel, fetchAccounts]);
+
+  useEffect(() => {
+    if (!canCreateCorporates || showCorporatePanel) return;
+    Promise.all([
+      getPersonsByType("executive_staff"),
+      getPersonsByType("supervisor"),
+      getPersonsByType("manager"),
+    ])
+      .then(([execs, supervisorExecs, mgrs]) => {
+        setExecutives([...execs, ...supervisorExecs]);
+        setManagers(mgrs);
+      })
+      .catch(() => {});
+  }, [canCreateCorporates, showCorporatePanel]);
+
+  useLiveRefresh(["corporates"], () => {
+    void fetchAccounts({ silent: true });
+  });
 
   const refreshCorporateContactPersons = useCallback(
     async (corporateId: number | null | undefined) => {
@@ -740,6 +770,7 @@ export default function Corporates() {
       corporateType: "",
       businessEmail: "",
       managerId: 0,
+      executiveId: null,
       industry: "",
       isActive: true,
     });
@@ -784,10 +815,15 @@ export default function Corporates() {
       toast.error("Please complete all required corporate fields");
       return;
     }
+    const assignedManager = managers.find((m) => m.id === corporateForm.managerId);
+    if (isEbuDepartment(assignedManager?.department) && !corporateForm.executiveId) {
+      toast.error("Please select an EBU executive for this corporate");
+      return;
+    }
     setSubmittingWizard(true);
     try {
       const created = await createCorporate(corporateForm);
-      toast.success("Corporate created successfully.");
+      toast.success("Corporate created. Submit it for manager approval when you are ready.");
       resetCreateWizard();
       fetchAccounts();
       setSelectedCorporate(created);
@@ -1209,6 +1245,14 @@ export default function Corporates() {
     );
     return match ? String(match.id) : "";
   }, [selectedCorporate, assignmentExecutives]);
+
+  useEffect(() => {
+    if (selectedCorporate?.approvalStatus === "waiting_approval") {
+      setCorporateExecId(selectedCorporateExecPersonId || "");
+    } else {
+      setCorporateExecId("");
+    }
+  }, [selectedCorporate?.corporateId, selectedCorporate?.approvalStatus, selectedCorporateExecPersonId]);
 
   const detailAccountExecPersonId = useMemo(() => {
     if (!detailAccount) return "";
@@ -1723,13 +1767,7 @@ export default function Corporates() {
                     <div className="flex justify-between items-start mb-2">
                       <h3 className="font-semibold text-slate-900 text-sm leading-tight">{corp.corporateName}</h3>
                       <Badge variant={corp.approvalStatus === "approved" ? "success" : corp.approvalStatus === "rejected" ? "danger" : "warning"} className="text-[10px] shrink-0 ml-2">
-                        {corp.approvalStatus === "approved"
-                          ? "Approved"
-                          : corp.approvalStatus === "rejected"
-                          ? "Rejected"
-                          : corp.approvalStatus === "waiting_approval"
-                          ? "Waiting Approval"
-                          : "Pending"}
+                        {corporateApprovalLabel(corp.approvalStatus)}
                       </Badge>
                     </div>
                     <div className="text-xs text-slate-500 font-mono mb-1">{corp.corporateNumber}</div>
@@ -1837,34 +1875,16 @@ export default function Corporates() {
                                 : "warning"
                             }
                           >
-                          {selectedCorporate?.approvalStatus === "approved"
-                            ? "Approved"
-                            : selectedCorporate?.approvalStatus === "rejected"
-                            ? "Rejected"
-                            : selectedCorporate?.approvalStatus === "waiting_approval"
-                            ? "Waiting Approval"
-                            : "Pending Approval"}
+                          {corporateApprovalLabel(selectedCorporate?.approvalStatus)}
                           </Badge>
-                          {isAdmin && selectedCorporate?.approvalStatus === "pending" && (
+                          {canCreateCorporates && selectedCorporate?.approvalStatus === "pending" && (
                             <Button
                               onClick={async () => {
                                 if (!selectedCorporate) return;
-                                const hasAccounts = selectedCorporateChildAccounts.length > 0;
-                                const hasContact = corporateContactPersons.length > 0;
-
-                                if (!hasAccounts) {
-                                  toast.error("Add at least one account before submitting for approval.");
-                                  return;
-                                }
-                                if (!hasContact) {
-                                  toast.error("Add a contact person (Account Manager) before submitting for approval.");
-                                  return;
-                                }
-
                                 setSubmittingCorporateApproval(true);
                                 try {
                                   const updated = await submitCorporateForApproval(selectedCorporate.corporateId);
-                                  toast.success("Corporate submitted for approval");
+                                  toast.success("Submitted for manager approval");
                                   setSelectedCorporate(updated);
                                   await fetchAccounts();
                                 } catch (err) {
@@ -1875,11 +1895,7 @@ export default function Corporates() {
                                   setSubmittingCorporateApproval(false);
                                 }
                               }}
-                              disabled={
-                                submittingCorporateApproval ||
-                                selectedCorporateChildAccounts.length === 0 ||
-                                corporateContactPersons.length === 0
-                              }
+                              disabled={submittingCorporateApproval}
                             >
                               {submittingCorporateApproval ? "Submitting..." : "Submit for Approval"}
                             </Button>
@@ -1890,6 +1906,9 @@ export default function Corporates() {
                     <CardContent className="p-0">
                       {isManager && selectedCorporate?.approvalStatus === "waiting_approval" && (
                         <div className="p-4 border-b border-slate-200 bg-slate-50/60">
+                          <p className="text-sm text-slate-600 mb-3">
+                            This corporate is waiting for your approval. Assign an executive, then approve.
+                          </p>
                           <div className="grid gap-3 md:grid-cols-[1fr_auto_auto] md:items-end">
                             <div className="space-y-1.5">
                               <label className="text-sm font-medium text-slate-700">
@@ -3100,6 +3119,9 @@ export default function Corporates() {
         resetCreateWizard={resetCreateWizard}
         submittingWizard={submittingWizard}
         managers={managers}
+        executives={departmentScopedExecutives}
+        userDepartment={myDepartment}
+        currentUserEmail={currentUser?.email}
         corporateForm={corporateForm}
         setCorporateForm={setCorporateForm}
         childAccountForm={childAccountForm}

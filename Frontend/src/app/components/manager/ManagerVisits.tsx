@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useCallback } from "react";
 import { useOutletContext } from "react-router";
 import { toast } from "sonner";
 import {
@@ -52,6 +52,7 @@ import { isGmRole, isSupervisorRole } from "../../utils/roleCapabilities";
 import ExecutiveVisits from "../executive/ExecutiveVisits";
 import type { StaffLayoutOutletContext } from "../../layoutOutletContext";
 import { defaultSupervisorBadges } from "../../hooks/useSupervisorHybridBadges";
+import { useLiveRefresh } from "../../hooks/useLiveRefresh";
 
 type Tab = "schedule" | "previous" | "reschedules" | "feedback" | "controlCards";
 
@@ -173,33 +174,39 @@ export default function ManagerVisits() {
   const [feedbackPage, setFeedbackPage] = useState(1);
   const [controlCardsPage, setControlCardsPage] = useState(1);
 
-  // Load manager-scoped data when needed (supervisor skips until "Manager Oversight")
-  useEffect(() => {
+  const loadManagerVisits = useCallback(async (opts?: { silent?: boolean }) => {
     if (isSupervisor && scopeView === "executive") {
-      setLoading(false);
+      if (!opts?.silent) setLoading(false);
       return;
     }
-    const load = async () => {
-      setLoading(true);
-      try {
-        const [v, cc, r] = await Promise.all([
-          getManagerVisits(),
-          getManagerControlCards(),
-          getPendingReschedules(),
-        ]);
-        setVisits(v);
-        setControlCards(cc);
-        setReschedules(r);
-      } catch (err: unknown) {
+    if (!opts?.silent) setLoading(true);
+    try {
+      const [v, cc, r] = await Promise.all([
+        getManagerVisits(),
+        getManagerControlCards(),
+        getPendingReschedules(),
+      ]);
+      setVisits(v);
+      setControlCards(cc);
+      setReschedules(r);
+    } catch (err: unknown) {
+      if (!opts?.silent) {
         const message = err instanceof Error ? err.message : "Failed to load data";
         toast.error(message);
-      } finally {
-        setLoading(false);
-        if (isSupervisor) void refreshBadges();
       }
-    };
-    void load();
+    } finally {
+      if (!opts?.silent) setLoading(false);
+      if (isSupervisor) void refreshBadges();
+    }
   }, [isSupervisor, scopeView, refreshBadges]);
+
+  useEffect(() => {
+    void loadManagerVisits();
+  }, [loadManagerVisits]);
+
+  useLiveRefresh(["visits"], () => {
+    void loadManagerVisits({ silent: true });
+  });
 
   // Derived data
   const executiveNames = useMemo(() => {

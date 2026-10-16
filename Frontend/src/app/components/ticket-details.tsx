@@ -29,6 +29,7 @@ import { getCurrentUser } from "../api/authApi";
 import { canAddTicketInternalNote } from "../utils/roleCapabilities";
 import { getTicketsListPath } from "../utils/ticketNavigation";
 import { format } from "date-fns";
+import { useLiveRefresh } from "../hooks/useLiveRefresh";
 
 function formatTicketStatusLabel(s: string) {
   return s.replace(/_/g, " ");
@@ -100,8 +101,18 @@ export default function TicketDetails() {
         setLoading(false);
       }
     };
-    run();
+    void run();
   }, [ticketId]);
+
+  useLiveRefresh(["tickets"], () => {
+    if (!Number.isFinite(ticketId) || saving || addingNote) return;
+    void getTicketById(ticketId)
+      .then((data) => {
+        setTicket(data);
+        setTicketStatus(data.status);
+      })
+      .catch(() => {});
+  });
 
   const slaInfo = useMemo(() => {
     if (!ticket?.slaDeadline || ["resolved", "closed", "rejected"].includes(ticket.status)) {

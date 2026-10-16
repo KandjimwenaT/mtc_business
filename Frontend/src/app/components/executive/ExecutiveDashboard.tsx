@@ -7,6 +7,7 @@ import { type TicketRecord } from "../../api/ticketApi";
 import { getSlaHealthLabel } from "../../utils/sla";
 import { getMyLeads, type LeadRecord as LeadApiRecord } from "../../api/leadApi";
 import { useExecutiveData } from "../../hooks/useExecutiveData";
+import { useLiveRefresh } from "../../hooks/useLiveRefresh";
 import { 
   Card, 
   CardContent, 
@@ -94,6 +95,13 @@ export default function ExecutiveDashboard() {
       isMounted = false;
     };
   }, [isEbu]);
+
+  useLiveRefresh(["leads"], () => {
+    if (!isEbu) return;
+    void getMyLeads()
+      .then(setLeads)
+      .catch(() => {});
+  });
 
   const monthlySpendingTotal = spendingSummary?.total || "0.00";
   const managerName = profile?.manager

@@ -16,6 +16,7 @@ import {
 import { getAssignedTickets, type TicketRecord } from "../api/ticketApi";
 import { getMyVisits, type VisitRecord } from "../api/visitApi";
 import { isExecutiveRole } from "../utils/roleCapabilities";
+import { useLiveRefresh } from "./useLiveRefresh";
 
 interface ExecutiveDataState {
   accounts: ExecutiveAccountRecord[];
@@ -174,6 +175,18 @@ export function ExecutiveDataProvider({ children }: { children: ReactNode }) {
       // ignore
     }
   }, [isExecutive]);
+
+  useLiveRefresh(["tickets"], () => {
+    void refreshTickets();
+  });
+  useLiveRefresh(["visits"], () => {
+    void refreshVisits();
+  });
+  useLiveRefresh(["corporates"], () => {
+    void refreshAccounts();
+    void refreshExpiringContracts();
+    void refreshSpending();
+  });
 
   // Initial fetch when an executive logs in / lands on the layout. Subsequent
   // navigations between executive pages will reuse this cache (until a manual

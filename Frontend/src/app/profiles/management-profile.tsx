@@ -212,12 +212,11 @@ export default function ManagementProfile() {
 
       const response = await createPortalAccess(createResponse.person.id, "executive_staff");
       const emailSent = response.emailSent !== false;
-      const tempPassword = (response.user as { password?: string } | undefined)?.password;
 
       toast.success("Executive created", {
         description: emailSent
           ? `Account details sent to ${email}`
-          : `Email delivery failed.${tempPassword ? ` Temp password: ${tempPassword}` : ""}`,
+          : "Email failed to send password",
       });
 
       setShowCreateExecutiveConfirm(false);

@@ -51,7 +51,7 @@ async function createNotification({
     return null;
   }
 
-  return Notification.create({
+  const notification = await Notification.create({
     userId,
     type,
     title,
@@ -59,6 +59,15 @@ async function createNotification({
     priority,
     metadata,
   });
+
+  try {
+    const { emitNotificationCreated } = require("./realtimeService");
+    emitNotificationCreated(notification);
+  } catch (err) {
+    console.error("Realtime notification emit failed:", err?.message || err);
+  }
+
+  return notification;
 }
 
 function normalizeUserId(id) {
@@ -67,11 +76,57 @@ function normalizeUserId(id) {
   return n;
 }
 
-async function createForUserIds(userIds, payload) {
+async function sendNotificationEmails(userIds, payload, excludeUserIds = []) {
+  const excluded = new Set((excludeUserIds || []).map(normalizeUserId).filter(Boolean));
+  const ids = [...new Set((userIds || []).map(normalizeUserId).filter((id) => id && !excluded.has(id)))];
+  if (!ids.length || !payload?.title || !payload?.message) return;
+
+  let emailService;
+  try {
+    emailService = require("./emailService");
+  } catch (err) {
+    console.error("Email service unavailable for notifications:", err?.message || err);
+    return;
+  }
+
+  const users = await User.findAll({
+    where: { id: ids },
+    attributes: ["id", "email", "firstName", "lastName", "role"],
+  });
+
+  await Promise.all(
+    users.map(async (user) => {
+      if (!user?.email) return;
+      const name = `${user.firstName || ""} ${user.lastName || ""}`.trim() || user.email;
+      try {
+        await emailService.sendPortalNotificationEmail(user.email, name, {
+          title: payload.title,
+          message: payload.message,
+          type: payload.type,
+          role: user.role,
+        });
+      } catch (err) {
+        console.error(`Failed to email notification to ${user.email}:`, err?.message || err);
+      }
+    })
+  );
+}
+
+async function createForUserIds(userIds, payload, options = {}) {
   const uniqueIds = [...new Set((userIds || []).map(normalizeUserId).filter(Boolean))];
   if (!uniqueIds.length) return [];
 
-  return Promise.all(uniqueIds.map((userId) => createNotification({ userId, ...payload })));
+  const rows = await Promise.all(uniqueIds.map((userId) => createNotification({ userId, ...payload })));
+
+  if (!options.skipEmail) {
+    try {
+      await sendNotificationEmails(uniqueIds, payload, options.excludeUserIds);
+    } catch (err) {
+      console.error("Notification email fan-out failed:", err?.message || err);
+    }
+  }
+
+  return rows;
 }
 
 /**

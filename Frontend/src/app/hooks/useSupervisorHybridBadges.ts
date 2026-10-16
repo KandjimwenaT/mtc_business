@@ -4,6 +4,7 @@ import { getAllTickets, getAssignedTickets, type TicketRecord } from "../api/tic
 import { getManagerVisits, getPendingReschedules, getMyVisits, type VisitRecord } from "../api/visitApi";
 import { getCurrentUser } from "../api/authApi";
 import { isSupervisorRole } from "../utils/roleCapabilities";
+import { useLiveRefresh } from "./useLiveRefresh";
 
 const OPEN_TICKET = new Set(["new", "assigned", "in_progress", "escalated"]);
 
@@ -91,6 +92,10 @@ export function useSupervisorHybridBadges(): SupervisorHybridBadgesState {
   useEffect(() => {
     void refresh();
   }, [refresh, location.pathname]);
+
+  useLiveRefresh(["tickets", "visits"], () => {
+    void refresh();
+  });
 
   return {
     managerSideDot,
