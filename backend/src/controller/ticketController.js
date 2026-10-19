@@ -690,13 +690,33 @@ exports.getAssignedTickets = async (req, res) => {
       return res.status(403).json({ status: "Failed", message: "Only executive or supervisor users can access this endpoint" });
     }
 
-    const executive = await ExecutiveStaff.findOne({ where: { userId: user.id } });
+    let executive = await ExecutiveStaff.findOne({ where: { userId: user.id } });
+    if (!executive && user.email) {
+      executive = await ExecutiveStaff.findOne({ where: { email: user.email } });
+      if (executive && !executive.userId) {
+        await executive.update({ userId: user.id });
+      }
+    }
     if (!executive) {
       return res.status(404).json({ status: "Failed", message: "Executive staff profile not found" });
     }
 
-    const assignedAccounts = await Account.findAll({
+    const ownedCorporates = await Corporate.findAll({
       where: { executiveId: executive.executiveId },
+      attributes: ["corporateId"],
+    });
+    const ownedCorporateIds = ownedCorporates
+      .map((corp) => corp.corporateId)
+      .filter((id) => Number.isInteger(id));
+    const assignedAccounts = await Account.findAll({
+      where: ownedCorporateIds.length
+        ? {
+            [Op.or]: [
+              { executiveId: executive.executiveId },
+              { corporateId: { [Op.in]: ownedCorporateIds } },
+            ],
+          }
+        : { executiveId: executive.executiveId },
       attributes: ["accountId"],
     });
     const assignedAccountIds = assignedAccounts.map((account) => account.accountId);

@@ -139,10 +139,65 @@ async function resolveExecutiveUserIdByExecutiveProfileId(executiveProfileId) {
   const executive = await ExecutiveStaff.findByPk(executiveProfileId);
   if (!executive) return null;
   if (executive.userId) return executive.userId;
+
+  const email = String(executive.email || "").trim();
+  if (!email) return null;
+
   const user = await User.findOne({
-    where: { role: "executive_staff", email: executive.email },
+    where: {
+      role: { [Op.in]: ["executive_staff", "supervisor"] },
+      [Op.or]: [{ email }, { email: email.toLowerCase() }],
+    },
   });
-  return user ? user.id : null;
+  if (!user) return null;
+
+  await executive.update({ userId: user.id });
+  return user.id;
+}
+
+async function notifyExecutiveOfCorporateAssignment({
+  executiveProfileId,
+  executiveEmail,
+  executiveName,
+  corporate,
+  previousExecutiveName = null,
+}) {
+  const portalUserId = await resolveExecutiveUserIdByExecutiveProfileId(executiveProfileId);
+  if (portalUserId) {
+    const message = previousExecutiveName
+      ? `You are now assigned to manage ${corporate.corporateName}. This corporate was previously assigned to ${previousExecutiveName}.`
+      : `You are now assigned to manage ${corporate.corporateName}.`;
+    await createForUserIds(
+      [portalUserId],
+      {
+        type: "assignment",
+        title: `New Account Assignment - ${corporate.corporateName}`,
+        message,
+        priority: "normal",
+        metadata: {
+          corporateId: corporate.corporateId,
+          corporateName: corporate.corporateName,
+          kind: previousExecutiveName ? "executive_reassigned_to" : "executive_assigned",
+        },
+      },
+      { skipEmail: true }
+    );
+  }
+
+  const email = String(executiveEmail || "").trim();
+  if (!email) return portalUserId;
+
+  try {
+    await emailService.sendExecutiveReassignmentEmail(
+      email,
+      executiveName || "there",
+      corporate.corporateName,
+    );
+  } catch (emailErr) {
+    console.error("Failed to send executive assignment email:", emailErr);
+  }
+
+  return portalUserId;
 }
 
 // Corporates keyed by corporates.manager_id (Manager.managerId or legacy persons.id), or unset for
@@ -1776,7 +1831,41 @@ exports.approveCorporate = async (req, res) => {
       executiveId: execStaff.executiveId,
       approvalStatus: "approved",
     });
-    realtime.broadcastResources(["corporates", "dashboard"]);
+
+    const executiveDisplayName =
+      `${executive.firstName || ""} ${executive.lastName || ""}`.trim() ||
+      "your new account executive";
+    const managerActorName =
+      `${managerProfile.firstName || ""} ${managerProfile.lastName || ""}`.trim() ||
+      req.user.email ||
+      "System";
+
+    try {
+      await reassignOpenTicketsForCorporate({
+        corporateId: corporate.corporateId,
+        newExecutiveProfileId: execStaff.executiveId,
+        newExecutiveDisplayName: executiveDisplayName,
+        previousExecutiveName: null,
+        actorUser: req.user,
+        actorName: managerActorName,
+        actorRole: req.user.role,
+      });
+    } catch (ticketErr) {
+      console.error("Failed to assign open tickets with corporate approval:", ticketErr);
+    }
+
+    try {
+      await notifyExecutiveOfCorporateAssignment({
+        executiveProfileId: execStaff.executiveId,
+        executiveEmail: execStaff.email || executive.email,
+        executiveName: executiveDisplayName,
+        corporate,
+      });
+    } catch (notifyErr) {
+      console.error("Failed to notify executive of corporate assignment:", notifyErr);
+    }
+
+    realtime.broadcastResources(["corporates", "dashboard", "tickets", "notifications"]);
     return res.status(200).json({
       status: "Success",
       message: "Corporate approved successfully",
@@ -1907,22 +1996,16 @@ exports.reassignCorporateExecutive = async (req, res) => {
       });
     }
 
-    if (newExecutiveUserId) {
-      await createForUserIds(
-        [newExecutiveUserId],
-        {
-        type: "assignment",
-        title: `New Account Assignment - ${corporate.corporateName}`,
-        message: `You are now assigned to manage ${corporate.corporateName}.`,
-        priority: "normal",
-        metadata: {
-          corporateId: corporate.corporateId,
-          corporateName: corporate.corporateName,
-          kind: "executive_reassigned_to",
-        },
-        },
-        { skipEmail: true }
-      );
+    try {
+      await notifyExecutiveOfCorporateAssignment({
+        executiveProfileId: execStaff.executiveId,
+        executiveEmail: execStaff.email || executivePerson.email,
+        executiveName: newExecutiveDisplayName,
+        corporate,
+        previousExecutiveName,
+      });
+    } catch (notifyErr) {
+      console.error("Failed to notify executive of corporate reassignment:", notifyErr);
     }
 
     if (ticketReassignment.reassignedCount > 0) {
@@ -1997,17 +2080,7 @@ exports.reassignCorporateExecutive = async (req, res) => {
       console.error("Failed to notify contact persons of executive reassignment:", contactNotifyErr);
     }
 
-    try {
-      await emailService.sendExecutiveReassignmentEmail(
-        executivePerson.email,
-        `${executivePerson.firstName} ${executivePerson.lastName}`,
-        corporate.corporateName,
-      );
-    } catch (emailErr) {
-      console.error("Failed to send reassignment email:", emailErr);
-    }
-
-    realtime.broadcastResources(["corporates", "tickets", "dashboard"]);
+    realtime.broadcastResources(["corporates", "tickets", "dashboard", "notifications"]);
     return res.status(200).json({
       status: "Success",
       message: "Corporate executive reassigned successfully",

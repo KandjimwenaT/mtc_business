@@ -8,6 +8,36 @@ const AccountManager = require("../models/AccountManager");
 const Account = require("../models/Account");
 const Person = require("../models/Person");
 
+async function resolvePortalUserIdByEmail(email, roles) {
+  const trimmed = String(email || "").trim();
+  if (!trimmed || !roles?.length) return null;
+  const user = await User.findOne({
+    where: {
+      role: { [Op.in]: roles },
+      [Op.or]: [{ email: trimmed }, { email: trimmed.toLowerCase() }],
+    },
+    attributes: ["id"],
+  });
+  return user?.id || null;
+}
+
+/** Portal user for an executive profile, matching by linked user id or email. */
+async function resolveExecutivePortalUserId(executiveId) {
+  if (!executiveId) return null;
+  const executive = await ExecutiveStaff.findByPk(executiveId);
+  if (!executive) return null;
+  if (executive.userId) return executive.userId;
+
+  const userId = await resolvePortalUserIdByEmail(executive.email, ["executive_staff", "supervisor"]);
+  if (!userId) return null;
+  try {
+    await executive.update({ userId });
+  } catch (err) {
+    console.error("Failed to backfill executive user id:", err?.message || err);
+  }
+  return userId;
+}
+
 /**
  * Portal user IDs that should receive manager-style alerts for this executive's team:
  * the line manager (Manager.userId) plus any supervisors whose ExecutiveStaff row
@@ -20,7 +50,18 @@ async function resolveManagerTeamNotificationUserIds(executiveId) {
 
   const ids = [];
   const manager = await Manager.findByPk(executive.managerId);
-  if (manager?.userId) ids.push(manager.userId);
+  let managerUserId = manager?.userId || null;
+  if (manager && !managerUserId) {
+    managerUserId = await resolvePortalUserIdByEmail(manager.email, ["manager", "supervisor", "gm"]);
+    if (managerUserId) {
+      try {
+        await manager.update({ userId: managerUserId });
+      } catch (err) {
+        console.error("Failed to backfill manager user id:", err?.message || err);
+      }
+    }
+  }
+  if (managerUserId) ids.push(managerUserId);
 
   const teamRows = await ExecutiveStaff.findAll({
     where: { managerId: executive.managerId },
@@ -213,6 +254,7 @@ async function resolveBroadcastRecipientUserIds(managerRow, audience) {
 module.exports = {
   createNotification,
   createForUserIds,
+  resolveExecutivePortalUserId,
   resolveManagerTeamNotificationUserIds,
   resolveBroadcastRecipientUserIds,
 };

@@ -3,7 +3,6 @@ import {
   Calendar,
   ChevronLeft,
   ChevronRight,
-  ChevronDown,
   MapPin,
   Clock,
   Users,
@@ -14,6 +13,7 @@ import {
   CalendarClock,
   Star,
   FileText,
+  MessageSquare,
   Send,
   ClipboardList,
   ShieldAlert,
@@ -26,7 +26,8 @@ import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/ca
 import { Button } from '../../components/ui/button';
 import { Badge } from '../../components/ui/badge';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../../components/ui/tabs';
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '../../components/ui/collapsible';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../components/ui/table';
+import { Input } from '../../components/ui/input';
 import { getCustomerVisits, respondToVisit, submitVisitRating, getControlCard, type VisitRecord, type ControlCardRecord } from '../../api/visitApi';
 import { toast } from 'sonner';
 import { useLiveRefresh } from '../../hooks/useLiveRefresh';
@@ -69,14 +70,6 @@ function visitRatingComment(v: VisitRecord): string | null {
   const ext = v as unknown as Record<string, unknown>;
   const c = ext.customerRatingComment ?? ext.customer_rating_comment;
   return typeof c === 'string' && c.trim() ? c : null;
-}
-
-function visitRatedAtIso(v: VisitRecord): string | null {
-  const ext = v as unknown as Record<string, unknown>;
-  const r = ext.customerRatedAt ?? ext.customer_rated_at;
-  if (typeof r === 'string') return r;
-  if (r instanceof Date && !Number.isNaN(r.getTime())) return r.toISOString();
-  return null;
 }
 
 /** True if the meeting report has any content worth showing the customer. */
@@ -303,20 +296,6 @@ function CustomerMeetingReportDetails({
   );
 }
 
-function StarDisplay({ value, size = 'md' }: { value: number; size?: 'sm' | 'md' }) {
-  const cls = size === 'sm' ? 'h-4 w-4' : 'h-6 w-6';
-  return (
-    <div className="flex gap-0.5" aria-hidden>
-      {[1, 2, 3, 4, 5].map((star) => (
-        <Star
-          key={star}
-          className={`${cls} ${star <= Math.round(value) ? 'fill-amber-400 text-amber-400' : 'text-slate-200'}`}
-        />
-      ))}
-    </div>
-  );
-}
-
 function visitMeetingReportEligible(status: VisitRecord['status']) {
   return status === 'completed' || status === 'follow_up_pending';
 }
@@ -353,154 +332,232 @@ function getPastVisitBadgeVariant(status: string): 'outline' | 'default' | 'seco
   }
 }
 
-function PastVisitReviewCard({
-  visit,
-  defaultOpen,
+const PREVIOUS_VISITS_PAGE_SIZE = 8;
+
+function shortVisitStatus(status: string): string {
+  switch (status) {
+    case 'follow_up_pending':
+      return 'Report filed';
+    case 'pending':
+      return 'Pending';
+    default:
+      return statusConfig[status]?.label ?? status;
+  }
+}
+
+function PreviousVisitsTable({
+  visits,
   controlCards,
   isOverdueVisit,
   onRateNow,
+  onViewReport,
+  onViewFeedback,
 }: {
-  visit: VisitRecord;
-  defaultOpen: boolean;
+  visits: VisitRecord[];
   controlCards: Record<number, ControlCardRecord>;
   isOverdueVisit: (v: VisitRecord) => boolean;
   onRateNow: (v: VisitRecord) => void;
+  onViewReport: (v: VisitRecord) => void;
+  onViewFeedback: (v: VisitRecord) => void;
 }) {
-  const cc = controlCards[visit.visitId];
-  const hasReportOnFile = Boolean(cc);
-  const ratingScore = visitNumericRating(visit);
-  const rated = ratingScore > 0;
-  const ratedAt = visitRatedAtIso(visit);
-  const ratingComment = visitRatingComment(visit);
+  const [query, setQuery] = useState('');
+  const [page, setPage] = useState(1);
+
+  const filtered = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    if (!q) return visits;
+    return visits.filter((visit) => {
+      const haystack = [visit.purpose, visit.executiveName, visit.visitNumber, visit.agenda, visitRatingComment(visit)]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      return haystack.includes(q);
+    });
+  }, [visits, query]);
+
+  const pageCount = Math.max(1, Math.ceil(filtered.length / PREVIOUS_VISITS_PAGE_SIZE));
+  const currentPage = Math.min(page, pageCount);
+  const start = (currentPage - 1) * PREVIOUS_VISITS_PAGE_SIZE;
+  const rows = filtered.slice(start, start + PREVIOUS_VISITS_PAGE_SIZE);
+
+  useEffect(() => {
+    setPage(1);
+  }, [query, visits]);
 
   return (
-    <Collapsible defaultOpen={defaultOpen}>
-      <Card className="border-slate-200 overflow-hidden shadow-sm">
-        <CollapsibleTrigger className="flex w-full items-center justify-between gap-3 p-4 text-left bg-slate-50/80 hover:bg-slate-100/80 transition-colors border-b border-slate-100 [&[data-state=open]_svg]:rotate-180">
-          <div className="min-w-0 flex-1">
-            <h4 className="font-semibold text-slate-900">{visit.purpose}</h4>
-            <p className="text-sm text-slate-500 mt-1">
-              {format(new Date(visit.visitDate), 'EEE, MMM d, yyyy')} · {visit.startTime} – {visit.endTime}
-            </p>
-            <p className="text-xs text-slate-500 mt-0.5">{visit.executiveName}</p>
-            <div className="flex flex-wrap items-center gap-2 mt-2">
-              {isOverdueVisit(visit) ? (
-                <Badge variant="destructive">Overdue</Badge>
-              ) : (
-                <Badge variant={getPastVisitBadgeVariant(visit.status)}>
-                  {statusConfig[visit.status]?.label ?? visit.status}
-                </Badge>
-              )}
-              {visitMeetingReportEligible(visit.status) && (
-                <>
-                  {hasReportOnFile ? (
-                    <Badge variant="outline" className="border-teal-200 bg-teal-50 text-teal-900 font-normal">
-                      Meeting report on file
-                    </Badge>
-                  ) : (
-                    <Badge variant="outline" className="text-slate-600 font-normal border-slate-200">
-                      Report not filed yet
-                    </Badge>
-                  )}
-                </>
-              )}
-              {rated ? (
-                <span className="inline-flex items-center gap-1 text-xs text-amber-800 font-medium">
-                  <Star className="h-3.5 w-3.5 fill-amber-400 text-amber-500" aria-hidden />
-                  Your rating: {ratingScore}/5
-                </span>
-              ) : visitMeetingReportEligible(visit.status) && hasReportOnFile ? (
-                <Badge className="border-amber-200 bg-amber-50 text-amber-900 hover:bg-amber-50 font-normal">Awaiting your rating</Badge>
-              ) : null}
-            </div>
-          </div>
-          <ChevronDown className="h-5 w-5 shrink-0 text-slate-500 transition-transform duration-200" aria-hidden />
-        </CollapsibleTrigger>
-        <CollapsibleContent>
-          <div className="p-0">
-            <div className="mx-4 mt-4 rounded-xl border border-slate-200 bg-gradient-to-br from-slate-50 to-white px-4 py-3 flex flex-col sm:flex-row sm:items-center gap-3">
-              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-teal-100">
-                <User className="h-5 w-5 text-teal-800" aria-hidden />
-              </div>
-              <div className="min-w-0 flex-1">
-                <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-500">Visit hosted by</p>
-                <p className="font-semibold text-slate-900">{visit.executiveName}</p>
-                {visit.executiveEmail ? (
-                  <a
-                    href={`mailto:${visit.executiveEmail}`}
-                    className="inline-flex items-center gap-1.5 text-xs text-blue-600 hover:underline mt-0.5"
-                  >
-                    <Mail className="h-3 w-3 shrink-0" aria-hidden />
-                    {visit.executiveEmail}
-                  </a>
-                ) : null}
-              </div>
-            </div>
-            {visit.agenda && (
-              <div className="mx-4 mt-4 rounded-xl border border-slate-100 bg-white px-4 py-3">
-                <p className="text-sm text-slate-600">
-                  <span className="font-medium text-slate-800">Agenda:</span> {visit.agenda}
-                </p>
-              </div>
+    <div className="space-y-3">
+      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+        <Input
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="Search by meeting, executive, or comment"
+          className="h-9 bg-white sm:max-w-xs"
+          aria-label="Search previous visits"
+        />
+        <p className="text-xs text-slate-500">
+          {filtered.length === 0
+            ? 'No matches'
+            : `Showing ${start + 1}–${start + rows.length} of ${filtered.length}`}
+        </p>
+      </div>
+
+      <div className="rounded-xl border border-slate-200 bg-white">
+        <Table className="table-fixed">
+          <TableHeader>
+            <TableRow className="bg-slate-50 hover:bg-slate-50">
+              <TableHead className="w-[16%]">Date</TableHead>
+              <TableHead className="w-[30%]">Meeting</TableHead>
+              <TableHead className="w-[16%]">With</TableHead>
+              <TableHead className="w-[14%]">Status</TableHead>
+              <TableHead className="w-[10%]">Rating</TableHead>
+              <TableHead className="w-[14%] text-right">Actions</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {rows.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={6} className="py-8 text-center text-sm text-slate-500 whitespace-normal">
+                  No meetings match that search.
+                </TableCell>
+              </TableRow>
+            ) : (
+              rows.map((visit) => {
+                const ratingScore = visitNumericRating(visit);
+                const rated = ratingScore > 0;
+                const ratingComment = visitRatingComment(visit);
+                const hasReport = Boolean(controlCards[visit.visitId]);
+                const canOpenReport = visitMeetingReportEligible(visit.status) && hasReport;
+                const canRate = canOpenReport && !rated;
+                return (
+                  <TableRow key={visit.visitId}>
+                    <TableCell className="overflow-hidden py-3 whitespace-normal align-top">
+                      <p className="truncate font-medium text-slate-900">
+                        {format(new Date(visit.visitDate), 'MMM d, yyyy')}
+                      </p>
+                      <p className="truncate text-xs text-slate-500">
+                        {visit.startTime}–{visit.endTime}
+                      </p>
+                    </TableCell>
+                    <TableCell className="overflow-hidden py-3 whitespace-normal align-top">
+                      <p className="truncate font-medium text-slate-900" title={visit.purpose}>
+                        {visit.purpose}
+                      </p>
+                      {ratingComment ? (
+                        <button
+                          type="button"
+                          className="block max-w-full truncate text-left text-xs font-medium text-teal-700 hover:underline"
+                          onClick={() => onViewFeedback(visit)}
+                        >
+                          Your feedback
+                        </button>
+                      ) : (
+                        <p className="truncate text-xs text-slate-500">{visit.visitNumber}</p>
+                      )}
+                    </TableCell>
+                    <TableCell className="overflow-hidden py-3 whitespace-normal align-top">
+                      <p className="truncate text-slate-800" title={visit.executiveName}>
+                        {visit.executiveName}
+                      </p>
+                    </TableCell>
+                    <TableCell className="overflow-hidden py-3 whitespace-normal align-top">
+                      {isOverdueVisit(visit) ? (
+                        <Badge variant="destructive">Overdue</Badge>
+                      ) : (
+                        <Badge variant={getPastVisitBadgeVariant(visit.status)} className="max-w-full font-normal">
+                          <span className="truncate">{shortVisitStatus(visit.status)}</span>
+                        </Badge>
+                      )}
+                    </TableCell>
+                    <TableCell className="overflow-hidden py-3 whitespace-normal align-top">
+                      {rated ? (
+                        <span className="inline-flex items-center gap-1 text-sm font-medium text-slate-800">
+                          <Star className="h-3.5 w-3.5 fill-amber-400 text-amber-500" aria-hidden />
+                          {ratingScore}/5
+                        </span>
+                      ) : canRate ? (
+                        <span className="text-xs font-medium text-amber-800">Not rated</span>
+                      ) : (
+                        <span className="text-xs text-slate-400">—</span>
+                      )}
+                    </TableCell>
+                    <TableCell className="py-3 whitespace-normal align-top text-right">
+                      <div className="flex justify-end gap-1">
+                        {ratingComment && (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            className="h-8 w-8 p-0"
+                            aria-label="Read your feedback"
+                            title="Read your feedback"
+                            onClick={() => onViewFeedback(visit)}
+                          >
+                            <MessageSquare className="h-4 w-4" />
+                          </Button>
+                        )}
+                        {canOpenReport && (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            className="h-8 w-8 p-0"
+                            aria-label="View report"
+                            title="View report"
+                            onClick={() => onViewReport(visit)}
+                          >
+                            <FileText className="h-4 w-4" />
+                          </Button>
+                        )}
+                        {canRate && (
+                          <Button
+                            type="button"
+                            size="sm"
+                            className="h-8 w-8 bg-emerald-600 p-0 text-white hover:bg-emerald-700"
+                            aria-label="Rate this visit"
+                            title="Rate this visit"
+                            onClick={() => onRateNow(visit)}
+                          >
+                            <Star className="h-4 w-4" />
+                          </Button>
+                        )}
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                );
+              })
             )}
-            {visitMeetingReportEligible(visit.status) && cc && (
-              <div className="p-4 border-b border-slate-100">
-                <p className="text-xs font-semibold text-slate-500 uppercase tracking-wider mb-3">Meeting report</p>
-                {meetingReportHasCustomerVisibleContent(cc) ? (
-                  <CustomerMeetingReportDetails cc={cc} visit={visit} variant="embedded" />
-                ) : (
-                  <p className="text-sm text-slate-500 rounded-xl border border-dashed border-slate-200 px-4 py-3">
-                    No meeting-report fields have been shared with you for this visit yet.
-                  </p>
-                )}
-              </div>
-            )}
-            {visitMeetingReportEligible(visit.status) && !cc && (
-              <div className="p-4 border-b border-slate-100 text-sm text-slate-500">
-                Meeting notes are not available yet for this visit.
-              </div>
-            )}
-            <div className="p-4 bg-amber-50/40 border-t border-amber-100/60">
-              <p className="text-xs font-semibold text-slate-600 uppercase tracking-wider mb-2">Your rating</p>
-              {rated ? (
-                <div className="space-y-2">
-                  <div className="flex flex-wrap items-center gap-3">
-                    <StarDisplay value={ratingScore} size="sm" />
-                    <span className="text-sm font-medium text-slate-800">{ratingScore} / 5</span>
-                    {ratedAt && (
-                      <span className="text-xs text-slate-500">{format(new Date(ratedAt), 'MMM d, yyyy')}</span>
-                    )}
-                  </div>
-                  {ratingComment && (
-                    <p className="text-sm text-slate-700">&ldquo;{ratingComment}&rdquo;</p>
-                  )}
-                </div>
-              ) : visitMeetingReportEligible(visit.status) && controlCards[visit.visitId] ? (
-                <div className="flex flex-col sm:flex-row sm:items-center gap-2 justify-between">
-                  <span className="text-sm text-slate-600">You have not rated this visit yet.</span>
-                  <Button
-                    size="sm"
-                    className="bg-emerald-600 hover:bg-emerald-700 text-white shrink-0"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onRateNow(visit);
-                    }}
-                  >
-                    Rate now
-                  </Button>
-                </div>
-              ) : (
-                <span className="text-sm text-slate-500">
-                  {visitMeetingReportEligible(visit.status)
-                    ? 'You can rate after your executive files the meeting report.'
-                    : 'Ratings are available after your meeting report is submitted.'}
-                </span>
-              )}
-            </div>
-          </div>
-        </CollapsibleContent>
-      </Card>
-    </Collapsible>
+          </TableBody>
+        </Table>
+      </div>
+
+      {pageCount > 1 && (
+        <div className="flex items-center justify-between gap-3">
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="bg-white"
+            disabled={currentPage <= 1}
+            onClick={() => setPage(currentPage - 1)}
+          >
+            Previous
+          </Button>
+          <span className="text-xs text-slate-500">
+            Page {currentPage} of {pageCount}
+          </span>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="bg-white"
+            disabled={currentPage >= pageCount}
+            onClick={() => setPage(currentPage + 1)}
+          >
+            Next
+          </Button>
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -519,6 +576,8 @@ export function VisitCalendar() {
   const [rescheduleEndTime, setRescheduleEndTime] = useState('');
   const [rescheduleReason, setRescheduleReason] = useState('');
   const [ratingVisit, setRatingVisit] = useState<VisitRecord | null>(null);
+  const [reportVisit, setReportVisit] = useState<VisitRecord | null>(null);
+  const [feedbackVisit, setFeedbackVisit] = useState<VisitRecord | null>(null);
   const [ratingValue, setRatingValue] = useState(0);
   const [ratingHover, setRatingHover] = useState(0);
   const [ratingComment, setRatingComment] = useState('');
@@ -1302,13 +1361,12 @@ export function VisitCalendar() {
               Meeting reports — rate your visit ({completedAwaitingRating.length})
             </CardTitle>
             <p className="text-sm text-emerald-800/80 font-normal pt-1">
-              Review the full report below, then tap Rate to share feedback on how the meeting went.
+              Open a meeting report, then rate how the meeting went.
             </p>
           </CardHeader>
           <CardContent>
             <div className="space-y-6">
               {completedAwaitingRating.map(visit => {
-                const cc = controlCards[visit.visitId];
                 return (
                   <div
                     key={visit.visitId}
@@ -1352,20 +1410,18 @@ export function VisitCalendar() {
                         </div>
                       </div>
                     </div>
-                    {cc && (
-                      <div className="p-4 sm:p-5 bg-slate-50/30">
-                        {meetingReportHasCustomerVisibleContent(cc) ? (
-                          <CustomerMeetingReportDetails cc={cc} visit={visit} />
-                        ) : (
-                          <p className="text-sm text-slate-600 rounded-xl border border-dashed border-slate-200 bg-white px-4 py-3">
-                            Your executive filed the meeting report, but no fields were filled in for your review yet. You can still submit your rating below.
-                          </p>
-                        )}
-                      </div>
-                    )}
-                    <div className="p-4 sm:p-5 bg-white border-t border-slate-100">
+                    <div className="p-4 sm:p-5 bg-white border-t border-slate-100 flex flex-col sm:flex-row gap-2">
                       <Button
-                        className="w-full bg-emerald-600 hover:bg-emerald-700 text-white h-11 text-base shadow-sm"
+                        type="button"
+                        variant="outline"
+                        className="flex-1 h-11"
+                        onClick={() => setReportVisit(visit)}
+                      >
+                        <FileText className="h-4 w-4 mr-2" />
+                        View report
+                      </Button>
+                      <Button
+                        className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white h-11 text-base shadow-sm"
                         onClick={() => { setRatingVisit(visit); setRatingValue(0); setRatingHover(0); setRatingComment(''); }}
                       >
                         <Star className="h-4 w-4 mr-2" />
@@ -1403,7 +1459,7 @@ export function VisitCalendar() {
                     <div>
                       <CardTitle className="text-xl text-slate-900">Meeting reports &amp; your ratings</CardTitle>
                       <p className="text-sm text-slate-600 font-normal mt-1.5 max-w-2xl">
-                        Past meetings your executive filed reports for, plus stars and comments you submitted—expand any row to review the full meeting summary.
+                        Past meetings stay in a short list. Search or page through them, then open a report or rate from the row.
                       </p>
                     </div>
                     {overduePastCount > 0 && (
@@ -1438,22 +1494,19 @@ export function VisitCalendar() {
                       </p>
                     </div>
                   ) : (
-                    meetingHistoryVisits.map((visit, idx) => (
-                      <PastVisitReviewCard
-                        key={visit.visitId}
-                        visit={visit}
-                        defaultOpen={idx === 0}
-                        controlCards={controlCards}
-                        isOverdueVisit={isOverdueVisit}
-                        onRateNow={(v) => {
-                          setVisitSectionTab('calendar');
-                          setRatingVisit(v);
-                          setRatingValue(0);
-                          setRatingHover(0);
-                          setRatingComment('');
-                        }}
-                      />
-                    ))
+                    <PreviousVisitsTable
+                      visits={meetingHistoryVisits}
+                      controlCards={controlCards}
+                      isOverdueVisit={isOverdueVisit}
+                      onRateNow={(v) => {
+                        setRatingVisit(v);
+                        setRatingValue(0);
+                        setRatingHover(0);
+                        setRatingComment('');
+                      }}
+                      onViewReport={setReportVisit}
+                      onViewFeedback={setFeedbackVisit}
+                    />
                   )}
                 </CardContent>
               </Card>
@@ -1466,23 +1519,20 @@ export function VisitCalendar() {
                       Visits that ended without a completed meeting report on file (for example declined, cancelled, or still pending action).
                     </p>
                   </CardHeader>
-                  <CardContent className="space-y-3">
-                    {otherPastVisits.map((visit) => (
-                      <PastVisitReviewCard
-                        key={visit.visitId}
-                        visit={visit}
-                        defaultOpen={false}
-                        controlCards={controlCards}
-                        isOverdueVisit={isOverdueVisit}
-                        onRateNow={(v) => {
-                          setVisitSectionTab('calendar');
-                          setRatingVisit(v);
-                          setRatingValue(0);
-                          setRatingHover(0);
-                          setRatingComment('');
-                        }}
-                      />
-                    ))}
+                  <CardContent>
+                    <PreviousVisitsTable
+                      visits={otherPastVisits}
+                      controlCards={controlCards}
+                      isOverdueVisit={isOverdueVisit}
+                      onRateNow={(v) => {
+                        setRatingVisit(v);
+                        setRatingValue(0);
+                        setRatingHover(0);
+                        setRatingComment('');
+                      }}
+                      onViewReport={setReportVisit}
+                      onViewFeedback={setFeedbackVisit}
+                    />
                   </CardContent>
                 </Card>
               )}
@@ -1490,6 +1540,115 @@ export function VisitCalendar() {
           )}
         </TabsContent>
       </Tabs>
+
+      {feedbackVisit && (
+        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in">
+          <Card className="w-full max-w-lg max-h-[92vh] flex flex-col shadow-xl border-slate-200/80 overflow-hidden">
+            <CardHeader className="pb-3 border-b border-slate-200 shrink-0 bg-white">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <CardTitle className="text-lg sm:text-xl">Your feedback</CardTitle>
+                  <p className="text-sm text-slate-500 mt-1">
+                    {feedbackVisit.purpose} · {format(new Date(feedbackVisit.visitDate), 'MMM d, yyyy')} · {feedbackVisit.executiveName}
+                  </p>
+                </div>
+                <Button variant="ghost" size="sm" className="shrink-0" onClick={() => setFeedbackVisit(null)} aria-label="Close">
+                  ✕
+                </Button>
+              </div>
+            </CardHeader>
+            <div className="flex-1 min-h-0 overflow-y-auto">
+              <CardContent className="pt-5 pb-6 px-4 sm:px-6 space-y-4">
+                <div className="flex items-center gap-2">
+                  <span className="inline-flex items-center gap-1 text-sm font-medium text-slate-800">
+                    <Star className="h-4 w-4 fill-amber-400 text-amber-500" aria-hidden />
+                    {visitNumericRating(feedbackVisit)}/5
+                  </span>
+                  {(() => {
+                    const raw = feedbackVisit.customerRatedAt;
+                    if (!raw) return null;
+                    const ratedOn = new Date(raw);
+                    if (Number.isNaN(ratedOn.getTime())) return null;
+                    return <span className="text-xs text-slate-500">{format(ratedOn, 'MMM d, yyyy')}</span>;
+                  })()}
+                </div>
+                <p className="text-sm leading-relaxed text-slate-800 whitespace-pre-wrap break-words rounded-xl border border-slate-200 bg-slate-50 px-4 py-3">
+                  {visitRatingComment(feedbackVisit)}
+                </p>
+              </CardContent>
+            </div>
+            <div className="border-t border-slate-200 bg-slate-50/80 p-4 shrink-0">
+              <Button variant="outline" className="w-full bg-white" onClick={() => setFeedbackVisit(null)}>
+                Close
+              </Button>
+            </div>
+          </Card>
+        </div>
+      )}
+
+      {reportVisit && (
+        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in">
+          <Card className="w-full max-w-2xl max-h-[92vh] flex flex-col shadow-xl border-slate-200/80 overflow-hidden">
+            <CardHeader className="pb-3 border-b border-slate-200 shrink-0 bg-white">
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <CardTitle className="text-lg sm:text-xl">Meeting report</CardTitle>
+                  <p className="text-sm text-slate-500 mt-1">
+                    {reportVisit.purpose} · {format(new Date(reportVisit.visitDate), 'MMM d, yyyy')} · {reportVisit.executiveName}
+                  </p>
+                </div>
+                <Button variant="ghost" size="sm" className="shrink-0" onClick={() => setReportVisit(null)} aria-label="Close">
+                  ✕
+                </Button>
+              </div>
+            </CardHeader>
+            <div className="flex-1 min-h-0 overflow-y-auto">
+              <CardContent className="pt-5 pb-6 px-4 sm:px-6">
+                {controlCards[reportVisit.visitId] ? (
+                  meetingReportHasCustomerVisibleContent(controlCards[reportVisit.visitId]) ? (
+                    <CustomerMeetingReportDetails cc={controlCards[reportVisit.visitId]} visit={reportVisit} variant="embedded" />
+                  ) : (
+                    <p className="text-sm text-slate-600 rounded-xl border border-dashed border-slate-200 bg-slate-50/50 px-4 py-3">
+                      Your executive filed the meeting report, but no fields were filled in for your review yet. You can still rate the visit.
+                    </p>
+                  )
+                ) : (
+                  <p className="text-sm text-slate-600 rounded-xl border border-dashed border-slate-200 bg-slate-50/50 px-4 py-3">
+                    Loading meeting report… If this persists, refresh the page.
+                  </p>
+                )}
+              </CardContent>
+            </div>
+            <div className="border-t border-slate-200 bg-slate-50/80 p-4 shrink-0 flex flex-col sm:flex-row gap-2">
+              {visitNumericRating(reportVisit) > 0 ? (
+                <Button variant="outline" className="flex-1 bg-white" onClick={() => setReportVisit(null)}>
+                  Close
+                </Button>
+              ) : (
+                <>
+                  <Button
+                    className="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white"
+                    onClick={() => {
+                      const visit = reportVisit;
+                      setReportVisit(null);
+                      setRatingVisit(visit);
+                      setRatingValue(0);
+                      setRatingHover(0);
+                      setRatingComment('');
+                    }}
+                  >
+                    <Star className="h-4 w-4 mr-2" />
+                    Rate this visit
+                  </Button>
+                  <Button variant="outline" className="flex-1 bg-white" onClick={() => setReportVisit(null)}>
+                    Close
+                  </Button>
+                </>
+              )}
+            </div>
+          </Card>
+        </div>
+      )}
 
       {/* Rating Modal */}
       {ratingVisit && (

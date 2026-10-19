@@ -8,7 +8,11 @@ const ControlCard = require("../models/ControlCard");
 const Corporate = require("../models/Corporate");
 const User = require("../models/User");
 const Notification = require("../models/Notification");
-const { createForUserIds, resolveManagerTeamNotificationUserIds } = require("../services/notificationService");
+const {
+  createForUserIds,
+  resolveExecutivePortalUserId,
+  resolveManagerTeamNotificationUserIds,
+} = require("../services/notificationService");
 const realtime = require("../services/realtimeService");
 const emailService = require("../services/emailService");
 const {
@@ -225,12 +229,19 @@ exports.createVisit = async (req, res) => {
 
     const { accountId, corporateId, meetingType, purpose, agenda, visitDate, startTime, endTime, location, onlineLink, attendees } = req.body;
 
-    if ((!corporateId && !accountId) || !meetingType || !purpose || !visitDate || !startTime || !endTime) {
-      return res.status(400).json({ status: "Failed", message: "corporateId (or accountId), meetingType, purpose, visitDate, startTime and endTime are required" });
+    const agendaText = typeof agenda === "string" ? agenda.trim() : "";
+    const locationText = typeof location === "string" ? location.trim() : "";
+
+    if ((!corporateId && !accountId) || !meetingType || !purpose || !visitDate || !startTime || !endTime || !agendaText) {
+      return res.status(400).json({ status: "Failed", message: "corporateId (or accountId), meetingType, purpose, agenda, visitDate, startTime and endTime are required" });
     }
 
     if (!["online", "in_person"].includes(meetingType)) {
       return res.status(400).json({ status: "Failed", message: "meetingType must be 'online' or 'in_person'" });
+    }
+
+    if (meetingType === "in_person" && !locationText) {
+      return res.status(400).json({ status: "Failed", message: "Location is required for an in-person meeting" });
     }
 
     // Corporate-first scheduling:
@@ -275,11 +286,11 @@ exports.createVisit = async (req, res) => {
       accountName: selectedCorporate?.corporateName || account.accountName,
       meetingType,
       purpose,
-      agenda: agenda || null,
+      agenda: agendaText,
       visitDate,
       startTime,
       endTime,
-      location: location || null,
+      location: meetingType === "in_person" ? locationText : (locationText || null),
       onlineLink: onlineLink || null,
       attendees: attendees || [],
       status: "pending",
@@ -900,9 +911,35 @@ exports.submitControlCard = async (req, res) => {
       await sendTicketCreationNotifications(tkt, user, false);
     }
 
+    try {
+      const customerUserIds = await resolveCustomerUserIdsByCorporateId(accountRow.corporateId);
+      if (customerUserIds.length) {
+        const objective = String(controlCardData.visitObjective || "").trim();
+        const summary = objective
+          ? ` Meeting summary: ${objective.length > 280 ? `${objective.slice(0, 277)}…` : objective}`
+          : "";
+        const visitDateLabel = visit.visitDate || "the scheduled date";
+        await createForUserIds(customerUserIds, {
+          type: "visit",
+          title: `Meeting report ready — ${visit.accountName}`,
+          message: `${visit.executiveName} submitted the meeting report for ${visit.purpose} on ${visitDateLabel}. Please review the report and rate how the meeting went.${summary}`,
+          priority: "normal",
+          metadata: {
+            visitId: visit.visitId,
+            visitNumber: visit.visitNumber,
+            kind: "avr_submitted",
+            accountId: visit.accountId,
+            corporateId: accountRow.corporateId || null,
+          },
+        });
+      }
+    } catch (notifyErr) {
+      console.error("Failed to notify customer of meeting report:", notifyErr);
+    }
+
     const controlCard = await ControlCard.findOne({ where: { visitId } });
 
-    realtime.broadcastResources(["visits", "tickets", "dashboard"]);
+    realtime.broadcastResources(["visits", "tickets", "dashboard", "notifications"]);
     return res.status(201).json({
       status: "Success",
       controlCard,
@@ -1152,21 +1189,35 @@ exports.submitRating = async (req, res) => {
     });
     await visit.reload();
 
-    const execRow = await ExecutiveStaff.findByPk(visit.executiveId, { attributes: ["userId"] });
-    const managerTeamIds = await resolveManagerTeamNotificationUserIds(visit.executiveId);
-    await createForUserIds(
-      [...(execRow?.userId ? [execRow.userId] : []), ...managerTeamIds],
-      {
-        type: "rating",
-        title: `Visit Rated - ${visit.visitNumber}`,
-        message: `${visit.accountName} rated the visit ${rating}/5${comment ? `: ${String(comment).slice(0, 180)}` : "."}`,
-        priority: "normal",
-        metadata: { visitId: visit.visitId, visitNumber: visit.visitNumber, rating, kind: "customer_rating" },
-      },
-      { excludeUserIds: [user.id] }
-    );
+    try {
+      const executiveUserId = await resolveExecutivePortalUserId(visit.executiveId);
+      const managerTeamIds = await resolveManagerTeamNotificationUserIds(visit.executiveId);
+      const recipientIds = [...new Set([executiveUserId, ...managerTeamIds].filter(Boolean))];
+      if (recipientIds.length) {
+        const customerName = `${user.firstName || ""} ${user.lastName || ""}`.trim() || "The customer";
+        const commentText = String(comment || "").trim();
+        const commentBit = commentText
+          ? ` Comment: ${commentText.length > 180 ? `${commentText.slice(0, 177)}…` : commentText}`
+          : "";
+        await createForUserIds(recipientIds, {
+          type: "rating",
+          title: `Customer rated the meeting — ${visit.accountName}`,
+          message: `${customerName} rated ${visit.purpose || "the meeting"} (${visit.visitNumber}) ${rating}/5.${commentBit}`,
+          priority: Number(rating) <= 2 ? "high" : "normal",
+          metadata: {
+            visitId: visit.visitId,
+            visitNumber: visit.visitNumber,
+            rating,
+            kind: "customer_rating",
+            accountId: visit.accountId,
+          },
+        });
+      }
+    } catch (notifyErr) {
+      console.error("Failed to notify staff of customer rating:", notifyErr);
+    }
 
-    realtime.broadcastResources(["visits", "dashboard"]);
+    realtime.broadcastResources(["visits", "dashboard", "notifications"]);
     return res.status(200).json({ status: "Success", visit });
   } catch (error) {
     console.error("Submit rating error:", error);

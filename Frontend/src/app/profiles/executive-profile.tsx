@@ -113,6 +113,23 @@ export default function ExecutiveProfile() {
                 <div className="flex items-center gap-2 text-slate-600"><Mail className="h-4 w-4 text-mtc-blue" /> {profile?.email || "—"}</div>
                 <div className="flex items-center gap-2 text-slate-600"><Phone className="h-4 w-4 text-mtc-blue" /> {profile?.phone || "—"}</div>
                 <div className="flex items-center gap-2 text-slate-600"><MapPin className="h-4 w-4 text-mtc-blue" /> {profile?.region || "Windhoek Region"}</div>
+                <div className="flex items-start gap-2 text-slate-600">
+                  <Building2 className="h-4 w-4 text-mtc-blue mt-0.5 shrink-0" />
+                  <span>
+                    <span className="block text-xs text-slate-400">Reports to</span>
+                    <span className="font-medium text-slate-900">
+                      {profile?.manager
+                        ? `${profile.manager.firstName} ${profile.manager.lastName}`.trim()
+                        : "No manager assigned"}
+                    </span>
+                    {profile?.manager?.email ? (
+                      <span className="block text-xs text-slate-500">{profile.manager.email}</span>
+                    ) : null}
+                    {profile?.manager?.department ? (
+                      <span className="block text-xs text-slate-500">{profile.manager.department}</span>
+                    ) : null}
+                  </span>
+                </div>
               </div>
             </CardContent>
           </Card>

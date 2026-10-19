@@ -178,11 +178,11 @@ export default function Dashboard() {
           <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900">Overview</h2>
           <p className="text-sm text-slate-500">Live platform metrics from the database</p>
         </div>
-        {health?.database && (
+        {/* {health?.database && (
           <Badge variant={health.database.status === "ok" ? "success" : "danger"}>
             Database {health.database.status === "ok" ? "connected" : "unreachable"}
           </Badge>
-        )}
+        )} */}
       </div>
 
       {loadError && (

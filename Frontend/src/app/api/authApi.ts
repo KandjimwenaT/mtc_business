@@ -411,6 +411,7 @@ export interface ExecutiveAccountRecord {
   corporateMonthlySpending?: string;
   services: CustomerService[];
   contracts: CustomerContract[];
+  portfolioOnly?: boolean;
 }
 
 export interface SpendingSummaryRecord {

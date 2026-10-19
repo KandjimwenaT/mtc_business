@@ -251,7 +251,7 @@ export default function Layout() {
               </div>
               <div className="hidden flex-col md:flex">
                 <span className="text-sm font-medium text-slate-700">{currentUser?.firstName ?? "User"}</span>
-                <span className="text-xs text-slate-500">{currentUser?.role ?? "—"}</span>
+                <span className="text-xs text-slate-500 capitalize">{currentUser?.role?.replace(/_/g, " ") ?? "—"}</span>
               </div>
             </div>
           </div>

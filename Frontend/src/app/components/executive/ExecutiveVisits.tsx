@@ -18,7 +18,7 @@ import {
   Badge
 } from "../ui-components";
 import { Plus, Calendar, MapPin, CheckCircle, Search, Star, MessageSquare, X, Video, Building2, ChevronLeft, ChevronRight, ChevronDown, Clock, User, Send, AlertTriangle, FileText, Trash2, Navigation, Check } from "lucide-react";
-import { getCurrentUser } from "../../api/authApi";
+import { getMyCorporateContactPersons, type ExecutiveAccountRecord } from "../../api/authApi";
 import { createVisit, updateVisit, requestReschedule, submitControlCard, getControlCard, updateControlCard, getDepartmentTeam, recordVisitMeetingStart, openStreetMapMeetingStartLink, type VisitRecord, type VisitPayload, type ControlCardRecord, type DepartmentTeamMember } from "../../api/visitApi";
 import { useExecutiveData } from "../../hooks/useExecutiveData";
 import { format, addDays, startOfWeek, endOfWeek, eachDayOfInterval, isSameDay, addMonths, startOfMonth, endOfMonth } from "date-fns";
@@ -334,6 +334,7 @@ export default function ExecutiveVisits() {
   /** Latest AVR for flush handlers (tab close / visibility) without stale closures */
   const avrDataRef = useRef(avrData);
   avrDataRef.current = avrData;
+  const openAvrVisitIdRef = useRef<number | null>(null);
 
   // Real data — backed by ExecutiveDataProvider so navigating away and back
   // does not refetch.
@@ -442,7 +443,18 @@ export default function ExecutiveVisits() {
   const [rescheduleNewTime, setRescheduleNewTime] = useState("");
   const [rescheduleSubmitting, setRescheduleSubmitting] = useState(false);
 
-  const currentUser = getCurrentUser();
+  const accountManagerName = (account: ExecutiveAccountRecord | undefined): string => {
+    if (!account) return "";
+    const first = (account.contactFirstName || "").trim();
+    const last = (account.contactLastName || "").trim();
+    const email = (account.contactEmail || "").trim().toLowerCase();
+    const placeholder =
+      (first === "Imported" && last === "Contact") ||
+      email.endsWith("@placeholder.local") ||
+      email.endsWith(".contact@placeholder.local");
+    if (placeholder) return "";
+    return `${first} ${last}`.trim();
+  };
 
   // Calendar helpers
   const weekStart = startOfWeek(calendarDate, { weekStartsOn: 1 });
@@ -708,18 +720,43 @@ export default function ExecutiveVisits() {
   };
 
   const openControlCard = (visit: VisitRecord) => {
+    openAvrVisitIdRef.current = visit.visitId;
     setControlCardVisit(visit.accountName);
     setControlCardVisitId(visit.visitId);
     resetControlCard();
     const resumed = loadDraft(visit.visitId);
+    const linkedAccount = accounts.find((account) => account.accountId === visit.accountId)
+      ?? (visit.corporateId != null
+        ? accounts.find((account) => account.corporateId === visit.corporateId && !account.portfolioOnly)
+        : undefined);
+    const managerName = accountManagerName(linkedAccount);
     // Always override header fields from the visit schedule data
     setAvrData(prev => ({
       ...prev,
       accountName: visit.accountName,
       visitDate: visit.visitDate,
-      csrManager: currentUser?.firstName || "",
+      csrManager: managerName,
       customerParticipants: resumed ? prev.customerParticipants : (visit.attendees?.join(", ") || ""),
     }));
+    const corporateId = linkedAccount?.corporateId ?? visit.corporateId ?? null;
+    if (!managerName && corporateId) {
+      const visitId = visit.visitId;
+      void getMyCorporateContactPersons(corporateId)
+        .then((persons) => {
+          if (openAvrVisitIdRef.current !== visitId) return;
+          const person = persons.find((entry) =>
+            `${entry.firstName || ""} ${entry.lastName || ""}`.trim()
+          );
+          const name = person
+            ? `${person.firstName || ""} ${person.lastName || ""}`.trim()
+            : "";
+          if (!name) return;
+          setAvrData((prev) => (
+            prev.csrManager ? prev : { ...prev, csrManager: name }
+          ));
+        })
+        .catch(() => {});
+    }
     setShowControlCard(true);
     if (resumed) {
       toast.info("Draft restored", { description: "Your previously saved draft has been loaded." });
@@ -743,8 +780,12 @@ export default function ExecutiveVisits() {
   };
 
   const handleScheduleVisit = async () => {
-    if (!formCorporateId || !formPurpose || !formDate || !formStartTime || !formEndTime) {
+    if (!formCorporateId || !formPurpose || !formDate || !formStartTime || !formEndTime || !formAgenda.trim()) {
       toast.error("Please fill in all required fields");
+      return;
+    }
+    if (formMeetingType === "in_person" && !formLocation.trim()) {
+      toast.error("Location is required for an in-person meeting");
       return;
     }
     const visitDates =
@@ -759,10 +800,10 @@ export default function ExecutiveVisits() {
         corporateId: Number(formCorporateId),
         meetingType: formMeetingType,
         purpose: formPurpose,
-        agenda: formAgenda || undefined,
+        agenda: formAgenda.trim(),
         startTime: formStartTime,
         endTime: formEndTime,
-        location: formMeetingType === "in_person" ? formLocation || undefined : undefined,
+        location: formMeetingType === "in_person" ? formLocation.trim() : undefined,
         onlineLink: formMeetingType === "online" ? formOnlineLink || undefined : undefined,
         attendees: formAttendees,
       };
@@ -1108,7 +1149,7 @@ export default function ExecutiveVisits() {
               </div>
               {formMeetingType === "in_person" ? (
                 <div className="space-y-2">
-                  <Label>Location</Label>
+                  <Label>Location <span className="text-red-500">*</span></Label>
                   <Input placeholder="e.g. Head Office, Windhoek" value={formLocation} onChange={(e) => setFormLocation(e.target.value)} />
                 </div>
               ) : (
@@ -1200,7 +1241,7 @@ export default function ExecutiveVisits() {
                 )}
               </div>
               <div className="space-y-2 lg:col-span-1">
-                <Label>Agenda</Label>
+                <Label>Agenda <span className="text-red-500">*</span></Label>
                 <textarea
                   className="flex min-h-[60px] w-full rounded-md border border-slate-300 bg-transparent px-3 py-2 text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-mtc-blue"
                   placeholder="Brief agenda for the meeting..."

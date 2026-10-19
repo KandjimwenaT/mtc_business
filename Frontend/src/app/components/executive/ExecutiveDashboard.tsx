@@ -105,7 +105,7 @@ export default function ExecutiveDashboard() {
 
   const monthlySpendingTotal = spendingSummary?.total || "0.00";
   const managerName = profile?.manager
-    ? `${profile.manager.firstName} ${profile.manager.lastName}`
+    ? `${profile.manager.firstName || ""} ${profile.manager.lastName || ""}`.trim() || "N/A"
     : "N/A";
   const managerDepartment = profile?.manager
     ? profile.manager.department || profile.department || "N/A"

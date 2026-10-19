@@ -1434,7 +1434,9 @@ export default function Corporates() {
                       </Badge>
                     </div>
                     <div className="text-xs text-slate-500 font-mono mb-1">{acc.accountNumber}</div>
-                    <div className="text-sm text-slate-500 mb-3">{acc.industry || acc.accountType}</div>
+                    <div className="text-sm text-slate-500 mb-3">
+                      {acc.portfolioOnly ? "Assigned corporate" : (acc.industry || acc.accountType)}
+                    </div>
                     <div className="flex items-center justify-between text-xs text-slate-600 border-t border-slate-100 pt-3">
                       <span className="flex items-center gap-1"><Building2 className="h-3 w-3" /> {acc.services.length} Services</span>
                       <Badge variant={acc.isActive ? "success" : "danger"} className="text-[10px]">{acc.isActive ? "Active" : "Inactive"}</Badge>
@@ -1907,7 +1909,7 @@ export default function Corporates() {
                       {isManager && selectedCorporate?.approvalStatus === "waiting_approval" && (
                         <div className="p-4 border-b border-slate-200 bg-slate-50/60">
                           <p className="text-sm text-slate-600 mb-3">
-                            This corporate is waiting for your approval. Assign an executive, then approve.
+                            This corporate is waiting for your approval. Assign an executive, then approve. They will see it in their portfolio and receive a notification and email.
                           </p>
                           <div className="grid gap-3 md:grid-cols-[1fr_auto_auto] md:items-end">
                             <div className="space-y-1.5">

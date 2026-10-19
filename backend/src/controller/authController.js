@@ -224,13 +224,13 @@ exports.userLogin = async (req, res) => {
       "1h",
     );
 
-    // Generate refresh token (long-lived) — requires a dedicated secret
+    // Generate refresh token (long-lived). Falls back to JWT_SECRET outside production.
     const refreshSecret = process.env.REFRESH_TOKEN_SECRET;
     if (!refreshSecret) {
-      if (process.env.NODE_ENV === 'production') {
-        throw new Error('REFRESH_TOKEN_SECRET must be set in production');
+      if (process.env.NODE_ENV === "production") {
+        throw new Error("REFRESH_TOKEN_SECRET must be set in production");
       }
-      console.warn('[auth] REFRESH_TOKEN_SECRET not set, falling back to JWT_SECRET');
+      console.warn("[auth] REFRESH_TOKEN_SECRET not set, falling back to JWT_SECRET");
     }
     const refreshToken = securityService.generateJWT(
       { userId: user.id },
@@ -769,35 +769,16 @@ exports.getProfile = async (req, res) => {
         profile.department = manager.department || profile.department;
       }
     } else if (hasExecutiveScope(user.role)) {
-      const exec = await ExecutiveStaff.findOne({ where: { userId: user.id } });
+      const exec = await resolveExecutiveStaffForUser(user);
       if (exec) {
         profile.roleProfileId = exec.executiveId;
         profile.region = exec.region || profile.region;
+      }
 
-        // Resolve manager details for executive dashboard/reporting line.
-        let manager = null;
-        if (exec.managerId) {
-          manager = await Manager.findOne({ where: { managerId: exec.managerId } });
-
-          // Compatibility fallback: executive.managerId may reference persons.id.
-          if (!manager) {
-            const managerPerson = await Person.findByPk(exec.managerId);
-            if (managerPerson) {
-              manager = await Manager.findOne({ where: { email: managerPerson.email } });
-            }
-          }
-        }
-
-        if (manager) {
-          profile.manager = {
-            managerId: manager.managerId,
-            firstName: manager.firstName,
-            lastName: manager.lastName,
-            email: manager.email,
-            department: manager.department || null,
-          };
-          profile.department = manager.department || profile.department;
-        }
+      const reportingManager = await resolveReportingManager(user, exec);
+      if (reportingManager) {
+        profile.manager = reportingManager;
+        profile.department = reportingManager.department || profile.department;
       }
     }
 
@@ -998,15 +979,12 @@ exports.getMyAccounts = async (req, res) => {
       return res.status(403).json({ status: "Failed", message: "This endpoint is for executive and supervisor users" });
     }
 
-    const exec = await ExecutiveStaff.findOne({ where: { userId: user.id } });
+    const exec = await resolveExecutiveStaffForUser(user);
     if (!exec) {
       return res.status(404).json({ status: "Failed", message: "Executive profile not found" });
     }
 
-    const accounts = await Account.findAll({
-      where: { executiveId: exec.executiveId },
-      order: [["created_at", "DESC"]],
-    });
+    const { accounts, placeholderCorporates } = await loadExecutivePortfolioAccounts(exec);
     const corporateIds = [...new Set(accounts.map((acc) => acc.corporateId).filter((id) => Number.isInteger(id)))];
     const corporates = corporateIds.length
       ? await Corporate.findAll({ where: { corporateId: corporateIds } })
@@ -1100,6 +1078,30 @@ exports.getMyAccounts = async (req, res) => {
     // from the corporate's contact person (legacy or junction-linked).
     await enrichAccountsWithCorporateContact(result);
 
+    for (const corp of placeholderCorporates) {
+      result.push({
+        accountId: -corp.corporateId,
+        corporateId: corp.corporateId,
+        corporateName: corp.corporateName,
+        accountNumber: corp.corporateNumber,
+        accountName: corp.corporateName,
+        accountType: corp.corporateType,
+        industry: corp.industry,
+        contactFirstName: "",
+        contactLastName: "",
+        contactEmail: corp.businessEmail || "",
+        contactPhone: null,
+        isActive: corp.isActive,
+        approvalStatus: corp.approvalStatus,
+        createdAt: corp.createdAt,
+        monthlySpending: toMoney(0),
+        corporateMonthlySpending: toMoney(monthlyByCorporate[corp.corporateId] || 0),
+        services: [],
+        contracts: [],
+        portfolioOnly: true,
+      });
+    }
+
     return res.status(200).json({ status: "Success", accounts: result });
   } catch (error) {
     console.error("Get my accounts error:", error);
@@ -1120,15 +1122,12 @@ exports.getMyExpiringContracts = async (req, res) => {
       ? Math.min(Math.max(Math.trunc(requestedMonths), 1), 24)
       : 6;
 
-    const exec = await ExecutiveStaff.findOne({ where: { userId: user.id } });
+    const exec = await resolveExecutiveStaffForUser(user);
     if (!exec) {
       return res.status(404).json({ status: "Failed", message: "Executive profile not found" });
     }
 
-    const accounts = await Account.findAll({
-      where: { executiveId: exec.executiveId },
-      attributes: ["accountId", "accountName", "corporateId"],
-    });
+    const { accounts } = await loadExecutivePortfolioAccounts(exec);
     if (!accounts.length) {
       return res.status(200).json({ status: "Success", contracts: [] });
     }
@@ -1274,15 +1273,12 @@ exports.getMyMonthlySpendingSummary = async (req, res) => {
       return res.status(403).json({ status: "Failed", message: "This endpoint is for executive and supervisor users" });
     }
 
-    const exec = await ExecutiveStaff.findOne({ where: { userId: user.id } });
+    const exec = await resolveExecutiveStaffForUser(user);
     if (!exec) {
       return res.status(404).json({ status: "Failed", message: "Executive profile not found" });
     }
 
-    const accounts = await Account.findAll({
-      where: { executiveId: exec.executiveId },
-      attributes: ["accountId", "corporateId"],
-    });
+    const { accounts } = await loadExecutivePortfolioAccounts(exec);
     const accountIds = accounts.map((a) => a.accountId);
     if (!accountIds.length) {
       return res.status(200).json({ status: "Success", summary: { total: "0.00", currency: "NAD", byCorporate: {}, byAccount: {} } });
@@ -1328,12 +1324,12 @@ exports.getMyMonthlySpendingTrend = async (req, res) => {
     const requestedMonths = Number(req.query.months || 6);
     const months = Number.isFinite(requestedMonths) ? Math.min(Math.max(Math.trunc(requestedMonths), 3), 24) : 6;
 
-    const exec = await ExecutiveStaff.findOne({ where: { userId: user.id } });
+    const exec = await resolveExecutiveStaffForUser(user);
     if (!exec) {
       return res.status(404).json({ status: "Failed", message: "Executive profile not found" });
     }
 
-    const accounts = await Account.findAll({ where: { executiveId: exec.executiveId }, attributes: ["accountId"] });
+    const { accounts } = await loadExecutivePortfolioAccounts(exec);
     const accountIds = accounts.map((a) => a.accountId);
     if (!accountIds.length) return res.status(200).json({ status: "Success", trend: [] });
 
@@ -1592,9 +1588,119 @@ const serializeAccountManagerAsContactPerson = (am, corporateName = null) => ({
   created_at: am.createdAt,
 });
 
+async function reportingManagerFromStoredId(storedId) {
+  const id = Number(storedId);
+  if (!Number.isInteger(id) || id <= 0) return null;
+
+  let managerProfile = await Manager.findOne({ where: { managerId: id } });
+  let managerPerson = null;
+
+  if (managerProfile?.email) {
+    managerPerson = await Person.findOne({
+      where: {
+        email: managerProfile.email,
+        type: { [Op.in]: ["manager", "supervisor"] },
+      },
+    });
+  } else {
+    const person = await Person.findByPk(id);
+    if (person && ["manager", "supervisor"].includes(person.type)) {
+      managerPerson = person;
+      managerProfile = await Manager.findOne({ where: { email: person.email } });
+    }
+  }
+
+  if (!managerProfile && !managerPerson) return null;
+
+  const firstName = `${managerProfile?.firstName || managerPerson?.firstName || ""}`.trim();
+  const lastName = `${managerProfile?.lastName || managerPerson?.lastName || ""}`.trim();
+  if (!firstName && !lastName && !(managerProfile?.email || managerPerson?.email)) return null;
+
+  return {
+    managerId: managerProfile?.managerId || null,
+    personId: managerPerson?.id || null,
+    firstName,
+    lastName,
+    email: managerProfile?.email || managerPerson?.email || null,
+    department: managerProfile?.department || managerPerson?.department || null,
+  };
+}
+
+async function resolveReportingManager(user, exec) {
+  const person = user?.email
+    ? await Person.findOne({ where: { email: user.email } })
+    : null;
+  const candidateIds = [...new Set([exec?.managerId, person?.managerId].filter((id) => id != null))];
+  for (const candidateId of candidateIds) {
+    const manager = await reportingManagerFromStoredId(candidateId);
+    if (manager) return manager;
+  }
+  return null;
+}
+
 const resolveExecutiveStaffForUser = async (user) => {
   if (!user || !hasExecutiveScope(user.role)) return null;
-  return ExecutiveStaff.findOne({ where: { userId: user.id } });
+
+  let exec = await ExecutiveStaff.findOne({ where: { userId: user.id } });
+  if (exec) return exec;
+
+  const email = String(user.email || "").trim();
+  if (!email) return null;
+
+  exec = await ExecutiveStaff.findOne({
+    where: {
+      [Op.or]: [{ email }, { email: email.toLowerCase() }],
+    },
+  });
+  if (exec && !exec.userId) {
+    await exec.update({ userId: user.id });
+  }
+  return exec;
+};
+
+// Corporate.executiveId is the source of truth. Child accounts sometimes lag
+// behind (or the corporate has no accounts yet), which used to hide a new
+// assignment from the executive's portfolio.
+const loadExecutivePortfolioAccounts = async (exec) => {
+  if (!exec) return { accounts: [], placeholderCorporates: [] };
+
+  const ownedCorporates = await Corporate.findAll({
+    where: { executiveId: exec.executiveId },
+  });
+  const ownedCorporateIds = ownedCorporates
+    .map((corp) => corp.corporateId)
+    .filter((id) => Number.isInteger(id));
+
+  const accountWhere = ownedCorporateIds.length
+    ? {
+        [Op.or]: [
+          { executiveId: exec.executiveId },
+          { corporateId: { [Op.in]: ownedCorporateIds } },
+        ],
+      }
+    : { executiveId: exec.executiveId };
+
+  const accounts = await Account.findAll({
+    where: accountWhere,
+    order: [["created_at", "DESC"]],
+  });
+
+  const ownedSet = new Set(ownedCorporateIds);
+  const stale = accounts.filter(
+    (account) => ownedSet.has(account.corporateId) && account.executiveId !== exec.executiveId
+  );
+  if (stale.length) {
+    await Promise.all(stale.map((account) => account.update({ executiveId: exec.executiveId })));
+  }
+
+  const coveredCorporateIds = new Set(
+    accounts.map((account) => account.corporateId).filter((id) => Number.isInteger(id))
+  );
+  const placeholderCorporates = ownedCorporates.filter(
+    (corp) => !coveredCorporateIds.has(corp.corporateId)
+  );
+
+  return { accounts, placeholderCorporates };
 };
 
 const getOwnedCorporateIdsForExecutive = async (exec) => {
