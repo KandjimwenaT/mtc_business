@@ -835,7 +835,7 @@ export function VisitCalendar() {
     <div className="space-y-6 animate-in fade-in duration-500 slide-in-from-bottom-4">
       {/* Header */}
       <div>
-        <h1 className="text-2xl font-bold tracking-tight text-slate-900">Visit Calendar</h1>
+        <h1 className="text-3xl font-normal text-slate-800">Visit Calendar</h1>
         <p className="text-sm text-slate-500">View and approve visit requests from your account executive.</p>
       </div>
 

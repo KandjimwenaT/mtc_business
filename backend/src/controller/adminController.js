@@ -20,13 +20,16 @@ const { reassignOpenTicketsForCorporate } = require("../services/ticketExecutive
 const Service = require("../models/Service");
 const Invoice = require("../models/Invoice");
 const Notification = require("../models/Notification");
+const Lead = require("../models/Lead");
+const OTP = require("../models/otpModel");
 const AuditLog = require("../models/AuditLog");
-const { createForUserIds } = require("../services/notificationService");
+const { createForUserIds, resolveOversightExecutiveIds } = require("../services/notificationService");
 const realtime = require("../services/realtimeService");
 const {
   propagateContactPersonToCorporateAccounts,
   enrichAccountsWithCorporateContact,
   getContactPersonsForCorporate,
+  ensureDefaultAccountForCorporate,
 } = require("../services/contactPersonService");
 const { Op } = require("sequelize");
 const { sequelize } = require("../config/database");
@@ -267,6 +270,34 @@ function isManagerOrSupervisorRole(role) {
   return role === "manager" || role === "supervisor";
 }
 
+function isSuperAdminRole(role) {
+  return role === "super_admin";
+}
+
+const MANAGER_PORTAL_TYPES = new Set(["executive_staff", "supervisor", "customer", "admin"]);
+const SUPERVISOR_PORTAL_TYPES = new Set(["executive_staff", "supervisor", "customer", "admin"]);
+const SUPER_ADMIN_PORTAL_TYPES = new Set(["gm", "manager", "admin"]);
+
+async function assertCorporateInManagerScope(managerCtx, corporateId) {
+  const corporate = corporateId ? await Corporate.findByPk(corporateId) : null;
+  if (!corporate) {
+    const error = new Error("Selected corporate is invalid");
+    error.statusCode = 400;
+    throw error;
+  }
+  const allowed = await managerHasCorporateScope(
+    corporate,
+    managerCtx.managerProfile,
+    managerCtx.managerPersonId
+  );
+  if (!allowed) {
+    const error = new Error("You can only create account managers for corporates in your department");
+    error.statusCode = 403;
+    throw error;
+  }
+  return corporate;
+}
+
 function isoMonth(dateValue) {
   if (!dateValue) return "";
   const d = new Date(dateValue);
@@ -283,22 +314,46 @@ exports.createPerson = async (req, res) => {
   let { firstName, lastName, email, phone, type, region, department, gmId, managerId, corporateId } = req.body;
 
   const allowedTypes = ["executive_staff", "supervisor", "manager", "gm", "admin", "customer"];
+  const requesterRole = req.user?.role;
+  let managerCtx = null;
 
-  if (isManagerOrSupervisorRole(req.user?.role)) {
-    if (type !== "executive_staff") {
+  if (requesterRole === "admin") {
+    return res.status(403).json({
+      status: "Failed",
+      message: "Admins cannot create users. Managers create portal users in their department.",
+    });
+  }
+
+  if (isManagerOrSupervisorRole(requesterRole)) {
+    const creatable = requesterRole === "manager" ? MANAGER_PORTAL_TYPES : SUPERVISOR_PORTAL_TYPES;
+    if (!creatable.has(type)) {
       return res.status(403).json({
         status: "Failed",
-        message: "Managers can only create Executive Staff members",
+        message: "Managers and supervisors can only create executives, supervisors, account managers, and admins in their department",
       });
     }
-    const managerCtx = await resolveRequesterManagerContext(req.user);
+    managerCtx = await resolveRequesterManagerContext(req.user);
     if (!managerCtx || managerCtx.managerPersonId === null) {
       return res.status(404).json({ status: "Failed", message: "Manager profile not found" });
     }
-    managerId = managerCtx.managerPersonId;
-    department = null;
-    gmId = null;
-    corporateId = null;
+    if (type === "executive_staff" || type === "supervisor" || type === "admin") {
+      managerId = managerCtx.managerPersonId;
+      department = null;
+      gmId = null;
+      corporateId = null;
+    } else {
+      gmId = null;
+      managerId = null;
+    }
+  } else if (isSuperAdminRole(requesterRole)) {
+    if (!SUPER_ADMIN_PORTAL_TYPES.has(type)) {
+      return res.status(403).json({
+        status: "Failed",
+        message: "Super admins can only create GMs, managers, and admins. Managers create portal users.",
+      });
+    }
+  } else {
+    return res.status(403).json({ status: "Failed", message: "You cannot create users" });
   }
 
   if (!firstName || !lastName || !email || !type) {
@@ -327,6 +382,9 @@ exports.createPerson = async (req, res) => {
   if (type === "executive_staff" && !managerId) {
     return res.status(400).json({ status: "Failed", message: "Manager is required when creating an Executive Staff member" });
   }
+  if (type === "supervisor" && !managerId) {
+    return res.status(400).json({ status: "Failed", message: "Manager is required when creating a Supervisor" });
+  }
   if (type === "admin" && !managerId) {
     return res.status(400).json({ status: "Failed", message: "Manager is required when creating an Admin" });
   }
@@ -347,12 +405,18 @@ exports.createPerson = async (req, res) => {
         .json({ status: "Failed", message: "A user/contact with this email already exists" });
     }
 
-    if (type === "admin" || type === "executive_staff") {
+    if (type === "admin" || type === "executive_staff" || type === "supervisor") {
       const manager = await Person.findByPk(managerId);
-      if (!manager || manager.type !== "manager") {
+      const managerTypeOk = type === "admin" && !managerCtx
+        ? manager?.type === "manager"
+        : manager && ["manager", "supervisor"].includes(manager.type);
+      if (!manager || !managerTypeOk) {
         return res.status(400).json({ status: "Failed", message: "Selected manager is invalid" });
       }
       resolvedDepartment = resolvedDepartment || manager.department || null;
+      if (!resolvedDepartment && managerCtx?.managerProfile) {
+        resolvedDepartment = await resolveManagerDepartment(managerCtx.managerProfile);
+      }
       if (!resolvedDepartment) {
         return res.status(400).json({ status: "Failed", message: "Selected manager has no department configured" });
       }
@@ -365,9 +429,22 @@ exports.createPerson = async (req, res) => {
     }
 
     if (type === "customer") {
-      const selectedCorporate = await Corporate.findByPk(corporateId);
-      if (!selectedCorporate) {
-        return res.status(400).json({ status: "Failed", message: "Selected corporate is invalid" });
+      let selectedCorporate;
+      try {
+        if (managerCtx) {
+          selectedCorporate = await assertCorporateInManagerScope(managerCtx, corporateId);
+        } else {
+          selectedCorporate = await Corporate.findByPk(corporateId);
+          if (!selectedCorporate) {
+            return res.status(400).json({ status: "Failed", message: "Selected corporate is invalid" });
+          }
+        }
+      } catch (error) {
+        const statusCode = error.statusCode || 500;
+        if (statusCode !== 500) {
+          return res.status(statusCode).json({ status: "Failed", message: error.message });
+        }
+        throw error;
       }
 
       // A corporate can have multiple contact persons. The new contact's primary
@@ -386,6 +463,7 @@ exports.createPerson = async (req, res) => {
       // an import placeholder, so executive/manager dashboards that read
       // per-account contact fields immediately reflect the new contact.
       try {
+        await ensureDefaultAccountForCorporate(selectedCorporate, accountManager);
         await propagateContactPersonToCorporateAccounts(
           selectedCorporate.corporateId,
           accountManager
@@ -394,10 +472,11 @@ exports.createPerson = async (req, res) => {
         console.error("Propagate contact to corporate accounts failed:", propagationError);
       }
 
+      const accountManagerJson = accountManager.toJSON();
       return res.status(201).json({
         status: "Success",
         message: "User created successfully",
-        person: accountManager,
+        person: { ...accountManagerJson, id: accountManager.accountManagerId },
       });
     }
 
@@ -410,7 +489,7 @@ exports.createPerson = async (req, res) => {
       region: type === "admin" ? null : (region || null),
       department: resolvedDepartment,
       gmId: type === "manager" ? (gmId || null) : null,
-      managerId: (type === "executive_staff" || type === "admin") ? (managerId || null) : null,
+      managerId: (type === "executive_staff" || type === "supervisor" || type === "admin") ? (managerId || null) : null,
     });
 
     return res.status(201).json({
@@ -642,29 +721,48 @@ exports.createPortalAccess = async (req, res) => {
       .json({ status: "Failed", message: "Person ID is required" });
   }
 
-  const requesterIsManagerOrSupervisor = isManagerOrSupervisorRole(req.user?.role);
+  const requesterRole = req.user?.role;
+  if (requesterRole === "admin") {
+    return res.status(403).json({
+      status: "Failed",
+      message: "Admins cannot grant portal access. Managers create portal users in their department.",
+    });
+  }
+
+  const requesterIsManagerOrSupervisor = isManagerOrSupervisorRole(requesterRole);
+  const requesterIsSuperAdmin = isSuperAdminRole(requesterRole);
+  if (!requesterIsManagerOrSupervisor && !requesterIsSuperAdmin) {
+    return res.status(403).json({ status: "Failed", message: "You cannot grant portal access" });
+  }
+
   let requesterManagerCtx = null;
   if (requesterIsManagerOrSupervisor) {
-    if (personType && personType !== "executive_staff") {
+    const grantable = requesterRole === "manager" ? MANAGER_PORTAL_TYPES : SUPERVISOR_PORTAL_TYPES;
+    if (personType && !grantable.has(personType)) {
       return res.status(403).json({
         status: "Failed",
-        message: "Managers can only grant portal access to Executive Staff members",
+        message: "Managers and supervisors can only grant portal access to executives, supervisors, account managers, and admins in their department",
       });
     }
     requesterManagerCtx = await resolveRequesterManagerContext(req.user);
     if (!requesterManagerCtx) {
       return res.status(404).json({ status: "Failed", message: "Manager profile not found" });
     }
+  } else if (personType && !SUPER_ADMIN_PORTAL_TYPES.has(personType)) {
+    return res.status(403).json({
+      status: "Failed",
+      message: "Super admins can only grant portal access to GMs, managers, and admins",
+    });
   }
 
   try {
     // Customer (Account Manager) records live in a separate table from Person.
     // Resolve explicitly when personType is provided to avoid ID collisions.
     if (personType === "customer") {
-      if (requesterIsManagerOrSupervisor) {
+      if (!requesterIsManagerOrSupervisor) {
         return res.status(403).json({
           status: "Failed",
-          message: "Managers can only grant portal access to Executive Staff members",
+          message: "Super admins can only grant portal access to GMs, managers, and admins",
         });
       }
       const accountManager = await AccountManager.findByPk(personId);
@@ -672,6 +770,16 @@ exports.createPortalAccess = async (req, res) => {
         return res
           .status(404)
           .json({ status: "Failed", message: "Person not found" });
+      }
+
+      try {
+        await assertCorporateInManagerScope(requesterManagerCtx, accountManager.corporateId);
+      } catch (error) {
+        const statusCode = error.statusCode || 500;
+        if (statusCode !== 500) {
+          return res.status(statusCode).json({ status: "Failed", message: error.message });
+        }
+        throw error;
       }
 
       const existingUser = await User.findOne({ where: { email: accountManager.email } });
@@ -737,11 +845,21 @@ exports.createPortalAccess = async (req, res) => {
           .json({ status: "Failed", message: "Person not found" });
       }
 
-      if (requesterIsManagerOrSupervisor) {
+      if (!requesterIsManagerOrSupervisor) {
         return res.status(403).json({
           status: "Failed",
-          message: "Managers can only grant portal access to Executive Staff members",
+          message: "Super admins can only grant portal access to GMs, managers, and admins",
         });
+      }
+
+      try {
+        await assertCorporateInManagerScope(requesterManagerCtx, accountManager.corporateId);
+      } catch (error) {
+        const statusCode = error.statusCode || 500;
+        if (statusCode !== 500) {
+          return res.status(statusCode).json({ status: "Failed", message: error.message });
+        }
+        throw error;
       }
 
       const existingUser = await User.findOne({ where: { email: accountManager.email } });
@@ -798,18 +916,26 @@ exports.createPortalAccess = async (req, res) => {
     }
 
     if (requesterIsManagerOrSupervisor) {
-      if (person.type !== "executive_staff") {
+      const grantableTypes = ["executive_staff", "supervisor", "admin"];
+      if (!grantableTypes.includes(person.type)) {
         return res.status(403).json({
           status: "Failed",
-          message: "Managers can only grant portal access to Executive Staff members",
+          message: "Managers and supervisors can only grant portal access to executives, supervisors, account managers, and admins in their department",
         });
       }
       if (!personBelongsToManager(person, requesterManagerCtx)) {
         return res.status(403).json({
           status: "Failed",
-          message: "You can only grant portal access to executives under your team",
+          message: "You can only grant portal access to people on your team",
         });
       }
+    }
+
+    if (requesterIsSuperAdmin && !SUPER_ADMIN_PORTAL_TYPES.has(person.type)) {
+      return res.status(403).json({
+        status: "Failed",
+        message: "Super admins can only grant portal access to GMs, managers, and admins",
+      });
     }
 
     try {
@@ -826,6 +952,7 @@ exports.createPortalAccess = async (req, res) => {
       const alreadyHasProfile =
         (person.type === "gm" && (await GM.findOne({ where: { email: person.email } }))) ||
         (person.type === "manager" && (await Manager.findOne({ where: { email: person.email } }))) ||
+        (person.type === "supervisor" && (await Manager.findOne({ where: { email: person.email } }))) ||
         (person.type === "executive_staff" && (await ExecutiveStaff.findOne({ where: { email: person.email } })));
       if (alreadyHasProfile) {
         return res
@@ -921,6 +1048,22 @@ exports.createPortalAccess = async (req, res) => {
         if (!existing.department && person.department) managerUpdates.department = person.department;
         if (Object.keys(managerUpdates).length) await existing.update(managerUpdates);
       }
+      if (person.type === "supervisor") {
+        const existingExec = await ExecutiveStaff.findOne({ where: { email: person.email } });
+        if (!existingExec) {
+          await ExecutiveStaff.create({
+            userId: userRecord.id,
+            managerId: resolvedManagerProfileId,
+            firstName: person.firstName,
+            lastName: person.lastName,
+            email: person.email,
+            phone: person.phone,
+            region: person.region || null,
+          });
+        } else if (!existingExec.userId) {
+          await existingExec.update({ userId: userRecord.id });
+        }
+      }
     } else if (person.type === "executive_staff") {
       const existing = await ExecutiveStaff.findOne({ where: { email: person.email } });
       if (!existing) {
@@ -974,6 +1117,98 @@ exports.createPortalAccess = async (req, res) => {
   }
 };
 
+const MANAGED_PORTAL_ROLES = new Set(["executive_staff", "supervisor", "customer", "admin"]);
+
+// Managers and supervisors only manage the portal users in their own department:
+// executives, supervisors, account managers, and admins. GMs, other managers,
+// and the super admin stay off this list.
+async function scopePortalUsersForRequester(users, requester) {
+  const emails = users.map((user) => user.email).filter(Boolean);
+  const persons = emails.length
+    ? await Person.findAll({
+        where: { email: { [Op.in]: emails } },
+        attributes: ["id", "email", "department", "managerId", "type"],
+      })
+    : [];
+  const personByEmail = new Map(persons.map((person) => [person.email, person]));
+
+  const parentIds = [...new Set(persons.map((person) => person.managerId).filter(Boolean))];
+  const parentPersons = parentIds.length
+    ? await Person.findAll({
+        where: { id: { [Op.in]: parentIds } },
+        attributes: ["id", "department"],
+      })
+    : [];
+  const parentDepartmentById = new Map(
+    parentPersons.map((person) => [person.id, person.department || null])
+  );
+
+  const accountManagers = emails.length
+    ? await AccountManager.findAll({
+        where: { email: { [Op.in]: emails } },
+        attributes: ["email", "corporateId"],
+      })
+    : [];
+  const accountManagerByEmail = new Map(
+    accountManagers.map((accountManager) => [accountManager.email, accountManager])
+  );
+  const corporateIds = [...new Set(accountManagers.map((row) => row.corporateId).filter((id) => Number.isInteger(id)))];
+  const corporates = corporateIds.length
+    ? await Corporate.findAll({
+        where: { corporateId: { [Op.in]: corporateIds } },
+        attributes: ["corporateId", "managerId", "executiveId"],
+      })
+    : [];
+  const corporateById = new Map(corporates.map((corporate) => [corporate.corporateId, corporate]));
+  const corporateDepartmentById = await buildCorporateDepartmentMap(corporates);
+
+  const requesterIsLead = isManagerOrSupervisorRole(requester?.role);
+  const managerCtx = requesterIsLead ? await resolveRequesterManagerContext(requester) : null;
+  const requesterDepartment = requesterIsLead ? await resolveRequesterDepartment(requester) : null;
+
+  const visible = [];
+  for (const user of users) {
+    const person = personByEmail.get(user.email) || null;
+    const accountManager = accountManagerByEmail.get(user.email) || null;
+    const corporate = accountManager ? corporateById.get(accountManager.corporateId) : null;
+    const corporateDepartment = corporate ? corporateDepartmentById.get(corporate.corporateId) || null : null;
+    const department =
+      person?.department ||
+      (person?.managerId ? parentDepartmentById.get(person.managerId) || null : null) ||
+      corporateDepartment ||
+      null;
+
+    if (requesterIsLead) {
+      if (!managerCtx || user.id === requester.id) continue;
+      if (!MANAGED_PORTAL_ROLES.has(user.role)) continue;
+
+      if (user.role === "customer") {
+        if (!corporate) continue;
+        const assignedToRequester = await managerHasCorporateScope(
+          corporate,
+          managerCtx.managerProfile,
+          managerCtx.managerPersonId
+        );
+        const sameDepartment =
+          requester.role === "manager" && departmentsMatch(corporateDepartment, requesterDepartment);
+        if (!assignedToRequester && !sameDepartment) continue;
+      } else if (requester.role === "manager") {
+        const reportsToRequester = person ? personBelongsToManager(person, managerCtx) : false;
+        if (!departmentsMatch(department, requesterDepartment) && !reportsToRequester) continue;
+      } else if (!person || !personBelongsToManager(person, managerCtx)) {
+        continue;
+      }
+    }
+
+    visible.push({
+      ...user.toJSON(),
+      department,
+    });
+  }
+
+  return visible;
+}
+
 // ── List portal users ────────────────────────────────────────────
 exports.getPortalUsers = async (req, res) => {
   try {
@@ -981,25 +1216,9 @@ exports.getPortalUsers = async (req, res) => {
       attributes: ["id", "firstName", "lastName", "email", "phone", "role", "created_at"],
       order: [["created_at", "DESC"]],
     });
+    const visibleUsers = await scopePortalUsersForRequester(users, req.user);
 
-    const emails = users.map((user) => user.email).filter(Boolean);
-    const persons = emails.length
-      ? await Person.findAll({
-          where: { email: { [Op.in]: emails } },
-          attributes: ["email", "department"],
-        })
-      : [];
-
-    const departmentByEmail = new Map(
-      persons.map((person) => [person.email, person.department || null])
-    );
-
-    const enrichedUsers = users.map((user) => ({
-      ...user.toJSON(),
-      department: departmentByEmail.get(user.email) ?? null,
-    }));
-
-    return res.status(200).json({ status: "Success", users: enrichedUsers });
+    return res.status(200).json({ status: "Success", users: visibleUsers });
   } catch (error) {
     console.error("Get portal users error:", error);
     return res
@@ -1292,7 +1511,17 @@ exports.getManagers = async (req, res) => {
 // ── Get Executives (for account creation dropdown) ───────────────
 exports.getExecutives = async (req, res) => {
   try {
-    const executives = await ExecutiveStaff.findAll({ order: [["first_name", "ASC"]] });
+    const where = {};
+    if (req.user?.role === "manager" || req.user?.role === "supervisor") {
+      const executiveIds = await resolveOversightExecutiveIds(req.user);
+      where.executiveId = executiveIds.length
+        ? { [Op.in]: executiveIds }
+        : { [Op.in]: [-1] };
+    }
+    const executives = await ExecutiveStaff.findAll({
+      where,
+      order: [["first_name", "ASC"]],
+    });
     return res.status(200).json({ status: "Success", executives });
   } catch (error) {
     console.error("Get executives error:", error);
@@ -1549,6 +1778,12 @@ exports.createCorporate = async (req, res) => {
       isActive: isActive !== undefined ? isActive : true,
       approvalStatus: "pending",
     });
+
+    try {
+      await ensureDefaultAccountForCorporate(corporate);
+    } catch (accountErr) {
+      console.error("Default account for new corporate failed:", accountErr);
+    }
 
     realtime.broadcastResources(["corporates", "dashboard"]);
     return res.status(201).json({ status: "Success", message: "Corporate created successfully", corporate });
@@ -2210,6 +2445,7 @@ exports.assignContactPersonToCorporate = async (req, res) => {
     // info is empty or a known import-placeholder. Real, manually-entered
     // contacts on individual accounts are left untouched.
     try {
+      await ensureDefaultAccountForCorporate(corporate, accountManager);
       await propagateContactPersonToCorporateAccounts(corporate.corporateId, accountManager);
     } catch (propagationError) {
       console.error("Propagate contact to corporate accounts failed:", propagationError);
@@ -2499,11 +2735,42 @@ exports.getInvoices = async (req, res) => {
 };
 
 exports.getManagerMonthlySpendingSummary = async (req, res) => {
-  if (!["manager", "supervisor", "gm"].includes(req.user?.role)) {
+  if (!["manager", "supervisor", "gm", "super_admin"].includes(req.user?.role)) {
     return res.status(403).json({ status: "Failed", message: "Only managers or GM can access spending summary" });
   }
 
   try {
+    if (req.user?.role === "super_admin") {
+      const accounts = await Account.findAll({ attributes: ["accountId", "corporateId"] });
+      const accountIds = accounts.map((a) => a.accountId);
+      if (!accountIds.length) return res.status(200).json({ status: "Success", summary: { total: "0.00", currency: "NAD" } });
+      const nowMonth = new Date().toISOString().slice(0, 7);
+      const paidInvoices = await Invoice.findAll({
+        where: { accountId: { [Op.in]: accountIds }, status: "paid" },
+        attributes: ["accountId", "corporateId", "amount", "currency", "paidAt"],
+      });
+      const byCorporate = {};
+      const byAccount = {};
+      let total = 0;
+      for (const invoice of paidInvoices) {
+        if (isoMonth(invoice.paidAt) !== nowMonth) continue;
+        const amount = Number(invoice.amount || 0);
+        total += amount;
+        const corporateId = invoice.corporateId || null;
+        if (corporateId != null) byCorporate[corporateId] = Number((byCorporate[corporateId] || 0) + amount);
+        byAccount[invoice.accountId] = Number((byAccount[invoice.accountId] || 0) + amount);
+      }
+      return res.status(200).json({
+        status: "Success",
+        summary: {
+          total: currencySummary(total),
+          currency: "NAD",
+          byCorporate: Object.fromEntries(Object.entries(byCorporate).map(([k, v]) => [k, currencySummary(v)])),
+          byAccount: Object.fromEntries(Object.entries(byAccount).map(([k, v]) => [k, currencySummary(v)])),
+        },
+      });
+    }
+
     let managerIds = [];
 
     if (req.user?.role === "gm") {
@@ -2566,7 +2833,7 @@ exports.getManagerMonthlySpendingSummary = async (req, res) => {
 };
 
 exports.getManagerMonthlySpendingTrend = async (req, res) => {
-  if (!["manager", "supervisor", "gm"].includes(req.user?.role)) {
+  if (!["manager", "supervisor", "gm", "super_admin"].includes(req.user?.role)) {
     return res.status(403).json({ status: "Failed", message: "Only managers or GM can access spending trend" });
   }
 
@@ -2574,8 +2841,11 @@ exports.getManagerMonthlySpendingTrend = async (req, res) => {
   const months = Number.isFinite(requestedMonths) ? Math.min(Math.max(Math.trunc(requestedMonths), 3), 24) : 6;
   try {
     let managerIds = [];
+    let unscoped = false;
 
-    if (req.user?.role === "gm") {
+    if (req.user?.role === "super_admin") {
+      unscoped = true;
+    } else if (req.user?.role === "gm") {
       const gmProfile = await resolveGmProfile(req.user);
       if (!gmProfile) {
         return res.status(404).json({ status: "Failed", message: "GM profile not found" });
@@ -2592,9 +2862,12 @@ exports.getManagerMonthlySpendingTrend = async (req, res) => {
       managerIds = [managerProfile.managerId, managerPerson?.id].filter((id) => Number.isInteger(id) && id > 0);
     }
 
-    if (!managerIds.length) return res.status(200).json({ status: "Success", trend: [] });
+    if (!unscoped && !managerIds.length) return res.status(200).json({ status: "Success", trend: [] });
 
-    const accounts = await Account.findAll({ where: { managerId: { [Op.in]: managerIds } }, attributes: ["accountId"] });
+    const accounts = await Account.findAll({
+      where: unscoped ? {} : { managerId: { [Op.in]: managerIds } },
+      attributes: ["accountId"],
+    });
     const accountIds = accounts.map((a) => a.accountId);
     if (!accountIds.length) return res.status(200).json({ status: "Success", trend: [] });
 
@@ -2774,7 +3047,7 @@ exports.getAccountContracts = async (req, res) => {
 
 // ── Get contracts expiring within N months (manager scope) ────────
 exports.getExpiringContracts = async (req, res) => {
-  if (!["manager", "supervisor", "gm"].includes(req.user?.role)) {
+  if (!["manager", "supervisor", "gm", "super_admin"].includes(req.user?.role)) {
     return res.status(403).json({ status: "Failed", message: "Only managers or GM can access expiring contracts" });
   }
 
@@ -2785,8 +3058,11 @@ exports.getExpiringContracts = async (req, res) => {
 
   try {
     let managerIds = [];
+    let unscoped = false;
 
-    if (req.user?.role === "gm") {
+    if (req.user?.role === "super_admin") {
+      unscoped = true;
+    } else if (req.user?.role === "gm") {
       const gmProfile = await resolveGmProfile(req.user);
       if (!gmProfile) {
         return res.status(404).json({ status: "Failed", message: "GM profile not found" });
@@ -2805,12 +3081,12 @@ exports.getExpiringContracts = async (req, res) => {
       );
     }
 
-    if (!managerIds.length) {
+    if (!unscoped && !managerIds.length) {
       return res.status(200).json({ status: "Success", contracts: [] });
     }
 
     const accounts = await Account.findAll({
-      where: { managerId: { [Op.in]: managerIds } },
+      where: unscoped ? {} : { managerId: { [Op.in]: managerIds } },
       attributes: ["accountId", "accountName", "corporateId"],
     });
     if (!accounts.length) {
@@ -3026,6 +3302,158 @@ exports.approveAccount = async (req, res) => {
   }
 };
 
+async function removePortalLogin(user) {
+  const userId = user.id;
+  await GM.update({ userId: null }, { where: { userId } });
+  await Manager.update({ userId: null }, { where: { userId } });
+  await ExecutiveStaff.update({ userId: null }, { where: { userId } });
+
+  if (user.role === "customer") {
+    await AccountManager.update({ hasPortalAccess: false }, { where: { email: user.email } });
+  } else {
+    const person = await Person.findOne({ where: { email: user.email } });
+    if (person) await person.update({ hasPortalAccess: false });
+  }
+
+  await user.destroy();
+}
+
+const EDITABLE_PORTAL_ROLES = ["executive_staff", "supervisor", "admin"];
+
+async function changeManagedPortalRole(user, nextRole, requester) {
+  const person = await Person.findOne({ where: { email: user.email } });
+  if (!person) {
+    const error = new Error("This user has no directory record to update");
+    error.statusCode = 400;
+    throw error;
+  }
+
+  const managerCtx = await resolveRequesterManagerContext(requester);
+  if (!managerCtx?.managerProfile) {
+    const error = new Error("Manager profile not found");
+    error.statusCode = 404;
+    throw error;
+  }
+
+  const linkedManagerProfileId =
+    (await resolveManagerProfileFromPerson(person.managerId)) || managerCtx.managerProfile.managerId;
+  const department = person.department || managerCtx.managerProfile.department || null;
+
+  const tx = await sequelize.transaction();
+  try {
+    await user.update({ role: nextRole }, { transaction: tx });
+    await person.update(
+      {
+        type: nextRole,
+        region: nextRole === "admin" ? null : person.region,
+      },
+      { transaction: tx }
+    );
+
+    if (nextRole === "admin") {
+      await ExecutiveStaff.update({ userId: null }, { where: { userId: user.id }, transaction: tx });
+      await Manager.update({ userId: null }, { where: { userId: user.id }, transaction: tx });
+    } else if (nextRole === "executive_staff") {
+      await Manager.update(
+        { userId: null },
+        { where: { email: person.email, userId: user.id }, transaction: tx }
+      );
+      const executiveProfile = await ExecutiveStaff.findOne({
+        where: { email: person.email },
+        transaction: tx,
+      });
+      if (!executiveProfile) {
+        await ExecutiveStaff.create(
+          {
+            userId: user.id,
+            managerId: linkedManagerProfileId,
+            firstName: person.firstName,
+            lastName: person.lastName,
+            email: person.email,
+            phone: person.phone || null,
+            region: person.region || null,
+          },
+          { transaction: tx }
+        );
+      } else {
+        await executiveProfile.update(
+          {
+            userId: user.id,
+            managerId: executiveProfile.managerId || linkedManagerProfileId,
+          },
+          { transaction: tx }
+        );
+      }
+    } else if (nextRole === "supervisor") {
+      const supervisorProfile = await Manager.findOne({
+        where: { email: person.email },
+        transaction: tx,
+      });
+      if (!supervisorProfile) {
+        await Manager.create(
+          {
+            userId: user.id,
+            gmId: managerCtx.managerProfile.gmId || null,
+            firstName: person.firstName,
+            lastName: person.lastName,
+            email: person.email,
+            phone: person.phone || null,
+            department,
+          },
+          { transaction: tx }
+        );
+      } else {
+        const updates = { userId: user.id };
+        if (!supervisorProfile.department && department) updates.department = department;
+        if (!supervisorProfile.gmId && managerCtx.managerProfile.gmId) {
+          updates.gmId = managerCtx.managerProfile.gmId;
+        }
+        await supervisorProfile.update(updates, { transaction: tx });
+      }
+
+      const executiveProfile = await ExecutiveStaff.findOne({
+        where: { email: person.email },
+        transaction: tx,
+      });
+      if (!executiveProfile) {
+        await ExecutiveStaff.create(
+          {
+            userId: user.id,
+            managerId: linkedManagerProfileId,
+            firstName: person.firstName,
+            lastName: person.lastName,
+            email: person.email,
+            phone: person.phone || null,
+            region: person.region || null,
+          },
+          { transaction: tx }
+        );
+      } else if (executiveProfile.userId !== user.id) {
+        await executiveProfile.update({ userId: user.id }, { transaction: tx });
+      }
+    }
+
+    await tx.commit();
+  } catch (error) {
+    await tx.rollback();
+    throw error;
+  }
+
+  const roleLabel =
+    nextRole === "admin" ? "Admin" : nextRole === "supervisor" ? "Supervisor" : "Executive";
+  await createForUserIds(
+    [user.id, requester.id],
+    {
+      type: "role",
+      title: "Role Updated",
+      message: `${person.firstName} ${person.lastName} is now ${roleLabel}.`,
+      priority: "normal",
+      metadata: { personId: person.id, email: person.email, role: nextRole },
+    },
+    { excludeUserIds: [requester.id] }
+  );
+}
+
 // ── Revoke Portal Access (delete user record, preserve person + profile) ─
 exports.revokePortalAccess = async (req, res) => {
   const { userId } = req.params;
@@ -3040,6 +3468,16 @@ exports.revokePortalAccess = async (req, res) => {
       return res.status(404).json({ status: "Failed", message: "User not found" });
     }
 
+    if (isManagerOrSupervisorRole(req.user?.role)) {
+      const allowed = await scopePortalUsersForRequester([user], req.user);
+      if (!allowed.length) {
+        return res.status(403).json({
+          status: "Failed",
+          message: "You can only manage portal users in your department",
+        });
+      }
+    }
+
     if (user.role !== "customer") {
       const person = await Person.findOne({ where: { email: user.email } });
       if (person) {
@@ -3052,27 +3490,180 @@ exports.revokePortalAccess = async (req, res) => {
       }
     }
 
-    // Nullify user_id FK in all profile tables so the profiles are preserved
-    await GM.update({ userId: null }, { where: { userId } });
-    await Manager.update({ userId: null }, { where: { userId } });
-    await ExecutiveStaff.update({ userId: null }, { where: { userId } });
-
-    // Reset portal access flag on the correct profile record
-    if (user.role === "customer") {
-      await AccountManager.update({ hasPortalAccess: false }, { where: { email: user.email } });
-    } else {
-      const person = await Person.findOne({ where: { email: user.email } });
-      if (person) {
-        await person.update({ hasPortalAccess: false });
-      }
-    }
-
-    // Delete the user login record
-    await user.destroy();
+    await removePortalLogin(user);
 
     return res.status(200).json({ status: "Success", message: "Portal access revoked. User login removed; person and profile records retained." });
   } catch (error) {
     console.error("Revoke portal access error:", error);
+    return res.status(500).json({ status: "Failed", message: "Internal server error" });
+  }
+};
+
+// ── Manager edit: change role or revoke portal access ────────────
+exports.updateManagedPortalUser = async (req, res) => {
+  const { userId } = req.params;
+  const { role, portalAccess } = req.body || {};
+
+  if (req.user?.role !== "manager") {
+    return res.status(403).json({
+      status: "Failed",
+      message: "Only managers can edit portal users in their department",
+    });
+  }
+
+  if (!userId) {
+    return res.status(400).json({ status: "Failed", message: "User ID is required" });
+  }
+
+  try {
+    const user = await User.findByPk(userId);
+    if (!user) {
+      return res.status(404).json({ status: "Failed", message: "User not found" });
+    }
+
+    const allowed = await scopePortalUsersForRequester([user], req.user);
+    if (!allowed.length) {
+      return res.status(403).json({
+        status: "Failed",
+        message: "You can only manage portal users in your department",
+      });
+    }
+
+    if (portalAccess === false) {
+      if (user.role !== "customer") {
+        const person = await Person.findOne({ where: { email: user.email } });
+        if (person) {
+          try {
+            const targetDepartment = await resolvePersonDepartment(person);
+            await assertDepartmentScopedAccess(req.user, targetDepartment, "revoke portal access for");
+          } catch (error) {
+            return res.status(403).json({ status: "Failed", message: error.message });
+          }
+        }
+      }
+
+      await removePortalLogin(user);
+      return res.status(200).json({
+        status: "Success",
+        message: "Portal access revoked. User login removed; person and profile records retained.",
+      });
+    }
+
+    if (!role || role === user.role) {
+      return res.status(400).json({
+        status: "Failed",
+        message: "Choose a new role or remove portal access",
+      });
+    }
+
+    if (
+      user.role === "customer" ||
+      !EDITABLE_PORTAL_ROLES.includes(user.role) ||
+      !EDITABLE_PORTAL_ROLES.includes(role)
+    ) {
+      return res.status(400).json({
+        status: "Failed",
+        message: "Account manager role stays tied to their corporate. You can remove their portal access.",
+      });
+    }
+
+    await changeManagedPortalRole(user, role, req.user);
+    return res.status(200).json({
+      status: "Success",
+      message: "Portal user updated",
+      user: { id: user.id, email: user.email, role: user.role },
+    });
+  } catch (error) {
+    console.error("Update managed portal user error:", error);
+    const statusCode = error.statusCode || 500;
+    if (statusCode !== 500) {
+      return res.status(statusCode).json({ status: "Failed", message: error.message });
+    }
+    return res.status(500).json({ status: "Failed", message: "Internal server error" });
+  }
+};
+
+// ── Manager delete: remove the login and the directory profile ───
+exports.deleteManagedPortalUser = async (req, res) => {
+  const { userId } = req.params;
+
+  if (req.user?.role !== "manager") {
+    return res.status(403).json({
+      status: "Failed",
+      message: "Only managers can delete portal users in their department",
+    });
+  }
+
+  if (!userId) {
+    return res.status(400).json({ status: "Failed", message: "User ID is required" });
+  }
+
+  try {
+    const user = await User.findByPk(userId);
+    if (!user) {
+      return res.status(404).json({ status: "Failed", message: "User not found" });
+    }
+
+    const allowed = await scopePortalUsersForRequester([user], req.user);
+    if (!allowed.length) {
+      return res.status(403).json({
+        status: "Failed",
+        message: "You can only delete portal users in your department",
+      });
+    }
+
+    if (user.role !== "customer") {
+      const person = await Person.findOne({ where: { email: user.email } });
+      if (person) {
+        try {
+          const targetDepartment = await resolvePersonDepartment(person);
+          await assertDepartmentScopedAccess(req.user, targetDepartment, "delete users from");
+        } catch (error) {
+          return res.status(403).json({ status: "Failed", message: error.message });
+        }
+      }
+    }
+
+    const tx = await sequelize.transaction();
+    try {
+      if (user.role === "customer") {
+        const accountManager = await AccountManager.findOne({
+          where: { email: user.email },
+          transaction: tx,
+        });
+        if (accountManager) {
+          await CorporateContactPerson.destroy({
+            where: { accountManagerId: accountManager.accountManagerId },
+            transaction: tx,
+          });
+          await accountManager.destroy({ transaction: tx });
+        }
+      } else {
+        const person = await Person.findOne({ where: { email: user.email }, transaction: tx });
+        if (person) {
+          await GM.update({ userId: null }, { where: { userId: user.id }, transaction: tx });
+          await Manager.update({ userId: null }, { where: { userId: user.id }, transaction: tx });
+          await ExecutiveStaff.update({ userId: null }, { where: { userId: user.id }, transaction: tx });
+          await detachUnlinkedProfilesAndDeletePerson(person, tx);
+        }
+      }
+
+      await Notification.destroy({ where: { userId: user.id }, transaction: tx });
+      await OTP.destroy({ where: { userId: user.id }, transaction: tx });
+      await Lead.destroy({ where: { userId: user.id }, transaction: tx });
+      await user.destroy({ transaction: tx });
+      await tx.commit();
+    } catch (innerError) {
+      await tx.rollback();
+      throw innerError;
+    }
+
+    return res.status(200).json({
+      status: "Success",
+      message: "User deleted. Their login and profile have been removed.",
+    });
+  } catch (error) {
+    console.error("Delete managed portal user error:", error);
     return res.status(500).json({ status: "Failed", message: "Internal server error" });
   }
 };

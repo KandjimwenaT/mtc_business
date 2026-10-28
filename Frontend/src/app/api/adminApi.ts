@@ -395,6 +395,28 @@ export const getSystemHealth = async (): Promise<SystemHealth> => {
   };
 };
 
+export const updateManagedPortalUser = async (
+  userId: number,
+  payload: { role?: string; portalAccess?: boolean }
+): Promise<void> => {
+  const res = await fetch(`${API_BASE_URL}/admin/portal-users/${userId}`, {
+    method: "PUT",
+    headers: authHeaders(),
+    body: JSON.stringify(payload),
+  });
+  const data = await res.json();
+  if (!res.ok) { handleUnauthorized(res.status); throw new Error(data.message || "Failed to update portal user"); }
+};
+
+export const deleteManagedPortalUser = async (userId: number): Promise<void> => {
+  const res = await fetch(`${API_BASE_URL}/admin/portal-users/${userId}/record`, {
+    method: "DELETE",
+    headers: authHeaders(),
+  });
+  const data = await res.json();
+  if (!res.ok) { handleUnauthorized(res.status); throw new Error(data.message || "Failed to delete user"); }
+};
+
 export const revokePortalAccess = async (userId: number): Promise<void> => {
   const res = await fetch(`${API_BASE_URL}/admin/portal-users/${userId}`, {
     method: "DELETE",

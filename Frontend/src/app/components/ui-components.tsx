@@ -17,12 +17,12 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
       <button
         ref={ref}
         className={cn(
-          "inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-mtc-blue disabled:pointer-events-none disabled:opacity-50",
+          "inline-flex items-center justify-center rounded-lg text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary/40 disabled:pointer-events-none disabled:opacity-50",
           {
-            "bg-mtc-blue text-white hover:bg-mtc-blue-light shadow-sm": variant === "primary",
-            "bg-mtc-dark text-white hover:bg-mtc-blue-dark": variant === "secondary",
-            "border border-slate-300 bg-transparent hover:bg-slate-100 text-slate-900": variant === "outline",
-            "hover:bg-slate-100 hover:text-slate-900 text-slate-700": variant === "ghost",
+            "bg-primary text-primary-foreground hover:bg-primary/90": variant === "primary",
+            "bg-slate-800 text-white hover:bg-slate-700": variant === "secondary",
+            "border border-border bg-white hover:bg-[#f7f8fb] text-slate-800": variant === "outline",
+            "hover:bg-white hover:text-slate-900 text-slate-600": variant === "ghost",
             "bg-red-600 text-white hover:bg-red-700": variant === "danger",
             "h-8 px-3 text-xs": size === "sm",
             "h-10 px-4 py-2": size === "md",
@@ -39,13 +39,13 @@ Button.displayName = "Button";
 
 // Card
 export function Card({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
-  return <div className={cn("rounded-xl border border-slate-200 bg-white text-slate-950 shadow-sm", className)} {...props} />;
+  return <div className={cn("rounded-xl border border-border bg-white text-slate-900 shadow-[0_1px_2px_rgba(16,24,40,0.04)]", className)} {...props} />;
 }
 export function CardHeader({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
   return <div className={cn("flex flex-col space-y-1.5 p-4 sm:p-6", className)} {...props} />;
 }
 export function CardTitle({ className, ...props }: React.HTMLAttributes<HTMLHeadingElement>) {
-  return <h3 className={cn("font-semibold leading-none tracking-tight text-slate-900", className)} {...props} />;
+  return <h3 className={cn("text-base font-normal leading-none text-slate-800", className)} {...props} />;
 }
 export function CardContent({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
   return <div className={cn("p-4 sm:p-6 pt-0 sm:pt-0", className)} {...props} />;
@@ -82,7 +82,7 @@ export const Input = React.forwardRef<HTMLInputElement, React.InputHTMLAttribute
       <input
         type={type}
         className={cn(
-          "flex h-10 w-full rounded-md border border-slate-300 bg-transparent px-3 py-2 text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-mtc-blue disabled:cursor-not-allowed disabled:opacity-50",
+          "flex h-10 w-full rounded-lg border border-border bg-white px-3 py-2 text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-primary/30 disabled:cursor-not-allowed disabled:opacity-50",
           className
         )}
         ref={ref}
@@ -99,7 +99,7 @@ export const Select = React.forwardRef<HTMLSelectElement, React.SelectHTMLAttrib
     return (
       <select
         className={cn(
-          "flex h-10 w-full items-center justify-between rounded-md border border-slate-300 bg-transparent px-3 py-2 text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-mtc-blue disabled:cursor-not-allowed disabled:opacity-50",
+          "flex h-10 w-full items-center justify-between rounded-lg border border-border bg-white px-3 py-2 text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-primary/30 disabled:cursor-not-allowed disabled:opacity-50",
           className
         )}
         ref={ref}
@@ -132,13 +132,13 @@ export function Table({ className, ...props }: React.HTMLAttributes<HTMLTableEle
   );
 }
 export function TableHeader({ className, ...props }: React.HTMLAttributes<HTMLTableSectionElement>) {
-  return <thead className={cn("[&_tr]:border-b bg-slate-50", className)} {...props} />;
+  return <thead className={cn("[&_tr]:border-b bg-[#f8fafc]", className)} {...props} />;
 }
 export function TableBody({ className, ...props }: React.HTMLAttributes<HTMLTableSectionElement>) {
   return <tbody className={cn("[&_tr:last-child]:border-0", className)} {...props} />;
 }
 export function TableRow({ className, ...props }: React.HTMLAttributes<HTMLTableRowElement>) {
-  return <tr className={cn("border-b border-slate-200 transition-colors hover:bg-slate-50/50 data-[state=selected]:bg-slate-50", className)} {...props} />;
+  return <tr className={cn("border-b border-border transition-colors hover:bg-[#f8fafc] data-[state=selected]:bg-slate-50", className)} {...props} />;
 }
 export function TableHead({ className, ...props }: React.ComponentPropsWithoutRef<"th">) {
   return <th className={cn("h-10 px-2 sm:px-4 text-left align-middle font-medium text-slate-500 [&:has([role=checkbox])]:pr-0", className)} {...props} />;

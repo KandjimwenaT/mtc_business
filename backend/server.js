@@ -47,6 +47,45 @@ const SlaConfig = require('./src/models/SlaConfig');
 const slaRoutes = require('./src/routes/slaRoutes');
 require('dotenv').config();
 
+// Sequelize sync does not alter existing ENUM columns. Add super_admin, then
+// promote department-less admins (the developer account) to that role.
+async function ensureSuperAdminRole() {
+  try {
+    await sequelize.query(`
+      ALTER TABLE users MODIFY COLUMN role ENUM(
+        'admin',
+        'executive_staff',
+        'supervisor',
+        'manager',
+        'gm',
+        'customer',
+        'super_admin'
+      ) NOT NULL DEFAULT 'executive_staff'
+    `);
+  } catch (error) {
+    console.error('Unable to add super_admin role:', error.message);
+    return;
+  }
+
+  const admins = await User.findAll({ where: { role: 'admin' } });
+  for (const admin of admins) {
+    const person = await Person.findOne({
+      where: { email: admin.email, type: 'admin' },
+      attributes: ['department', 'managerId'],
+    });
+    let department = person?.department ? String(person.department).trim() : '';
+    if (!department && person?.managerId) {
+      const managerPerson = await Person.findByPk(person.managerId, {
+        attributes: ['department'],
+      });
+      department = managerPerson?.department ? String(managerPerson.department).trim() : '';
+    }
+    if (department) continue;
+    await admin.update({ role: 'super_admin' });
+    console.log(`Promoted unscoped admin ${admin.email} to super_admin`);
+  }
+}
+
 const app = express();
 const PORT = 3004;
 
@@ -70,6 +109,7 @@ const normalizeOrigin = (value) =>
 const allowedOrigins = [
   process.env.FRONTEND_URL,
   process.env.CORS_ORIGINS,
+  'https://businessuat.mtc.com.na',
   'http://localhost:5173',
   'http://41.219.71.112:8081',
   'http://172.19.20.201:8080',
@@ -403,6 +443,7 @@ const startServer = async () => {
   await AuditLog.sync();
   await SlaConfig.sync();
   await OTPModel.sync();
+  await ensureSuperAdminRole();
   server.listen(PORT, () => {
     console.log(`Server running on port ${PORT}`);
   });

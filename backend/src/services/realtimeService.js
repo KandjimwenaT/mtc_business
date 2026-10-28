@@ -2,7 +2,7 @@ const { Server } = require("socket.io");
 const jwt = require("jsonwebtoken");
 const User = require("../models/User");
 
-const STAFF_ROLES = ["admin", "executive_staff", "supervisor", "manager", "gm"];
+const STAFF_ROLES = ["admin", "super_admin", "executive_staff", "supervisor", "manager", "gm"];
 
 /** @type {import("socket.io").Server | null} */
 let io = null;

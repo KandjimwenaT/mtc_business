@@ -38,6 +38,161 @@ async function resolveExecutivePortalUserId(executiveId) {
   return userId;
 }
 
+function emailMatch(email) {
+  const trimmed = String(email || "").trim();
+  if (!trimmed) return null;
+  const lower = trimmed.toLowerCase();
+  return lower === trimmed ? { email: trimmed } : { [Op.or]: [{ email: trimmed }, { email: lower }] };
+}
+
+async function findManagerByEmail(email) {
+  const where = emailMatch(email);
+  if (!where) return null;
+  return Manager.findOne({ where });
+}
+
+/**
+ * Line-manager profile for an executive.
+ * executive_staff.manager_id should be managers.manager_id, but older rows store persons.id.
+ * persons.manager_id is also checked when the staff row has no usable link.
+ */
+async function resolveLineManagerProfile(executive) {
+  if (!executive) return null;
+
+  const candidateIds = [];
+  if (executive.managerId) candidateIds.push(executive.managerId);
+
+  const execEmailWhere = emailMatch(executive.email);
+  if (execEmailWhere) {
+    const execPerson = await Person.findOne({
+      where: {
+        ...execEmailWhere,
+        type: { [Op.in]: ["executive_staff", "supervisor", "admin"] },
+      },
+      attributes: ["id", "managerId"],
+    });
+    if (execPerson?.managerId && !candidateIds.includes(execPerson.managerId)) {
+      candidateIds.push(execPerson.managerId);
+    }
+  }
+
+  let resolved = null;
+  for (const id of candidateIds) {
+    const byPk = await Manager.findByPk(id);
+    if (byPk) {
+      resolved = byPk;
+      break;
+    }
+    const person = await Person.findByPk(id);
+    if (person?.email && ["manager", "supervisor", "gm"].includes(person.type)) {
+      const byEmail = await findManagerByEmail(person.email);
+      if (byEmail) {
+        resolved = byEmail;
+        break;
+      }
+    }
+  }
+
+  if (
+    resolved &&
+    executive.managerId &&
+    executive.managerId !== resolved.managerId &&
+    typeof executive.update === "function"
+  ) {
+    try {
+      await executive.update({ managerId: resolved.managerId });
+    } catch (err) {
+      console.error("Failed to align executive manager id:", err?.message || err);
+    }
+  }
+
+  return resolved;
+}
+
+async function resolvePortalUserIdForManagerProfile(manager) {
+  if (!manager) return null;
+  if (manager.userId) return manager.userId;
+  const userId = await resolvePortalUserIdByEmail(manager.email, ["manager", "supervisor", "gm"]);
+  if (!userId) return null;
+  try {
+    await manager.update({ userId });
+  } catch (err) {
+    console.error("Failed to backfill manager user id:", err?.message || err);
+  }
+  return userId;
+}
+
+/**
+ * Manager profile id plus the directory person id, both of which may be stored
+ * on executive_staff.manager_id.
+ */
+async function resolveManagerScopeIds(managerRow) {
+  if (!managerRow) return [];
+  const ids = new Set();
+  if (Number.isInteger(managerRow.managerId) && managerRow.managerId > 0) {
+    ids.add(managerRow.managerId);
+  }
+  const emailWhere = emailMatch(managerRow.email);
+  if (emailWhere) {
+    const managerPerson = await Person.findOne({
+      where: {
+        ...emailWhere,
+        type: { [Op.in]: ["manager", "supervisor"] },
+      },
+      attributes: ["id"],
+    });
+    if (managerPerson?.id && Number.isInteger(managerPerson.id)) {
+      ids.add(managerPerson.id);
+    }
+  }
+  return [...ids];
+}
+
+/** Executive profile ids that report to this manager (profile id or legacy person id). */
+async function resolveExecutiveIdsReportingToManager(managerRow) {
+  const scopeIds = await resolveManagerScopeIds(managerRow);
+  if (!scopeIds.length) return [];
+  const execs = await ExecutiveStaff.findAll({
+    where: { managerId: { [Op.in]: scopeIds } },
+    attributes: ["executiveId"],
+  });
+  return [...new Set(execs.map((row) => row.executiveId).filter(Boolean))];
+}
+
+/**
+ * Executive profile ids a manager or supervisor may oversee.
+ * Supervisors follow their ExecutiveStaff line manager (teammates are not moved
+ * onto the supervisor's own Manager row).
+ */
+async function resolveOversightExecutiveIds(user) {
+  if (!user?.id) return [];
+
+  if (user.role === "supervisor") {
+    const exec = await ExecutiveStaff.findOne({ where: { userId: user.id } });
+    if (exec) {
+      const lineManager = await resolveLineManagerProfile(exec);
+      if (lineManager) {
+        const ids = await resolveExecutiveIdsReportingToManager(lineManager);
+        if (ids.length) return ids;
+      }
+      if (exec.managerId) {
+        const team = await ExecutiveStaff.findAll({
+          where: { managerId: exec.managerId },
+          attributes: ["executiveId"],
+        });
+        const ids = team.map((row) => row.executiveId).filter(Boolean);
+        if (ids.length) return ids;
+      }
+      return exec.executiveId ? [exec.executiveId] : [];
+    }
+  }
+
+  let manager = await Manager.findOne({ where: { userId: user.id } });
+  if (!manager && user.email) manager = await findManagerByEmail(user.email);
+  if (!manager) return [];
+  return resolveExecutiveIdsReportingToManager(manager);
+}
+
 /**
  * Portal user IDs that should receive manager-style alerts for this executive's team:
  * the line manager (Manager.userId) plus any supervisors whose ExecutiveStaff row
@@ -46,25 +201,27 @@ async function resolveExecutivePortalUserId(executiveId) {
 async function resolveManagerTeamNotificationUserIds(executiveId) {
   if (!executiveId) return [];
   const executive = await ExecutiveStaff.findByPk(executiveId);
-  if (!executive || !executive.managerId) return [];
+  if (!executive) return [];
 
   const ids = [];
-  const manager = await Manager.findByPk(executive.managerId);
-  let managerUserId = manager?.userId || null;
-  if (manager && !managerUserId) {
-    managerUserId = await resolvePortalUserIdByEmail(manager.email, ["manager", "supervisor", "gm"]);
-    if (managerUserId) {
-      try {
-        await manager.update({ userId: managerUserId });
-      } catch (err) {
-        console.error("Failed to backfill manager user id:", err?.message || err);
-      }
-    }
-  }
+  const manager = await resolveLineManagerProfile(executive);
+  const managerUserId = await resolvePortalUserIdForManagerProfile(manager);
   if (managerUserId) ids.push(managerUserId);
 
+  if (!managerUserId && executive.managerId) {
+    const person = await Person.findByPk(executive.managerId);
+    if (person?.email && ["manager", "supervisor", "gm"].includes(person.type)) {
+      const fallbackUserId = await resolvePortalUserIdByEmail(person.email, ["manager", "supervisor", "gm"]);
+      if (fallbackUserId) ids.push(fallbackUserId);
+    }
+  }
+
+  const scopeIds = new Set(await resolveManagerScopeIds(manager));
+  if (executive.managerId) scopeIds.add(executive.managerId);
+  if (!scopeIds.size) return [...new Set(ids)];
+
   const teamRows = await ExecutiveStaff.findAll({
-    where: { managerId: executive.managerId },
+    where: { managerId: { [Op.in]: [...scopeIds] } },
     attributes: ["email"],
   });
   const emails = [...new Set(teamRows.map((r) => r.email).filter(Boolean))];
@@ -170,6 +327,38 @@ async function createForUserIds(userIds, payload, options = {}) {
   return rows;
 }
 
+/** Create the notification only for users who do not already have the same type + title. */
+async function createForUserIdsIfMissing(userIds, payload, options = {}) {
+  const uniqueIds = [...new Set((userIds || []).map(normalizeUserId).filter(Boolean))];
+  if (!uniqueIds.length || !payload?.type || !payload?.title) return [];
+
+  const existing = await Notification.findAll({
+    where: {
+      userId: { [Op.in]: uniqueIds },
+      type: payload.type,
+      title: payload.title,
+    },
+    attributes: ["userId"],
+  });
+  const already = new Set(existing.map((row) => row.userId));
+  const pending = uniqueIds.filter((id) => !already.has(id));
+  if (!pending.length) return [];
+  return createForUserIds(pending, payload, options);
+}
+
+/**
+ * Copy an executive's task alert to their line manager and team supervisors.
+ * Skips anyone in excludeUserIds (usually the person who performed the action).
+ */
+async function notifyManagerTeam(executiveId, payload, options = {}) {
+  const ids = await resolveManagerTeamNotificationUserIds(executiveId);
+  const excluded = new Set((options.excludeUserIds || []).map(normalizeUserId).filter(Boolean));
+  const targets = ids.filter((id) => !excluded.has(id));
+  if (!targets.length) return [];
+  if (options.once) return createForUserIdsIfMissing(targets, payload, options);
+  return createForUserIds(targets, payload, options);
+}
+
 /**
  * IDs that may appear on corporates.accounts.manager_id for "this manager" (see adminController compatibility notes).
  */
@@ -254,7 +443,12 @@ async function resolveBroadcastRecipientUserIds(managerRow, audience) {
 module.exports = {
   createNotification,
   createForUserIds,
+  createForUserIdsIfMissing,
+  notifyManagerTeam,
   resolveExecutivePortalUserId,
   resolveManagerTeamNotificationUserIds,
+  resolveExecutiveIdsReportingToManager,
+  resolveLineManagerProfile,
+  resolveOversightExecutiveIds,
   resolveBroadcastRecipientUserIds,
 };

@@ -110,7 +110,7 @@ export default function Visits() {
     <div className="space-y-6 animate-in fade-in duration-500 slide-in-from-bottom-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900">Visits & Engagements</h2>
+          <h2 className="text-3xl font-normal text-slate-800">Visits & Engagements</h2>
           <p className="text-sm text-slate-500">Manage client visits, control cards, and feedback ratings.</p>
         </div>
         <Button className="flex items-center justify-center gap-2 w-full sm:w-auto" onClick={() => setShowSchedule(!showSchedule)}>

@@ -45,6 +45,7 @@ const User = sequelize.define(
         "manager",
         "gm",
         "customer",
+        "super_admin",
       ),
       allowNull: false,
       defaultValue: "executive_staff",

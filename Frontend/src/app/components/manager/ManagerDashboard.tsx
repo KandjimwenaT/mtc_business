@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState, useCallback, type ComponentType } from "react";
+import { useEffect, useMemo, useState, useCallback } from "react";
 import { useNavigate } from "react-router";
-import { getMyProfile, type UserProfile } from "../../api/authApi";
+import { getActualRole, getMyProfile, type UserProfile } from "../../api/authApi";
 import { profileIsEbu } from "../../utils/departmentSegment";
 import { getAllTickets, type TicketRecord } from "../../api/ticketApi";
 import { getSlaHealthLabel } from "../../utils/sla";
@@ -37,6 +37,17 @@ import {
   cn,
 } from "../ui-components";
 import TicketVolumeChart from "../charts/TicketVolumeChart";
+import { ThemeIcon } from "../theme-icon";
+import { BreachedSlaBanner } from "../breached-sla-banner";
+import usersIcon from "../../../assets/New Theme Icon/users-round.svg";
+import inboxIcon from "../../../assets/New Theme Icon/inbox.svg";
+import calendarIcon from "../../../assets/New Theme Icon/calendar-clock.svg";
+import fileClockIcon from "../../../assets/New Theme Icon/file-clock.svg";
+import starIcon from "../../../assets/New Theme Icon/star.svg";
+import buildingIcon from "../../../assets/New Theme Icon/building-2-1.svg";
+import ticketsIcon from "../../../assets/New Theme Icon/tickets-1.svg";
+import arrowRightIcon from "../../../assets/New Theme Icon/arrow-right.svg";
+import alertIcon from "../../../assets/New Theme Icon/triangle-alert.svg";
 import {
   LineChart,
   Line,
@@ -50,13 +61,6 @@ import {
   Cell,
 } from "recharts";
 import {
-  Users,
-  Headphones,
-  CalendarDays,
-  AlertCircle,
-  Clock,
-  TrendingUp,
-  List,
   Trophy,
   Loader2,
   Search,
@@ -105,51 +109,26 @@ function StatCard({
   label,
   value,
   sub,
-  subClassName,
-  icon: Icon,
+  icon,
   iconClassName,
 }: {
   label: string;
   value: string | number;
   sub: string;
-  subClassName?: string;
-  icon: ComponentType<{ className?: string }>;
+  icon: string;
   iconClassName?: string;
 }) {
   return (
-    <Card className="rounded-xl border border-slate-200/90 shadow-sm bg-white">
-      <CardContent className="pt-5 pb-4 px-5">
-        <div className="flex justify-between items-start gap-2">
-          <p className="text-sm font-medium text-slate-500">{label}</p>
-          <Icon className={cn("h-5 w-5 shrink-0 text-slate-400", iconClassName)} />
-        </div>
-        <div className="text-2xl sm:text-3xl font-bold text-slate-900 mt-2 tabular-nums break-words">{value}</div>
-        <p className={cn("text-xs mt-1", subClassName ?? "text-slate-400")}>{sub}</p>
-      </CardContent>
-    </Card>
-  );
-}
-
-function TrendStatCard({
-  label,
-  value,
-  sub,
-}: {
-  label: string;
-  value: string | number;
-  sub: string;
-}) {
-  return (
-    <Card className="rounded-xl border border-slate-200/90 shadow-sm bg-white">
-      <CardContent className="pt-5 pb-4 px-5">
-        <div className="flex justify-between items-start gap-2">
-          <p className="text-sm font-medium text-slate-500">{label}</p>
-          <TrendingUp className="h-4 w-4 shrink-0 text-emerald-600" aria-hidden />
-        </div>
-        <div className="text-2xl sm:text-3xl font-bold text-slate-900 mt-2 tabular-nums break-words">{value}</div>
-        <p className="text-xs mt-1 font-medium text-emerald-600">{sub}</p>
-      </CardContent>
-    </Card>
+    <div className="flex flex-col gap-3.5 rounded-xl border border-slate-200 bg-white p-4">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-xs font-medium text-slate-500">{label}</p>
+        <ThemeIcon src={icon} className={cn("h-4 w-4 text-slate-400", iconClassName)} />
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <p className="text-3xl font-normal text-slate-800 tabular-nums break-words">{value}</p>
+        <p className="text-xs font-normal text-slate-500">{sub}</p>
+      </div>
+    </div>
   );
 }
 
@@ -198,6 +177,7 @@ export default function ManagerDashboard() {
       }
       const profileData = await getMyProfile();
       setProfile(profileData);
+      const seesAll = getActualRole() === "super_admin";
       const managerId = profileData.roleProfileId ?? undefined;
 
       const [
@@ -216,11 +196,13 @@ export default function ManagerDashboard() {
         getExecutives().catch(() => [] as ExecutiveRecord[]),
         managerId != null
           ? getCorporates(managerId).catch(() => [] as CorporateRecord[])
-          : Promise.resolve([] as CorporateRecord[]),
+          : seesAll
+            ? getCorporates().catch(() => [] as CorporateRecord[])
+            : Promise.resolve([] as CorporateRecord[]),
         managerId != null
           ? getAccounts({ managerId }).catch(() => [] as AccountRecord[])
           : getAccounts().catch(() => [] as AccountRecord[]),
-        profileIsEbu(profileData)
+        profileIsEbu(profileData) || seesAll
           ? getTeamLeads().catch(() => [] as TeamLeadRecord[])
           : Promise.resolve([] as TeamLeadRecord[]),
         getExpiringContracts(6).catch(() => [] as ExpiringContractRecord[]),
@@ -260,9 +242,14 @@ export default function ManagerDashboard() {
   const managerProfileId = profile?.roleProfileId ?? null;
 
   const teamExecutives = useMemo(() => {
-    if (managerProfileId == null) return executives;
-    return executives.filter((e) => e.managerId === managerProfileId);
-  }, [executives, managerProfileId]);
+    const scopeIds = new Set(
+      [managerProfileId, profile?.personId].filter((id): id is number => typeof id === "number" && id > 0),
+    );
+    if (!scopeIds.size) return executives;
+    const matched = executives.filter((e) => e.managerId != null && scopeIds.has(Number(e.managerId)));
+    // The executives API is already limited to this manager's team, including legacy person-id links.
+    return matched.length > 0 && matched.length === executives.length ? matched : executives;
+  }, [executives, managerProfileId, profile?.personId]);
 
   const teamExecIds = useMemo(
     () => new Set(teamExecutives.map((e) => e.executiveId)),
@@ -279,7 +266,7 @@ export default function ManagerDashboard() {
   const openStatuses = new Set(["new", "assigned", "in_progress", "escalated"]);
 
   const openTicketsCount = scopedTickets.filter((t) => openStatuses.has(t.status)).length;
-  const breachedCount = scopedTickets.filter((t) => getSlaHealthLabel(t) === "Breached").length;
+  const breachedCount = tickets.filter((t) => getSlaHealthLabel(t) === "Breached").length;
 
   const now = new Date();
   const thisMonthKey = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
@@ -503,6 +490,7 @@ export default function ManagerDashboard() {
     "Your department";
 
   const slaPieTotal = slaBuckets.reduce((s, x) => s + x.value, 0);
+  const slaHasBreakdown = slaBuckets.some((row) => row.name !== "No tickets" && row.value > 0);
 
   if (loading) {
     return (
@@ -520,136 +508,157 @@ export default function ManagerDashboard() {
   }
 
   return (
-    <div className="space-y-8 animate-in fade-in duration-500 slide-in-from-bottom-4">
-      <div>
-        <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900">Management Dashboard</h1>
-        <p className="text-sm text-slate-500 mt-1">{departmentSubtitle}</p>
+    <div className="flex flex-col gap-7 animate-in fade-in duration-500">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-col gap-1.5">
+          <h1 className="text-3xl font-normal text-slate-800">Overview</h1>
+          <p className="text-xs text-slate-500">{departmentSubtitle}</p>
+        </div>
+        <button
+          type="button"
+          onClick={() => navigate("/tickets")}
+          className="inline-flex h-9 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-800"
+        >
+          View tickets
+          <ThemeIcon src={arrowRightIcon} className="h-4 w-4 text-slate-500" />
+        </button>
       </div>
 
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-6">
-        <StatCard
-          label="Team Size"
-          value={teamExecutives.length}
-          sub="Active executives"
-          icon={Users}
-        />
-        <StatCard
-          label="Open Tickets"
-          value={openTicketsCount}
-          sub="Across all executives"
-          icon={Headphones}
-        />
-        <StatCard
-          label="Visits This Month"
-          value={visitsCompletedThisMonth}
-          sub="Completed this month"
-          icon={CalendarDays}
-        />
-        <StatCard
-          label="Breached SLAs"
-          value={breachedCount}
-          sub="Requires attention"
-          subClassName="text-red-600 font-medium"
-          icon={AlertCircle}
-          iconClassName="text-red-500"
-        />
-        <StatCard
-          label="Monthly Spending"
-          value={`N$ ${Number(monthlySpendingTotal || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
-          sub="Paid invoices this month"
-          icon={TrendingUp}
-          iconClassName="text-emerald-500"
-        />
-        <StatCard
-          label="Contracts Expiring (6M)"
-          value={expiringContracts.length}
-          sub={
-            nextExpiringContract
-              ? `${nextExpiringContract.corporateName || nextExpiringContract.accountName} in ${nextExpiringContract.daysRemaining} day(s)`
-              : "No upcoming expiries"
-          }
-          subClassName={expiringContracts.length > 0 ? "text-amber-700 font-medium" : "text-slate-400"}
-          icon={Clock}
-          iconClassName={expiringContracts.length > 0 ? "text-amber-500" : "text-slate-400"}
-        />
-      </div>
+      <section className="flex flex-col gap-3.5">
+        <div className="flex items-center justify-between gap-3">
+          <h3 className="text-base font-normal text-slate-800">Team operations</h3>
+          <p className="text-xs text-slate-500">Tickets, visits & service quality</p>
+        </div>
+        <BreachedSlaBanner count={breachedCount} onReview={() => navigate("/sla-monitoring")} />
+        <div className="grid gap-3.5 sm:grid-cols-2 xl:grid-cols-3">
+          <StatCard label="Team Size" value={teamExecutives.length} sub="Active executives" icon={usersIcon} />
+          <StatCard label="Open Tickets" value={openTicketsCount} sub="Across all executives" icon={inboxIcon} />
+          <StatCard label="Visits This Month" value={visitsCompletedThisMonth} sub="Completed this month" icon={calendarIcon} />
+          <StatCard
+            label="Monthly Spending"
+            value={`N$ ${Number(monthlySpendingTotal || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+            sub="Paid invoices this month"
+            icon={ticketsIcon}
+          />
+          <StatCard
+            label="Contracts Expiring"
+            value={expiringContracts.length}
+            sub={
+              nextExpiringContract
+                ? `${nextExpiringContract.corporateName || nextExpiringContract.accountName} in ${nextExpiringContract.daysRemaining} day(s)`
+                : "No upcoming expiries"
+            }
+            icon={fileClockIcon}
+            iconClassName={expiringContracts.length > 0 ? "text-yellow-700" : undefined}
+          />
+          <StatCard
+            label="Avg Customer Rating"
+            value={avgCustomerRating > 0 ? avgCustomerRating.toFixed(1) : "—"}
+            sub={ratingTrend}
+            icon={starIcon}
+          />
+        </div>
+      </section>
 
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <TrendStatCard
-          label="Total Corporates"
-          value={corporatesCount}
-          sub={formatTrend(corporatesThisMonth, corporatesLastMonth)}
-        />
-        <TrendStatCard
-          label="Total Lines"
-          value={totalLines}
-          sub={formatTrend(accountsThisMonth, accountsLastMonth)}
-        />
-        <TrendStatCard
-          label="Avg Customer Rating"
-          value={avgCustomerRating > 0 ? avgCustomerRating.toFixed(1) : "—"}
-          sub={ratingTrend}
-        />
-        <TrendStatCard
-          label="Visit Completion Rate"
-          value={visitCompletionRate ? `${visitCompletionRate}%` : "—"}
-          sub={
-            visitRateLastMonth
-              ? `${visitCompletionRate >= visitRateLastMonth ? "+" : ""}${visitCompletionRate - visitRateLastMonth}% vs last month`
-              : formatTrend(visitsCompletedThisMonth, visitsCompletedLastMonth)
-          }
-        />
-      </div>
+      <section className="flex flex-col gap-3.5">
+        <div className="flex items-center justify-between gap-3">
+          <h3 className="text-base font-normal text-slate-800">Organization & accounts</h3>
+          <p className="text-xs text-slate-500">Portfolio overview</p>
+        </div>
+        <div className="grid gap-3.5 sm:grid-cols-2 xl:grid-cols-3">
+          <StatCard label="Total Corporates" value={corporatesCount} sub={formatTrend(corporatesThisMonth, corporatesLastMonth)} icon={buildingIcon} />
+          <StatCard label="Total Lines" value={totalLines} sub={formatTrend(accountsThisMonth, accountsLastMonth)} icon={usersIcon} />
+          <StatCard
+            label="Visit Completion Rate"
+            value={visitCompletionRate ? `${visitCompletionRate}%` : "—"}
+            sub={
+              visitRateLastMonth
+                ? `${visitCompletionRate >= visitRateLastMonth ? "+" : ""}${visitCompletionRate - visitRateLastMonth}% vs last month`
+                : formatTrend(visitsCompletedThisMonth, visitsCompletedLastMonth)
+            }
+            icon={calendarIcon}
+          />
+        </div>
+      </section>
 
-      <div className="grid gap-6 lg:grid-cols-7">
-        <Card className="lg:col-span-4 rounded-xl border border-slate-200/90 shadow-sm">
-          <CardHeader>
-            <CardTitle>Ticketing Volume</CardTitle>
-          </CardHeader>
-          <CardContent className="pl-2">
-            <TicketVolumeChart tickets={scopedTickets} />
-          </CardContent>
-        </Card>
-
-        <Card className="lg:col-span-3 rounded-xl border border-slate-200/90 shadow-sm">
-          <CardHeader>
-            <CardTitle>SLA Health Distribution</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="h-[220px] sm:h-[300px] flex items-center justify-center relative w-full min-w-0">
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie
-                    data={slaBuckets}
-                    cx="50%"
-                    cy="50%"
-                    innerRadius={60}
-                    outerRadius={88}
-                    paddingAngle={2}
-                    dataKey="value"
-                    nameKey="name"
-                    startAngle={90}
-                    endAngle={-270}
-                  >
-                    {slaBuckets.map((entry, index) => (
-                      <Cell key={`sla-${entry.name}-${index}`} fill={entry.color} stroke="none" />
-                    ))}
-                  </Pie>
-                  <Tooltip />
-                </PieChart>
-              </ResponsiveContainer>
-              <div className="absolute flex flex-col items-center pointer-events-none">
-                <span className="text-sm text-slate-500">Tickets</span>
-                <span className="text-2xl font-bold text-slate-800">{slaPieTotal || "—"}</span>
+      <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_24rem]">
+        <div className="rounded-xl border border-slate-200 bg-white p-5">
+          <TicketVolumeChart
+            tickets={scopedTickets}
+            title="Ticketing Volume"
+            onViewTickets={() => navigate("/tickets")}
+          />
+        </div>
+        <div className="flex min-h-full flex-col gap-4 rounded-xl border border-slate-200 bg-white p-5">
+          <h3 className="text-base font-normal text-slate-800">SLA Health Distribution</h3>
+          {!slaHasBreakdown ? (
+            <>
+              <div className="inline-flex items-center gap-1.5">
+                <ThemeIcon src={alertIcon} className="h-4 w-4 text-yellow-700" />
+                <p className="text-xs font-semibold text-yellow-700">Breakdown unavailable</p>
               </div>
-            </div>
-          </CardContent>
-        </Card>
+              <div className="rounded-lg bg-orange-50 p-3.5">
+                <p className="text-xs font-medium text-slate-800">“No open tickets with SLA status”</p>
+                <p className="mt-2 text-xs leading-5 text-slate-500">
+                  {breachedCount > 0
+                    ? `The summary reports ${breachedCount.toLocaleString()} breached SLAs, but no SLA breakdown is available. Review the underlying data before assessing SLA health.`
+                    : "There are no open tickets with an SLA status to chart."}
+                </p>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="relative h-52 w-full min-w-0">
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie
+                      data={slaBuckets}
+                      cx="50%"
+                      cy="50%"
+                      innerRadius={52}
+                      outerRadius={72}
+                      paddingAngle={2}
+                      dataKey="value"
+                      nameKey="name"
+                      startAngle={90}
+                      endAngle={-270}
+                    >
+                      {slaBuckets.map((entry, index) => (
+                        <Cell key={`sla-${entry.name}-${index}`} fill={entry.color} stroke="none" />
+                      ))}
+                    </Pie>
+                    <Tooltip />
+                  </PieChart>
+                </ResponsiveContainer>
+                <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
+                  <span className="text-xs text-slate-500">Tickets</span>
+                  <span className="text-2xl font-normal text-slate-800 tabular-nums">{slaPieTotal}</span>
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-3 text-xs text-slate-500">
+                {slaBuckets.filter((row) => row.value > 0).map((row) => (
+                  <span key={row.name} className="inline-flex items-center gap-1.5">
+                    <span className="size-1.5 rounded-full" style={{ background: row.color }} />
+                    {row.name} ({row.value})
+                  </span>
+                ))}
+              </div>
+            </>
+          )}
+          <button
+            type="button"
+            onClick={() => navigate("/sla-monitoring")}
+            className="mt-auto inline-flex items-center gap-1.5 pt-0.5 text-xs font-semibold text-sky-700"
+          >
+            Review SLA data
+            <ThemeIcon src={arrowRightIcon} className="h-3.5 w-3.5 text-sky-700" />
+          </button>
+        </div>
       </div>
 
-      <Card className="rounded-xl border border-slate-200/90 shadow-sm">
+      <Card>
         <CardHeader>
-          <CardTitle>Monthly Spending Trend</CardTitle>
+          <CardTitle className="text-base font-normal text-slate-800">Monthly Spending Trend</CardTitle>
         </CardHeader>
         <CardContent className="pl-2">
           <div className="h-[220px] sm:h-[280px]">
@@ -673,11 +682,10 @@ export default function ManagerDashboard() {
         </CardContent>
       </Card>
 
-      <Card className="rounded-xl border border-slate-200/90 shadow-sm overflow-hidden">
-        <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between space-y-0 border-b border-slate-100 bg-white pb-4">
-          <div className="flex items-center gap-2">
-            <Users className="h-5 w-5 text-mtc-blue shrink-0" />
-            <CardTitle className="text-lg">Executive Performance Overview</CardTitle>
+      <Card className="overflow-hidden">
+        <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between space-y-0 border-b border-slate-100 pb-4">
+          <div>
+            <CardTitle className="text-base font-normal text-slate-800">Executive Performance Overview</CardTitle>
           </div>
           <div className="relative w-full sm:max-w-xs">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400 pointer-events-none" />
@@ -759,7 +767,7 @@ export default function ManagerDashboard() {
                       <TableCell className="text-right">
                         <button
                           type="button"
-                          className="text-mtc-blue hover:underline text-sm font-medium"
+                          className="text-xs font-semibold text-sky-700 hover:underline"
                           onClick={() => navigate("/tickets")}
                         >
                           View
@@ -801,10 +809,9 @@ export default function ManagerDashboard() {
         </CardContent>
       </Card>
 
-      <Card className="rounded-xl border border-slate-200/90 shadow-sm overflow-hidden">
-        <CardHeader className="flex flex-row items-center gap-2 space-y-0 border-b border-slate-100 bg-white pb-4">
-          <List className="h-5 w-5 text-mtc-blue shrink-0" />
-          <CardTitle className="text-lg">Recent Department Activities</CardTitle>
+      <Card className="overflow-hidden">
+        <CardHeader className="border-b border-slate-100 pb-4">
+          <CardTitle className="text-base font-normal text-slate-800">Recent Department Activities</CardTitle>
         </CardHeader>
         <CardContent className="p-0">
           <div className="overflow-x-auto">

@@ -328,7 +328,7 @@ const ForgotPassword: React.FC = () => {
           align-items: center;
           justify-content: center;
           padding: 40px 24px;
-          font-family: 'Helvetica Neue', Arial, sans-serif;
+          font-family: Inter, "Segoe UI", system-ui, -apple-system, sans-serif;
           position: relative;
           overflow: hidden;
         }

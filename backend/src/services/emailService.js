@@ -131,7 +131,7 @@ class EmailService {
    * @returns {Promise<Object>} - Email send result
    */
   async sendVerificationEmail(email, name, verificationToken, userId) {
-    const verificationUrl = `${process.env.FRONTEND_URL || "http://localhost:3000"}/verify-email?token=${verificationToken}&userId=${userId}`;
+    const verificationUrl = `${process.env.FRONTEND_URL || "https://businessuat.mtc.com.na"}/verify-email?token=${verificationToken}&userId=${userId}`;
 
     const mailOptions = {
       from: {
@@ -184,7 +184,7 @@ class EmailService {
    * @returns {Promise<Object>} - Email send result
    */
   async sendPasswordResetEmail(email, name, resetToken, userId) {
-    const resetUrl = `${process.env.FRONTEND_URL || "http://localhost:3000"}/reset-password?token=${resetToken}&userId=${userId}`;
+    const resetUrl = `${process.env.FRONTEND_URL || "https://businessuat.mtc.com.na"}/reset-password?token=${resetToken}&userId=${userId}`;
 
     const mailOptions = {
       from: {

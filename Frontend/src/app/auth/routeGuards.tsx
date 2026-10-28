@@ -6,7 +6,7 @@ import Dashboard from "../components/dashboard";
 import ExecutiveDashboard from "../components/executive/ExecutiveDashboard";
 import ManagerDashboard from "../components/manager/ManagerDashboard";
 import GmDashboard from "../components/gm/GmDashboard";
-import { getMyProfile } from "../api/authApi";
+import { getActualRole, getCurrentUser, getMyProfile } from "../api/authApi";
 import { profileIsEbu } from "../utils/departmentSegment";
 import { isExecutiveRole, isGmRole, isManagerRole, isSupervisorRole } from "../utils/roleCapabilities";
 import { hasValidSession, needsPasswordChange } from "./session";
@@ -14,14 +14,7 @@ import { useSessionWatch } from "./useSessionWatch";
 
 const isAuthenticated = () => hasValidSession();
 
-const getCurrentRole = (): string | null => {
-  try {
-    const user = JSON.parse(localStorage.getItem("currentUser") || "null");
-    return user?.role ?? null;
-  } catch {
-    return null;
-  }
-};
+const getCurrentRole = (): string | null => getCurrentUser()?.role ?? null;
 
 export const RequireAuth = () => {
   const outletContext = useOutletContext();
@@ -53,6 +46,12 @@ export const RequireEbu = () => {
 
   useEffect(() => {
     let cancelled = false;
+    if (getActualRole() === "super_admin") {
+      setAllowed(true);
+      return () => {
+        cancelled = true;
+      };
+    }
     getMyProfile()
       .then((profile) => {
         if (!cancelled) setAllowed(profileIsEbu(profile));

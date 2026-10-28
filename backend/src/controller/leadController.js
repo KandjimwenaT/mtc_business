@@ -4,7 +4,9 @@ const ExecutiveStaff = require("../models/ExecutiveStaff");
 const Manager = require("../models/Manager");
 const {
   createForUserIds,
+  resolveExecutiveIdsReportingToManager,
   resolveManagerTeamNotificationUserIds,
+  resolveOversightExecutiveIds,
 } = require("../services/notificationService");
 const { resolveRequesterDepartment } = require("../services/corporateSegmentScope");
 const realtime = require("../services/realtimeService");
@@ -32,35 +34,11 @@ const LEAD_CREATOR_ROLES = new Set(["executive_staff", "supervisor"]);
 async function getManagerExecIds(userId) {
   const manager = await Manager.findOne({ where: { userId } });
   if (!manager) return null;
-  const execs = await ExecutiveStaff.findAll({
-    where: { managerId: manager.managerId },
-    attributes: ["executiveId"],
-  });
-  return execs.map((e) => e.executiveId).filter(Boolean);
+  return resolveExecutiveIdsReportingToManager(manager);
 }
 
 async function getSupervisorManagedExecutiveIds(user) {
-  const exec = await ExecutiveStaff.findOne({
-    where: { userId: user.id },
-    attributes: ["executiveId", "managerId"],
-  });
-
-  if (!exec) {
-    const fallback = await getManagerExecIds(user.id);
-    return fallback === null ? [] : fallback;
-  }
-
-  if (!exec.managerId) {
-    return exec.executiveId ? [exec.executiveId] : [];
-  }
-
-  const team = await ExecutiveStaff.findAll({
-    where: { managerId: exec.managerId },
-    attributes: ["executiveId"],
-  });
-  const ids = team.map((row) => row.executiveId).filter(Boolean);
-  if (ids.length) return ids;
-  return exec.executiveId ? [exec.executiveId] : [];
+  return resolveOversightExecutiveIds(user);
 }
 
 exports.createLead = async (req, res) => {
@@ -137,6 +115,37 @@ exports.getTeamLeads = async (req, res) => {
   try {
     const user = req.user;
 
+    if (user.role === "super_admin") {
+      const leads = await Lead.findAll({ order: [["createdAt", "DESC"]] });
+      const userIds = [...new Set(leads.map((lead) => lead.userId).filter(Boolean))];
+      const executives = userIds.length
+        ? await ExecutiveStaff.findAll({
+            where: { userId: { [Op.in]: userIds } },
+            attributes: ["executiveId", "userId", "firstName", "lastName", "email"],
+          })
+        : [];
+      const executiveByUserId = new Map(
+        executives
+          .filter((exec) => exec.userId)
+          .map((exec) => [
+            exec.userId,
+            {
+              executiveId: exec.executiveId,
+              userId: exec.userId,
+              firstName: exec.firstName,
+              lastName: exec.lastName,
+              fullName: `${exec.firstName || ""} ${exec.lastName || ""}`.trim(),
+              email: exec.email,
+            },
+          ])
+      );
+      const rows = leads.map((lead) => {
+        const raw = lead.toJSON();
+        return { ...raw, executive: executiveByUserId.get(raw.userId) || null };
+      });
+      return res.status(200).json({ status: "Success", leads: rows });
+    }
+
     if (!["manager", "supervisor"].includes(user.role)) {
       return res.status(403).json({ status: "Failed", message: "Unauthorized" });
     }
@@ -206,6 +215,11 @@ exports.getTeamLeads = async (req, res) => {
 
 exports.getMyLeads = async (req, res) => {
   try {
+    if (req.user.role === "super_admin") {
+      const leads = await Lead.findAll({ order: [["createdAt", "DESC"]] });
+      return res.status(200).json({ status: "Success", leads });
+    }
+
     await assertEbuLeadsAccess(req.user);
 
     const leads = await Lead.findAll({

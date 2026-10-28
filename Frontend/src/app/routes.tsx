@@ -11,6 +11,7 @@ import NotFound from "./components/not-found";
 import { CustomerAccount } from "./components/customer/customerAccount";
 import { VisitCalendar } from "./components/customer/VisitCalendar";
 import SuperAdminProfile from "./profiles/super-admin-profile";
+import AdminProfile from "./profiles/admin-profile";
 import AccountManagerProfile from "./profiles/account-manager-profile";
 import GMCRMProfile from "./profiles/gm-crm-profile";
 import BackOfficeProfile from "./profiles/back-office-profile";
@@ -61,7 +62,7 @@ export const router = createBrowserRouter([
           {
             element: (
               <RequireRole
-                allowed={["customer", "admin", "executive_staff", "manager", "supervisor", "gm"]}
+                allowed={["customer", "admin", "super_admin", "executive_staff", "manager", "supervisor", "gm"]}
               />
             ),
             children: [{ path: "notifications", Component: Notifications }],
@@ -76,18 +77,24 @@ export const router = createBrowserRouter([
             ],
           },
           {
-            element: <RequireRole allowed={["admin"]} />,
-            children: [{ path: "admin-corporates", Component: AdminCorporate }],
+            element: <RequireRole allowed={["admin", "super_admin"]} />,
+            children: [
+              { path: "admin-corporates", Component: AdminCorporate },
+              { path: "admin-profile", Component: AdminProfile },
+            ],
           },
           {
-            element: <RequireRole allowed={["admin", "executive_staff", "manager", "supervisor", "gm"]} />,
+            element: <RequireRole allowed={["super_admin"]} />,
+            children: [{ path: "super-admin-profile", Component: SuperAdminProfile }],
+          },
+          {
+            element: <RequireRole allowed={["admin", "super_admin", "executive_staff", "manager", "supervisor", "gm"]} />,
             children: [
               { path: "dashboard", Component: StaffDashboardEntry },
               { path: "corporates", Component: Corporates },
               { path: "tickets", Component: Tickets },
               { path: "tickets/:id", Component: TicketDetails },
               { path: "control-cards", element: <Navigate to="/visits" replace /> },
-              { path: "super-admin-profile", Component: SuperAdminProfile },
               { path: "account-manager-profile", Component: AccountManagerProfile },
               { path: "gm-crm-profile", Component: GMCRMProfile },
               { path: "back-office-profile", Component: BackOfficeProfile },

@@ -297,7 +297,7 @@ export default function TicketDetails() {
         </Button>
         <div className="flex-1 min-w-0">
           <div className="flex flex-wrap items-center gap-2 sm:gap-3">
-            <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900 break-words">{ticket.ticketNumber}</h2>
+            <h2 className="text-3xl font-normal text-slate-800 break-words">{ticket.ticketNumber}</h2>
             <Badge variant={slaInfo.label === "Breached" ? "danger" : "success"} className="uppercase px-2 py-1">
               {slaInfo.label}
             </Badge>

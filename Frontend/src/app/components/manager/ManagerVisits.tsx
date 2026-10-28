@@ -518,7 +518,7 @@ export default function ManagerVisits() {
       {/* Header */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900">Visits & Engagements</h2>
+          <h2 className="text-3xl font-normal text-slate-800">Visits & Engagements</h2>
           <p className="text-sm text-slate-500">
             {isGm
               ? "Oversight — visits under your managers (read-only)."

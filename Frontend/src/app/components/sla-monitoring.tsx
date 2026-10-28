@@ -138,7 +138,7 @@ export default function SLAMonitoring() {
   return (
     <div className="space-y-6 animate-in fade-in duration-500 slide-in-from-bottom-4">
       <div>
-        <h2 className="text-2xl font-bold tracking-tight text-slate-900">SLA Monitoring & Escalations</h2>
+        <h2 className="text-3xl font-normal text-slate-800">SLA Monitoring & Escalations</h2>
         <p className="text-sm text-slate-500">
           Live ticket health using the SLA rules configured in My Profile. Warning and at-risk
           thresholds come from remaining hours; escalation levels come from hours since the ticket was logged.

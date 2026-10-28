@@ -54,7 +54,7 @@ export default function ExecutiveProfile() {
     <div className="space-y-6 animate-in fade-in duration-500 slide-in-from-bottom-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900">Executive Portal</h2>
+          <h2 className="text-3xl font-normal text-slate-800">Executive Portal</h2>
           <p className="text-sm text-slate-500">Field operations, visit tracking, and customer engagement</p>
         </div>
         <Badge variant="default" className="text-sm px-3 py-1 w-fit">Executive</Badge>

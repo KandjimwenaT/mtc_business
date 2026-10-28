@@ -5,10 +5,14 @@ import { Card, CardContent } from "../ui/card";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
 import { Label } from "../ui/label";
-import { Badge } from "../ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "../ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "../ui/table";
-import { Search, Filter, X, Loader2, ChevronDown, ChevronUp, Clock } from "lucide-react";
+import { Search, Filter, X, Loader2, ChevronDown, ChevronUp } from "lucide-react";
+import { ThemeIcon } from "../theme-icon";
+import ticketsIcon from "../../../assets/New Theme Icon/tickets.svg";
+import inboxIcon from "../../../assets/New Theme Icon/inbox.svg";
+import alertIcon from "../../../assets/New Theme Icon/triangle-alert.svg";
+import alarmIcon from "../../../assets/New Theme Icon/alarm-clock.svg";
 import { type TicketRecord } from "../../api/ticketApi";
 import { getSlaInfo } from "../../utils/sla";
 import { getCurrentUser } from "../../api/authApi";
@@ -16,22 +20,51 @@ import { format } from "date-fns";
 import StaffTicketCreate from "../staff/StaffTicketCreate";
 import { useExecutiveData } from "../../hooks/useExecutiveData";
 
+const CHIP = "inline-flex items-center rounded-md border px-2 py-[3px] text-[10px] font-semibold";
+
 const STATUS_CONFIG: Record<string, { label: string; className: string }> = {
-  new: { label: "New", className: "bg-blue-100 text-blue-800" },
-  assigned: { label: "Assigned", className: "bg-indigo-100 text-indigo-800" },
-  in_progress: { label: "In Progress", className: "bg-yellow-100 text-yellow-800" },
-  escalated: { label: "Escalated", className: "bg-orange-100 text-orange-800" },
-  resolved: { label: "Resolved", className: "bg-green-100 text-green-800" },
-  closed: { label: "Closed", className: "bg-slate-100 text-slate-600" },
-  rejected: { label: "Rejected", className: "bg-red-100 text-red-800" },
+  new: { label: "New", className: "border-sky-200 bg-sky-50 text-sky-700" },
+  assigned: { label: "Assigned", className: "border-indigo-200 bg-indigo-50 text-sky-700" },
+  in_progress: { label: "In Progress", className: "border-amber-200 bg-amber-50 text-amber-700" },
+  escalated: { label: "Escalated", className: "border-orange-200 bg-orange-50 text-orange-700" },
+  resolved: { label: "Resolved", className: "border-emerald-200 bg-emerald-50 text-emerald-700" },
+  closed: { label: "Closed", className: "border-slate-200 bg-slate-50 text-slate-600" },
+  rejected: { label: "Rejected", className: "border-rose-200 bg-red-50 text-rose-700" },
 };
 
 const SLA_BADGE_CLASSES: Record<string, string> = {
-  success: "bg-green-100 text-green-800",
-  warning: "bg-yellow-100 text-yellow-800",
-  danger: "bg-orange-100 text-orange-800",
-  breached: "bg-red-100 text-red-800",
+  success: "border-emerald-200 bg-emerald-50 text-emerald-700",
+  warning: "border-amber-200 bg-amber-50 text-amber-700",
+  danger: "border-orange-200 bg-orange-50 text-orange-700",
+  breached: "border-rose-200 bg-red-50 text-rose-700",
 };
+
+function MetricCard({
+  label,
+  value,
+  caption,
+  icon,
+  valueClassName = "text-slate-800",
+}: {
+  label: string;
+  value: string;
+  caption: string;
+  icon: string;
+  valueClassName?: string;
+}) {
+  return (
+    <div className="flex flex-col gap-3.5 rounded-xl border border-slate-200 bg-white p-4">
+      <div className="flex items-start justify-between gap-2">
+        <p className="min-w-0 text-xs font-medium leading-tight text-slate-500">{label}</p>
+        <ThemeIcon src={icon} className="h-4 w-4 text-slate-400" />
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <p className={`text-3xl font-normal tabular-nums ${valueClassName}`}>{value}</p>
+        <p className="text-xs font-normal text-slate-500">{caption}</p>
+      </div>
+    </div>
+  );
+}
 
 export default function ExecutiveTickets() {
   const navigate = useNavigate();
@@ -82,7 +115,7 @@ export default function ExecutiveTickets() {
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
-        <Loader2 className="h-8 w-8 animate-spin text-blue-600" />
+        <Loader2 className="h-8 w-8 animate-spin text-sky-700" />
         <span className="ml-2 text-slate-500">Loading assigned tickets...</span>
       </div>
     );
@@ -92,13 +125,12 @@ export default function ExecutiveTickets() {
     <div className="space-y-6 animate-in fade-in duration-500 slide-in-from-bottom-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900">Assigned Tickets</h2>
-          <p className="text-sm text-slate-500">View tickets from your linked customer accounts (handled by assigned admins)</p>
+          <h2 className="text-3xl font-normal text-slate-800">Assigned Tickets</h2>
+          <p className="text-xs text-slate-500">View tickets from your linked customer accounts (handled by assigned admins)</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Button
-            variant="default"
-            className="bg-blue-600 text-white hover:bg-blue-700 w-full sm:w-auto"
+            className="w-full sm:w-auto"
             onClick={() => setShowCreateForm((prev) => !prev)}
           >
             {showCreateForm ? "Hide Create Ticket" : "Create Ticket"}
@@ -125,48 +157,25 @@ export default function ExecutiveTickets() {
 
       {/* Summary cards */}
       <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5">
-        <Card>
-          <CardContent className="pt-6">
-            <div className="text-sm font-medium text-slate-500">Total Assigned</div>
-            <div className="text-2xl font-bold">{tickets.length}</div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-6">
-            <div className="text-sm font-medium text-slate-500">Open</div>
-            <div className="text-2xl font-bold text-amber-600">{openCount}</div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-6">
-            <div className="text-sm font-medium text-slate-500">Requests</div>
-            <div className="text-2xl font-bold text-blue-600">{requestCount}</div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-6">
-            <div className="text-sm font-medium text-slate-500">Complaints</div>
-            <div className="text-2xl font-bold text-orange-600">{complaintCount}</div>
-          </CardContent>
-        </Card>
-        <Card className={breachedCount > 0 ? "border-red-200 bg-red-50" : ""}>
-          <CardContent className="pt-6">
-            <div className="text-sm font-medium text-slate-500 flex items-center gap-1">
-              <Clock className="h-3.5 w-3.5" /> SLA Breached
-            </div>
-            <div className={`text-2xl font-bold ${breachedCount > 0 ? "text-red-600" : "text-green-600"}`}>
-              {breachedCount}
-            </div>
-          </CardContent>
-        </Card>
+        <MetricCard label="Total Assigned" value={tickets.length.toLocaleString()} caption="Tickets linked to you" icon={ticketsIcon} />
+        <MetricCard label="Open" value={openCount.toLocaleString()} caption="Still in progress" icon={inboxIcon} />
+        <MetricCard label="Requests" value={requestCount.toLocaleString()} caption="Service requests" icon={inboxIcon} />
+        <MetricCard label="Complaints" value={complaintCount.toLocaleString()} caption="Customer complaints" icon={alertIcon} />
+        <MetricCard
+          label="SLA Breached"
+          value={breachedCount.toLocaleString()}
+          caption={breachedCount > 0 ? "Open tickets past their deadline" : "No open tickets past their deadline"}
+          icon={alarmIcon}
+          valueClassName={breachedCount > 0 ? "text-rose-700" : "text-emerald-700"}
+        />
       </div>
 
       {/* Filter panel */}
       {showFilterPanel && (
-        <Card className="animate-in slide-in-from-top-2 border-blue-100">
-          <CardContent className="pt-6">
+        <Card className="animate-in slide-in-from-top-2">
+          <CardContent className="pt-4">
             <div className="flex items-center justify-between mb-4">
-              <h4 className="font-semibold text-sm text-slate-700">Filters</h4>
+              <h4 className="text-sm font-normal text-slate-800">Filters</h4>
               <Button
                 variant="ghost"
                 size="sm"
@@ -229,30 +238,30 @@ export default function ExecutiveTickets() {
           <div className="flex flex-wrap gap-2">
             <button
               onClick={() => setCategoryFilter("all")}
-              className={`cursor-pointer rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
+              className={`cursor-pointer rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${
                 categoryFilter === "all"
-                  ? "bg-slate-900 text-white border-slate-900"
-                  : "bg-slate-100 text-slate-800 border-transparent hover:bg-slate-200"
+                  ? "border-slate-200 bg-white text-slate-800 shadow-[0_1px_2px_rgba(16,24,40,0.04)]"
+                  : "border-transparent bg-slate-100 text-slate-500 hover:text-slate-800"
               }`}
             >
               All ({tickets.length})
             </button>
             <button
               onClick={() => setCategoryFilter("request")}
-              className={`cursor-pointer rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
+              className={`cursor-pointer rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${
                 categoryFilter === "request"
-                  ? "bg-blue-600 text-white border-blue-600"
-                  : "bg-blue-100 text-blue-800 border-transparent hover:bg-blue-200"
+                  ? "border-slate-200 bg-white text-sky-700 shadow-[0_1px_2px_rgba(16,24,40,0.04)]"
+                  : "border-transparent bg-slate-100 text-slate-500 hover:text-slate-800"
               }`}
             >
               Requests ({requestCount})
             </button>
             <button
               onClick={() => setCategoryFilter("complaint")}
-              className={`cursor-pointer rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
+              className={`cursor-pointer rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${
                 categoryFilter === "complaint"
-                  ? "bg-orange-600 text-white border-orange-600"
-                  : "bg-orange-100 text-orange-800 border-transparent hover:bg-orange-200"
+                  ? "border-slate-200 bg-white text-slate-800 shadow-[0_1px_2px_rgba(16,24,40,0.04)]"
+                  : "border-transparent bg-slate-100 text-slate-500 hover:text-slate-800"
               }`}
             >
               Complaints ({complaintCount})
@@ -260,10 +269,10 @@ export default function ExecutiveTickets() {
             {breachedCount > 0 && (
               <button
                 onClick={() => setSlaFilter(slaFilter === "breached" ? "all" : "breached")}
-                className={`cursor-pointer rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
+                className={`cursor-pointer rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${
                   slaFilter === "breached"
-                    ? "bg-red-600 text-white border-red-600"
-                    : "bg-red-100 text-red-800 border-transparent hover:bg-red-200"
+                    ? "border-rose-200 bg-red-50 text-rose-700"
+                    : "border-transparent bg-slate-100 text-slate-500 hover:text-slate-800"
                 }`}
               >
                 Breached ({breachedCount})
@@ -272,10 +281,10 @@ export default function ExecutiveTickets() {
             {atRiskCount > 0 && (
               <button
                 onClick={() => setSlaFilter(slaFilter === "danger" ? "all" : "danger")}
-                className={`cursor-pointer rounded-full border px-3 py-1.5 text-xs font-semibold transition-colors ${
+                className={`cursor-pointer rounded-lg border px-3 py-1.5 text-xs font-medium transition-colors ${
                   slaFilter === "danger"
-                    ? "bg-orange-600 text-white border-orange-600"
-                    : "bg-orange-100 text-orange-800 border-transparent hover:bg-orange-200"
+                    ? "border-orange-200 bg-orange-50 text-orange-700"
+                    : "border-transparent bg-slate-100 text-slate-500 hover:text-slate-800"
                 }`}
               >
                 At Risk ({atRiskCount})
@@ -311,7 +320,7 @@ export default function ExecutiveTickets() {
               </TableRow>
             ) : (
               filteredTickets.map((ticket) => {
-                const statusCfg = STATUS_CONFIG[ticket.status] || { label: ticket.status, className: "bg-slate-100 text-slate-600" };
+                const statusCfg = STATUS_CONFIG[ticket.status] || { label: ticket.status, className: "border-slate-200 bg-slate-50 text-slate-600" };
                 const sla = getSlaInfo(ticket);
                 const isExpanded = expandedTicketId === ticket.ticketId;
 
@@ -321,34 +330,33 @@ export default function ExecutiveTickets() {
                       <button
                         type="button"
                         onClick={() => navigate(getTicketDetailPath(currentUser?.role, ticket.ticketId))}
-                        className="font-medium text-blue-600 hover:underline"
+                        className="text-xs font-semibold text-sky-700 hover:underline"
                       >
                         {ticket.ticketNumber}
                       </button>
                     </TableCell>
-                    <TableCell className="text-slate-900 font-medium">{ticket.accountName || "—"}</TableCell>
+                    <TableCell className="font-medium text-slate-800">{ticket.accountName || "—"}</TableCell>
                     <TableCell>
-                      <Badge variant={ticket.category === "request" ? "default" : "destructive"} className="capitalize">
+                      <span className={`${CHIP} capitalize ${ticket.category === "request" ? "border-sky-200 bg-sky-50 text-sky-700" : "border-rose-200 bg-red-50 text-rose-700"}`}>
                         {ticket.category}
-                      </Badge>
+                      </span>
                     </TableCell>
                     <TableCell className="capitalize">{ticket.type.replace(/_/g, " ")}</TableCell>
                     <TableCell className="max-w-[180px] truncate">{ticket.title}</TableCell>
                     <TableCell>
-                      <Badge
-                        variant="outline"
-                        className={
-                          ticket.priority === "critical" ? "border-red-500 text-red-700" :
-                          ticket.priority === "high" ? "border-orange-500 text-orange-700" :
-                          ticket.priority === "medium" ? "border-yellow-500 text-yellow-700" :
-                          "border-slate-400 text-slate-600"
-                        }
+                      <span
+                        className={`${CHIP} capitalize ${
+                          ticket.priority === "critical" ? "border-rose-200 bg-red-50 text-rose-700" :
+                          ticket.priority === "high" ? "border-orange-200 bg-orange-50 text-orange-700" :
+                          ticket.priority === "medium" ? "border-amber-200 bg-amber-50 text-amber-700" :
+                          "border-slate-200 bg-slate-50 text-slate-600"
+                        }`}
                       >
                         {ticket.priority}
-                      </Badge>
+                      </span>
                     </TableCell>
                     <TableCell>
-                      <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${statusCfg.className}`}>
+                      <span className={`${CHIP} ${statusCfg.className}`}>
                         {statusCfg.label}
                       </span>
                     </TableCell>
@@ -357,8 +365,7 @@ export default function ExecutiveTickets() {
                         <span className="text-slate-400">—</span>
                       ) : (
                         <div className="flex flex-wrap items-center gap-1.5">
-                          <Clock className="h-3.5 w-3.5 flex-shrink-0" />
-                          <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${SLA_BADGE_CLASSES[sla.status]}`}>
+                          <span className={`${CHIP} ${SLA_BADGE_CLASSES[sla.status]}`}>
                             {sla.label}
                           </span>
                           <span className="text-xs text-slate-500">{sla.time}</span>
@@ -388,7 +395,7 @@ export default function ExecutiveTickets() {
           return (
             <div className="border-t border-slate-200 bg-slate-50 p-6 animate-in slide-in-from-top-2">
               <div className="flex items-center justify-between mb-4">
-                <h3 className="font-semibold text-slate-900">
+                <h3 className="text-base font-normal text-slate-800">
                   {ticket.ticketNumber} — {ticket.title}
                 </h3>
                 <Button variant="ghost" size="sm" onClick={() => setExpandedTicketId(null)}>

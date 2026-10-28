@@ -2,7 +2,7 @@ const { resolveRequesterDepartment } = require("../services/corporateSegmentScop
 const slaService = require("../services/slaService");
 
 const WRITE_ROLES = new Set(["manager", "admin"]);
-const READ_ROLES = new Set(["manager", "admin", "supervisor", "gm"]);
+const READ_ROLES = new Set(["manager", "admin", "super_admin", "supervisor", "gm"]);
 
 exports.listSlaConfigs = async (req, res) => {
   try {

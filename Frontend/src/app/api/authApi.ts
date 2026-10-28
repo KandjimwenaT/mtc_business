@@ -112,14 +112,77 @@ export const logoutUser = async (): Promise<void> => {
   }
 };
 
-export const getCurrentUser = (): LoginResponse["user"] | null => {
+type StoredUser = LoginResponse["user"] & {
+  lastName?: string;
+  phone?: string;
+  actualRole?: string;
+  viewAsRole?: string | null;
+};
+
+const VIEW_AS_ALLOWED = new Set(["gm", "manager", "supervisor", "executive_staff", "admin"]);
+
+function readStoredUser(): StoredUser | null {
   try {
     const raw = localStorage.getItem("currentUser");
-    return raw ? (JSON.parse(raw) as LoginResponse["user"]) : null;
+    return raw ? (JSON.parse(raw) as StoredUser) : null;
   } catch {
     return null;
   }
+}
+
+export function getActualRole(): string | null {
+  const stored = readStoredUser();
+  if (!stored) return null;
+  return stored.actualRole || stored.role || null;
+}
+
+export function getViewAsRole(): string | null {
+  const stored = readStoredUser();
+  if (!stored) return null;
+  const actualRole = stored.actualRole || stored.role;
+  if (actualRole !== "super_admin") return null;
+  return stored.viewAsRole || null;
+}
+
+export const getCurrentUser = (): (LoginResponse["user"] & {
+  actualRole?: string;
+  viewAsRole?: string | null;
+}) | null => {
+  const stored = readStoredUser();
+  if (!stored) return null;
+  const actualRole = stored.actualRole || stored.role;
+  const viewAsRole = actualRole === "super_admin" ? stored.viewAsRole || null : null;
+  return {
+    ...stored,
+    actualRole,
+    viewAsRole,
+    role: viewAsRole || actualRole,
+  };
 };
+
+export function setViewAsRole(role: string | null): void {
+  const stored = readStoredUser();
+  if (!stored) return;
+  const actualRole = stored.actualRole || stored.role;
+  if (actualRole !== "super_admin") return;
+  const viewAsRole = role && VIEW_AS_ALLOWED.has(role) ? role : null;
+  localStorage.setItem(
+    "currentUser",
+    JSON.stringify({
+      ...stored,
+      role: actualRole,
+      actualRole,
+      viewAsRole,
+    }),
+  );
+  window.dispatchEvent(new Event("view-as-role"));
+}
+
+function withViewAsRole<T extends { role: string }>(profile: T): T {
+  const viewAs = getViewAsRole();
+  if (!viewAs) return profile;
+  return { ...profile, role: viewAs };
+}
 
 const authHeaders = () => {
   const token = localStorage.getItem("accessToken");
@@ -153,7 +216,23 @@ export const getMyProfile = async (): Promise<UserProfile> => {
     throw new Error(data.message || "Failed to fetch profile");
   }
 
-  return data.profile as UserProfile;
+  const profile = data.profile as UserProfile;
+  const stored = readStoredUser();
+  const storedActual = stored?.actualRole || stored?.role;
+  if (stored && profile.role === "super_admin" && storedActual !== "super_admin") {
+    localStorage.setItem(
+      "currentUser",
+      JSON.stringify({
+        ...stored,
+        role: "super_admin",
+        actualRole: "super_admin",
+        viewAsRole: null,
+      }),
+    );
+    window.dispatchEvent(new Event("view-as-role"));
+  }
+
+  return withViewAsRole(profile);
 };
 
 export const updateMyProfile = async (
@@ -176,19 +255,23 @@ export const updateMyProfile = async (
     throw new Error(data.message || "Failed to update profile");
   }
 
-  // Sync localStorage with updated profile fields
-  const currentUser = getCurrentUser();
-  if (currentUser) {
-    const updated = {
-      ...currentUser,
-      firstName: data.profile.firstName,
-      lastName: data.profile.lastName,
-      phone: data.profile.phone,
-    };
-    localStorage.setItem("currentUser", JSON.stringify(updated));
+  const stored = readStoredUser();
+  if (stored) {
+    const actualRole = stored.actualRole || stored.role;
+    localStorage.setItem(
+      "currentUser",
+      JSON.stringify({
+        ...stored,
+        firstName: data.profile.firstName,
+        lastName: data.profile.lastName,
+        phone: data.profile.phone,
+        role: actualRole,
+        actualRole,
+      }),
+    );
   }
 
-  return data.profile as UserProfile;
+  return withViewAsRole(data.profile as UserProfile);
 };
 
 export const changePassword = async (
@@ -214,11 +297,17 @@ export const changePassword = async (
     throw new Error(data.message || "Failed to change password");
   }
 
-  const currentUser = getCurrentUser();
-  if (currentUser) {
+  const stored = readStoredUser();
+  if (stored) {
+    const actualRole = stored.actualRole || stored.role;
     localStorage.setItem(
       "currentUser",
-      JSON.stringify({ ...currentUser, mustChangePassword: false }),
+      JSON.stringify({
+        ...stored,
+        role: actualRole,
+        actualRole,
+        mustChangePassword: false,
+      }),
     );
   }
 

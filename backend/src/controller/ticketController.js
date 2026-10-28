@@ -11,7 +11,12 @@ const TicketInternalNote = require("../models/TicketInternalNote");
 const TicketActivityLog = require("../models/TicketActivityLog");
 const emailService = require("../services/emailService");
 const { Op } = require("sequelize");
-const { createForUserIds, resolveManagerTeamNotificationUserIds } = require("../services/notificationService");
+const {
+  createForUserIds,
+  notifyManagerTeam,
+  resolveManagerTeamNotificationUserIds,
+  resolveOversightExecutiveIds,
+} = require("../services/notificationService");
 const realtime = require("../services/realtimeService");
 const {
   getAccountsForCustomerUser,
@@ -27,7 +32,7 @@ const {
 const slaService = require("../services/slaService");
 
 const hasExecutiveScope = (role) => ["executive_staff", "supervisor"].includes(role);
-const INTERNAL_NOTE_AUTHOR_ROLES = ["admin", "manager", "supervisor", "gm", "executive_staff"];
+const INTERNAL_NOTE_AUTHOR_ROLES = ["admin", "super_admin", "manager", "supervisor", "gm", "executive_staff"];
 
 // Generate next ticket number:  REQ-00001 / CMP-00001
 async function generateTicketNumber(category) {
@@ -53,7 +58,7 @@ async function getCustomerCorporateAccounts(userEmail) {
 }
 
 async function getStaffAssignableAccounts(user) {
-  if (user.role === "admin") {
+  if (user.role === "admin" || user.role === "super_admin") {
     return Account.findAll({ order: [["created_at", "DESC"]] });
   }
   if (["executive_staff", "supervisor"].includes(user.role)) {
@@ -266,10 +271,12 @@ async function sendTicketBreachNotificationsToManagers(tickets) {
     const managerTeamIds = await resolveManagerTeamNotificationUserIds(ticket.executiveId);
     if (!managerTeamIds.length) continue;
 
+    const executiveName = await resolveExecutiveNameByExecutiveProfileId(ticket.executiveId);
+    const ownerBit = executiveName ? `${executiveName}: ` : "";
     const slaPayload = {
       type: "sla",
       title: `SLA Breached - ${ticket.ticketNumber}`,
-      message: `${ticket.ticketNumber} has breached SLA and requires immediate action.`,
+      message: `${ownerBit}${ticket.ticketNumber} has breached SLA and requires immediate action.`,
       priority: "high",
       metadata: {
         ticketId: ticket.ticketId,
@@ -352,13 +359,15 @@ async function sendTicketCreationNotifications(ticket, user, isCustomerCreator) 
   const customerUserIdSet = new Set(customerUserIds);
   const uniqueRecipientIds = Array.from(new Set(recipientUserIds.filter(Boolean)));
   const nonCustomerRecipientIds = uniqueRecipientIds.filter((id) => !customerUserIdSet.has(id));
+  const executiveName = await resolveExecutiveNameByExecutiveProfileId(ticket.executiveId);
+  const ownerBit = executiveName ? ` Assigned executive: ${executiveName}.` : "";
 
   await createForUserIds(
     nonCustomerRecipientIds,
     {
     type: "ticket",
     title: `Ticket Created - ${ticket.ticketNumber}`,
-    message: `${ticket.title} has been created with status ${ticket.status.replace(/_/g, " ")}.`,
+    message: `${ticket.title} has been created with status ${ticket.status.replace(/_/g, " ")}.${ownerBit}`,
     priority: ticket.priority === "critical" || ticket.priority === "high" ? ticket.priority : "normal",
     metadata: {
       ticketId: ticket.ticketId,
@@ -686,6 +695,12 @@ exports.getAssignedTickets = async (req, res) => {
   try {
     const user = req.user;
 
+    if (user.role === "super_admin") {
+      const tickets = await Ticket.findAll({ order: [["created_at", "DESC"]] });
+      const result = await Promise.all(tickets.map((ticket) => toTicketWithAccountContext(ticket)));
+      return res.status(200).json({ status: "Success", tickets: result });
+    }
+
     if (!hasExecutiveScope(user.role)) {
       return res.status(403).json({ status: "Failed", message: "Only executive or supervisor users can access this endpoint" });
     }
@@ -762,7 +777,7 @@ exports.getAllTickets = async (req, res) => {
   try {
     const user = req.user;
 
-    if (!["admin", "manager", "supervisor", "gm"].includes(user.role)) {
+    if (!["admin", "super_admin", "manager", "supervisor", "gm"].includes(user.role)) {
       return res.status(403).json({ status: "Failed", message: "Insufficient permissions" });
     }
 
@@ -797,10 +812,43 @@ exports.getAllTickets = async (req, res) => {
       tickets = await filterTicketsByGmScope(tickets, gmProfile);
     }
 
+    if (user.role === "manager" || user.role === "supervisor") {
+      const execIds = await resolveOversightExecutiveIds(user);
+      const allowed = new Set(execIds.map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0));
+      tickets = tickets.filter((ticket) => allowed.has(Number(ticket.executiveId)));
+    }
+
     await slaService.applyAutoEscalations(tickets);
 
     if (["manager", "supervisor"].includes(user.role)) {
       await sendTicketBreachNotificationsToManagers(tickets);
+      const openForOversight = tickets
+        .filter((ticket) => !["resolved", "closed", "rejected"].includes(ticket.status))
+        .slice(0, 25);
+      await Promise.all(
+        openForOversight.map((ticket) =>
+          notifyManagerTeam(
+            ticket.executiveId,
+            {
+              type: "ticket",
+              title: `Ticket Created - ${ticket.ticketNumber}`,
+              message: `${ticket.title} is ${String(ticket.status || "").replace(/_/g, " ")} and needs oversight.`,
+              priority: ticket.priority === "critical" || ticket.priority === "high" ? ticket.priority : "normal",
+              metadata: {
+                ticketId: ticket.ticketId,
+                ticketNumber: ticket.ticketNumber,
+                category: ticket.category,
+                status: ticket.status,
+                executiveId: ticket.executiveId,
+                kind: "ticket_oversight",
+              },
+            },
+            { once: true, skipEmail: true }
+          ).catch((err) => {
+            console.error("Failed to backfill ticket oversight notification:", err?.message || err);
+          })
+        )
+      );
     }
 
     const result = await Promise.all(tickets.map((t) => toTicketWithAccountContext(t)));
@@ -818,7 +866,7 @@ exports.getTicketById = async (req, res) => {
     const user = req.user;
     const { ticketId } = req.params;
 
-    if (!["admin", "manager", "supervisor", "gm", "executive_staff", "customer"].includes(user.role)) {
+    if (!["admin", "super_admin", "manager", "supervisor", "gm", "executive_staff", "customer"].includes(user.role)) {
       return res.status(403).json({ status: "Failed", message: "Insufficient permissions" });
     }
 
@@ -834,10 +882,24 @@ exports.getTicketById = async (req, res) => {
       }
     }
 
-    if (hasExecutiveScope(user.role)) {
+    if (user.role === "executive_staff") {
       const executive = await ExecutiveStaff.findOne({ where: { userId: user.id } });
       if (!executive || executive.executiveId !== ticket.executiveId) {
         return res.status(403).json({ status: "Failed", message: "You are not assigned to this ticket" });
+      }
+    }
+
+    if (user.role === "manager" || user.role === "supervisor") {
+      const execIds = await resolveOversightExecutiveIds(user);
+      const allowed = new Set(execIds.map((id) => Number(id)));
+      const ownRow =
+        user.role === "supervisor"
+          ? await ExecutiveStaff.findOne({ where: { userId: user.id }, attributes: ["executiveId"] })
+          : null;
+      const ownsAsExecutive =
+        ownRow?.executiveId != null && Number(ownRow.executiveId) === Number(ticket.executiveId);
+      if (!ownsAsExecutive && !allowed.has(Number(ticket.executiveId))) {
+        return res.status(403).json({ status: "Failed", message: "This ticket is not within your team's scope" });
       }
     }
 
@@ -865,7 +927,7 @@ exports.updateTicket = async (req, res) => {
   try {
     const user = req.user;
 
-    if (user.role !== "admin") {
+    if (user.role !== "admin" && user.role !== "super_admin") {
       return res.status(403).json({ status: "Failed", message: "Only assigned admins can update tickets" });
     }
 
@@ -877,9 +939,11 @@ exports.updateTicket = async (req, res) => {
       return res.status(404).json({ status: "Failed", message: "Ticket not found" });
     }
 
-    const assignedAdmin = await resolveAdminPersonForTicketAndEmail(ticket, user.email);
-    if (!assignedAdmin) {
-      return res.status(403).json({ status: "Failed", message: "You are not assigned to handle this ticket" });
+    if (user.role !== "super_admin") {
+      const assignedAdmin = await resolveAdminPersonForTicketAndEmail(ticket, user.email);
+      if (!assignedAdmin) {
+        return res.status(403).json({ status: "Failed", message: "You are not assigned to handle this ticket" });
+      }
     }
 
     const allowedStatuses = ["new", "assigned", "in_progress", "escalated", "resolved", "closed", "rejected"];
@@ -922,19 +986,37 @@ exports.updateTicket = async (req, res) => {
     const customerUserIds = await resolveCustomerUserIdsByAccountId(ticket.accountId);
     const executiveUserId = await resolveExecutiveUserIdByExecutiveProfileId(ticket.executiveId);
     const managerTeamIds = await resolveManagerTeamNotificationUserIds(ticket.executiveId);
+    const executiveName = await resolveExecutiveNameByExecutiveProfileId(ticket.executiveId);
+    const ownerBit = executiveName ? ` Assigned executive: ${executiveName}.` : "";
     const execIds = executiveUserId != null ? [executiveUserId] : [];
+    const staffRecipientIds = [...new Set([...execIds, ...managerTeamIds])];
+    const statusMessage = `${ticket.title} status is now ${ticket.status.replace(/_/g, " ")}.`;
+    const ticketMeta = {
+      ticketId: ticket.ticketId,
+      ticketNumber: ticket.ticketNumber,
+      status: ticket.status,
+      executiveId: ticket.executiveId || null,
+      executiveName: executiveName || null,
+    };
     await createForUserIds(
-      [...customerUserIds, ...execIds, ...managerTeamIds],
+      staffRecipientIds,
       {
       type: "ticket",
       title: `Ticket Updated - ${ticket.ticketNumber}`,
-      message: `${ticket.title} status is now ${ticket.status.replace(/_/g, " ")}.`,
+      message: `${statusMessage}${ownerBit}`,
       priority: ticket.status === "escalated" ? "high" : "normal",
-      metadata: {
-        ticketId: ticket.ticketId,
-        ticketNumber: ticket.ticketNumber,
-        status: ticket.status,
+      metadata: ticketMeta,
       },
+      { excludeUserIds: [user.id] }
+    );
+    await createForUserIds(
+      customerUserIds,
+      {
+      type: "ticket",
+      title: `Ticket Updated - ${ticket.ticketNumber}`,
+      message: statusMessage,
+      priority: ticket.status === "escalated" ? "high" : "normal",
+      metadata: ticketMeta,
       },
       { excludeUserIds: [user.id] }
     );

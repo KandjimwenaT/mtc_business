@@ -10,6 +10,7 @@
 
 const AccountManager = require("../models/AccountManager");
 const CorporateContactPerson = require("../models/CorporateContactPerson");
+const Corporate = require("../models/Corporate");
 const Account = require("../models/Account");
 
 const isInt = (v) => Number.isInteger(v);
@@ -40,11 +41,73 @@ async function getAccountManagerForCustomerUser(userEmail) {
   return AccountManager.findOne({ where: { email: userEmail } });
 }
 
+function accountApprovalFromCorporate(status) {
+  if (status === "approved" || status === "rejected") return status;
+  return "pending";
+}
+
+// A corporate created without a child account still needs one so the linked
+// customer can open the portal. Reuses {corporateNumber}-default when free.
+async function ensureDefaultAccountForCorporate(corporateOrId, contactPerson) {
+  const corporate = corporateOrId && corporateOrId.corporateId
+    ? corporateOrId
+    : await Corporate.findByPk(corporateOrId);
+  if (!corporate?.corporateId) return null;
+
+  const existing = await Account.findOne({ where: { corporateId: corporate.corporateId } });
+  if (existing) return existing;
+
+  let contact = contactPerson || null;
+  if (!contact) {
+    const people = await getContactPersonsForCorporate(corporate.corporateId);
+    contact = people[0] || null;
+  }
+
+  const email = String(contact?.email || corporate.businessEmail || "").trim();
+  if (!email) return null;
+
+  const baseNumber = String(corporate.corporateNumber || `CORP${corporate.corporateId}`).trim();
+  let accountNumber = `${baseNumber}-default`;
+  const numberTaken = await Account.findOne({ where: { accountNumber } });
+  if (numberTaken) accountNumber = `${baseNumber}-default-${corporate.corporateId}`;
+
+  try {
+    return await Account.create({
+      corporateId: corporate.corporateId,
+      accountNumber,
+      accountName: corporate.corporateName,
+      accountType: corporate.corporateType || "Corporate",
+      executiveId: corporate.executiveId || null,
+      managerId: corporate.managerId || null,
+      contactFirstName: String(contact?.firstName || "Corporate").trim() || "Corporate",
+      contactLastName: String(contact?.lastName || "Contact").trim() || "Contact",
+      contactEmail: email,
+      contactPhone: contact?.phone || null,
+      industry: corporate.industry || null,
+      isActive: corporate.isActive !== false,
+      approvalStatus: accountApprovalFromCorporate(corporate.approvalStatus),
+    });
+  } catch (err) {
+    if (err?.name === "SequelizeUniqueConstraintError") {
+      return Account.findOne({ where: { corporateId: corporate.corporateId } });
+    }
+    throw err;
+  }
+}
+
 // Returns every Account linked to any corporate the given customer user has
 // access to (via primary AccountManager.corporateId or the junction table).
 async function getAccountsForCustomerUser(userEmail) {
-  const ids = await getCorporateIdsForCustomerUser(userEmail);
+  const accountManager = await getAccountManagerForCustomerUser(userEmail);
+  if (!accountManager) return [];
+  const ids = await getCorporateIdsForAccountManager(accountManager);
   if (ids.length === 0) return [];
+
+  const corporates = await Corporate.findAll({ where: { corporateId: ids } });
+  for (const corporate of corporates) {
+    await ensureDefaultAccountForCorporate(corporate, accountManager);
+  }
+
   return Account.findAll({
     where: { corporateId: ids },
     order: [["created_at", "DESC"]],
@@ -80,6 +143,7 @@ function isContactPlaceholderOrEmpty(account) {
   const em = (account.contactEmail || "").trim().toLowerCase();
   if (!fn && !ln && !em) return true;
   if (fn === "Imported" && ln === "Contact") return true;
+  if (fn === "Corporate" && ln === "Contact") return true;
   if (em.endsWith("@placeholder.local") || em.endsWith(".contact@placeholder.local")) return true;
   return false;
 }
@@ -183,6 +247,7 @@ module.exports = {
   getCorporateIdsForCustomerUser,
   getAccountManagerForCustomerUser,
   getAccountsForCustomerUser,
+  ensureDefaultAccountForCorporate,
   getAccountManagerIdsForCorporate,
   getContactPersonsForCorporate,
   isContactPlaceholderOrEmpty,

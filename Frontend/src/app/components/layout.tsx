@@ -7,7 +7,6 @@ import {
   Timer, 
   Car, 
   Bell, 
-  LogOut,
   UserCircle,
   Menu,
   X,
@@ -17,11 +16,20 @@ import {
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { cn } from "./ui-components";
+import { ThemeIcon } from "./theme-icon";
 import mtcLogo from "../../assets/logo.png";
-import { logoutUser, getCurrentUser, getMyProfile } from "../api/authApi";
+import dashboardIcon from "../../assets/New Theme Icon/layout-dashboard.svg";
+import corporatesIcon from "../../assets/New Theme Icon/building-2.svg";
+import ticketsIcon from "../../assets/New Theme Icon/tickets.svg";
+import bellIcon from "../../assets/New Theme Icon/bell.svg";
+import profileIcon from "../../assets/New Theme Icon/circle-user-round.svg";
+import logOutIcon from "../../assets/New Theme Icon/log-out.svg";
+import chevronRightIcon from "../../assets/New Theme Icon/chevron-right.svg";
+import chevronDownIcon from "../../assets/New Theme Icon/chevron-down.svg";
+import { logoutUser, getActualRole, getCurrentUser, getMyProfile, setViewAsRole } from "../api/authApi";
 import { getUnreadNotificationCount } from "../api/notificationsApi";
 import { profileIsEbu } from "../utils/departmentSegment";
-import { isExecutiveRole, isGmRole, isManagerRole, isSupervisorRole } from "../utils/roleCapabilities";
+import { isExecutiveRole, isGmRole, isManagerRole, isPortalAdminRole, isSupervisorRole } from "../utils/roleCapabilities";
 import { useSupervisorHybridBadges } from "../hooks/useSupervisorHybridBadges";
 import { ExecutiveDataProvider } from "../hooks/useExecutiveData";
 import { LiveUpdatesProvider } from "../realtime/LiveUpdatesProvider";
@@ -31,8 +39,10 @@ export default function Layout() {
   const location = useLocation();
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [unreadCount, setUnreadCount] = useState(0);
+  const [viewAsTick, setViewAsTick] = useState(0);
   const supervisorBadges = useSupervisorHybridBadges();
   const currentUser = getCurrentUser();
+  void viewAsTick;
   const [showLeadsTab, setShowLeadsTab] = useState(false);
   const isCustomer = currentUser?.role === "customer";
   const isSupervisor = isSupervisorRole(currentUser?.role);
@@ -40,8 +50,24 @@ export default function Layout() {
   const isExecutiveStaff = currentUser?.role === "executive_staff";
   const hasManagerScope = isManagerRole(currentUser?.role);
   const isGm = isGmRole(currentUser?.role);
+  const isPortalAdmin = isPortalAdminRole(currentUser?.role);
+  const signedInAsSuperAdmin = currentUser?.actualRole === "super_admin" || getActualRole() === "super_admin";
 
   useEffect(() => {
+    getMyProfile().catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    const onViewAs = () => setViewAsTick((tick) => tick + 1);
+    window.addEventListener("view-as-role", onViewAs);
+    return () => window.removeEventListener("view-as-role", onViewAs);
+  }, []);
+
+  useEffect(() => {
+    if (signedInAsSuperAdmin && (hasManagerScope || isExecutiveStaff)) {
+      setShowLeadsTab(true);
+      return;
+    }
     if (isCustomer || (!hasManagerScope && !isExecutiveStaff)) {
       setShowLeadsTab(false);
       return;
@@ -57,7 +83,7 @@ export default function Layout() {
     return () => {
       cancelled = true;
     };
-  }, [isCustomer, hasManagerScope, isExecutiveStaff]);
+  }, [isCustomer, hasManagerScope, isExecutiveStaff, signedInAsSuperAdmin]);
   const notificationsHref =
     hasExecutiveScope ? "/executive-notifications" : "/notifications";
 
@@ -93,7 +119,8 @@ export default function Layout() {
 
   const profileHref =
 
-    currentUser?.role === "admin" ? "/super-admin-profile" :
+    currentUser?.role === "super_admin" ? "/super-admin-profile" :
+    currentUser?.role === "admin" ? "/admin-profile" :
     currentUser?.role === "customer" ? "/account-manager-profile" :
     isSupervisor ? "/supervisor-profile" :
     hasManagerScope ? "/management-profile" :
@@ -118,21 +145,37 @@ export default function Layout() {
           ? [{ name: "Leads", href: "/executive-leads", icon: FileText }]
           : []),
         {
-          name: currentUser?.role === "admin" ? "Admin Corporates" : "Corporates",
-          href: currentUser?.role === "admin" ? "/admin-corporates" : "/corporates",
+          name: isPortalAdmin ? "Admin Corporates" : "Corporates",
+          href: isPortalAdmin ? "/admin-corporates" : "/corporates",
           icon: Building2,
         },
         { name: "Tickets", href: isSupervisor ? "/tickets" : hasExecutiveScope ? "/executive-tickets" : "/tickets", icon: Ticket },
-        ...(currentUser?.role !== "admin"
+        ...(!isPortalAdmin
           ? [{ name: "Visits", href: isGm || isSupervisor ? "/manager-visits" : hasExecutiveScope ? "/executive-visits" : hasManagerScope ? "/manager-visits" : "/visits", icon: CalendarCheck }]
           : []),
-        ...(!hasExecutiveScope && currentUser?.role !== "admin"
+        ...(!hasExecutiveScope && !isPortalAdmin
           ? [{ name: "SLA Monitoring", href: "/sla-monitoring", icon: Timer }]
           : []),
-        ...(currentUser?.role !== "admin" ? [{ name: "Vehicles", href: "/vehicles", icon: Car }] : []),
+        ...(!isPortalAdmin ? [{ name: "Vehicles", href: "/vehicles", icon: Car }] : []),
         { name: "Notifications", href: notificationsHref, icon: Bell },
         { name: "My Profile", href: profileHref, icon: UserCircle },
       ];
+
+  const navIcons: Record<string, string> = {
+    Dashboard: dashboardIcon,
+    Corporates: corporatesIcon,
+    "Admin Corporates": corporatesIcon,
+    "Customer Account": corporatesIcon,
+    Tickets: ticketsIcon,
+    Notifications: bellIcon,
+    "My Profile": profileIcon,
+  };
+
+  const pageName =
+    navigation.find((item) => location.pathname.startsWith(item.href))?.name || "Dashboard";
+  const roleLabel = currentUser?.role?.replace(/_/g, " ") ?? "—";
+  const displayName = currentUser?.firstName ?? "User";
+  const initial = displayName.trim().charAt(0).toUpperCase() || "U";
 
   return (
     <div className="flex h-screen overflow-hidden bg-background font-sans text-foreground">
@@ -145,11 +188,11 @@ export default function Layout() {
       )}
 
       {/* Sidebar */}
-      <div className={`${mobileMenuOpen ? 'translate-x-0' : '-translate-x-full'} sm:translate-x-0 fixed sm:static inset-y-0 left-0 z-50 w-64 flex-col bg-mtc-blue shadow-md flex transition-transform duration-200`}>
-        <div className="flex h-16 shrink-0 items-center justify-between px-6 border-b border-white/10">
+      <div className={`${mobileMenuOpen ? 'translate-x-0' : '-translate-x-full'} sm:translate-x-0 fixed sm:static inset-y-0 left-0 z-50 w-60 flex-col bg-mtc-blue shadow-md flex transition-transform duration-200`}>
+        <div className="flex h-16 shrink-0 items-center justify-between px-4">
           <div className="flex items-center gap-2">
-            <img src={mtcLogo} alt="MTC Logo" className="h-8 w-8 rounded object-cover" />
-            <span className="text-xl font-bold tracking-tight text-white">MTC Portal</span>
+            <img src={mtcLogo} alt="MTC Logo" className="h-7 w-7 rounded-md object-cover" />
+            <span className="text-lg font-bold tracking-tight text-white">MTC Portal</span>
           </div>
           <button 
             className="sm:hidden text-slate-400 hover:text-white"
@@ -158,8 +201,9 @@ export default function Layout() {
             <X className="h-5 w-5" />
           </button>
         </div>
-        <div className="flex flex-1 flex-col overflow-y-auto pt-4">
-          <nav className="flex-1 space-y-1 px-3">
+        <div className="flex flex-1 flex-col overflow-y-auto px-3.5">
+          <p className="px-3 pb-1.5 text-[10px] font-semibold tracking-wide text-white/70">WORKSPACE</p>
+          <nav className="flex-1 space-y-1">
             {navigation.map((item) => {
               const isActive = location.pathname.startsWith(item.href) && (item.href !== "/" || location.pathname === "/");
               return (
@@ -168,19 +212,26 @@ export default function Layout() {
                   to={item.href}
                   onClick={() => setMobileMenuOpen(false)}
                   className={cn(
-                    "group flex items-center rounded-md px-3 py-2 text-sm font-medium transition-colors",
+                    "group flex h-10 items-center gap-2.5 rounded-lg px-3 text-xs transition-colors",
                     isActive
-                      ? "bg-white text-mtc-blue"
-                      : "text-white hover:bg-white/10 hover:text-white"
+                      ? "bg-white font-semibold text-mtc-blue"
+                      : "font-medium text-white/85 hover:bg-white/10 hover:text-white"
                   )}
                 >
-                  <item.icon
-                    className={cn(
-                      "mr-3 h-5 w-5 flex-shrink-0",
-                      isActive ? "text-mtc-blue" : "text-white group-hover:text-white"
-                    )}
-                    aria-hidden="true"
-                  />
+                  {navIcons[item.name] ? (
+                    <ThemeIcon
+                      src={navIcons[item.name]}
+                      className={cn("h-4 w-4", isActive ? "text-mtc-blue" : "text-white")}
+                    />
+                  ) : (
+                    <item.icon
+                      className={cn(
+                        "h-4 w-4 flex-shrink-0",
+                        isActive ? "text-mtc-blue" : "text-white group-hover:text-white"
+                      )}
+                      aria-hidden="true"
+                    />
+                  )}
                   <span className="flex flex-1 items-center justify-between gap-2 min-w-0">
                     <span className="truncate">{item.name}</span>
                     {isSupervisor && item.name === "Tickets" && supervisorBadges.ticketsNavDot && (
@@ -203,12 +254,22 @@ export default function Layout() {
             })}
           </nav>
         </div>
-        <div className="border-t border-white/10 p-4">
-          <button 
+        <div className="flex flex-col gap-4 px-3.5 pb-5">
+          <div className="h-px bg-white/25" />
+          <div className="flex items-center gap-2.5 px-2">
+            <div className="flex size-8 items-center justify-center rounded-full bg-white/20 text-xs font-semibold text-white">
+              {initial}
+            </div>
+            <div className="min-w-0">
+              <p className="truncate text-xs font-semibold text-white">{displayName}</p>
+              <p className="truncate text-xs font-normal capitalize text-white/75">{roleLabel}</p>
+            </div>
+          </div>
+          <button
             onClick={handleLogout}
-            className="flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-gray-50 hover:bg-white/40 hover:text-mtc-blue transition-colors  border-slate-400 border justify-center bg-white/20"
+            className="flex w-full items-center gap-2.5 rounded-lg px-3 py-2.5 text-xs font-normal text-white/80 transition-colors hover:bg-white/10 hover:text-white"
           >
-            <LogOut className="h-5 w-5 text-gray-40" />
+            <ThemeIcon src={logOutIcon} className="h-4 w-4 text-white/80" />
             Sign Out
           </button>
         </div>
@@ -217,49 +278,75 @@ export default function Layout() {
       {/* Main Content Area */}
       <div className="flex flex-1 flex-col overflow-hidden">
         {/* Top Header */}
-        <header className="flex h-16 shrink-0 items-center justify-between border-b border-slate-200 bg-white px-4 sm:px-6 shadow-sm">
-          <div className="flex items-center gap-4">
-            <button 
-              className="sm:hidden rounded-md p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-700"
+        <header className="flex h-16 shrink-0 items-center justify-between gap-3 border-b border-slate-200 bg-white px-4 sm:px-8">
+          <div className="flex min-w-0 items-center gap-2">
+            <button
+              className="rounded-lg p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-800 sm:hidden"
               onClick={() => setMobileMenuOpen(true)}
             >
               <Menu className="h-5 w-5" />
             </button>
-            <h1 className="text-lg font-semibold text-slate-800">
-              {navigation.find(n => location.pathname.startsWith(n.href))?.name || "Dashboard"}
-            </h1>
-          </div>
-          
-          <div className="flex items-center gap-4">
-            <div className="relative flex items-center gap-2 border-r border-slate-200 pr-4">
-               <label className="text-xs font-medium text-slate-500">Role:</label>
-               <span className="text-sm font-medium text-slate-700 capitalize">
-                 {currentUser?.role?.replace(/_/g, " ") ?? "—"}
-               </span>
+            <div className="flex min-w-0 items-center gap-2.5 text-xs text-slate-500">
+              <span className="shrink-0">Workspace</span>
+              <ThemeIcon src={chevronRightIcon} className="h-3 w-3 shrink-0 text-slate-500" />
+              <span className="truncate font-semibold text-slate-800">{pageName}</span>
             </div>
-            
-            <button className="relative rounded-full p-1 text-slate-400 hover:text-slate-600 focus:outline-none" onClick={() => navigate(notificationsHref)}>
+          </div>
+
+          <div className="flex shrink-0 items-center gap-5">
+            {signedInAsSuperAdmin && (
+              <label className="hidden items-center gap-2 text-xs text-slate-500 sm:flex">
+                View as
+                <select
+                  className="h-8 rounded-md border border-slate-200 bg-white px-2 text-xs font-semibold text-slate-800"
+                  value={currentUser?.viewAsRole || ""}
+                  onChange={(event) => {
+                    const next = event.target.value || null;
+                    setViewAsRole(next);
+                    setViewAsTick((tick) => tick + 1);
+                    navigate("/dashboard");
+                  }}
+                >
+                  <option value="">Super Admin</option>
+                  <option value="gm">GM</option>
+                  <option value="manager">Manager</option>
+                  <option value="supervisor">Supervisor</option>
+                  <option value="executive_staff">Executive</option>
+                  <option value="admin">Admin</option>
+                </select>
+              </label>
+            )}
+            <span className="hidden rounded-md bg-indigo-50 px-2 py-[5px] text-xs font-semibold text-sky-700 sm:inline-flex">
+              Role: <span className="ml-1 capitalize">{roleLabel}</span>
+            </span>
+            <button
+              className="relative text-slate-500 hover:text-slate-800 focus:outline-none"
+              onClick={() => navigate(notificationsHref)}
+            >
               <span className="sr-only">View notifications</span>
-              <Bell className="h-6 w-6" aria-hidden="true" />
+              <ThemeIcon src={bellIcon} className="h-5 w-5 text-slate-500" />
               {unreadCount > 0 && (
-                <span className="absolute right-1 top-1 flex h-2.5 w-2.5 rounded-full bg-red-500 ring-2 ring-white"></span>
+                <span className="absolute -right-0.5 -top-0.5 flex h-2 w-2 rounded-full bg-red-500 ring-2 ring-white"></span>
               )}
             </button>
-            <div className="flex items-center gap-2 pl-2">
-              <div className="flex h-8 w-8 items-center justify-center rounded-full bg-slate-200 text-slate-600">
-                <UserCircle className="h-8 w-8" />
-              </div>
-              <div className="hidden flex-col md:flex">
-                <span className="text-sm font-medium text-slate-700">{currentUser?.firstName ?? "User"}</span>
-                <span className="text-xs text-slate-500 capitalize">{currentUser?.role?.replace(/_/g, " ") ?? "—"}</span>
-              </div>
-            </div>
+            <span className="hidden h-6 w-px bg-slate-200 sm:block" />
+            <button
+              type="button"
+              onClick={() => navigate(profileHref)}
+              className="flex items-center gap-2 text-left"
+            >
+              <span className="flex size-7 items-center justify-center rounded-full bg-indigo-50 text-xs font-semibold text-sky-700">
+                {initial}
+              </span>
+              <span className="hidden text-xs font-medium text-slate-800 md:inline">{displayName}</span>
+              <ThemeIcon src={chevronDownIcon} className="hidden h-3.5 w-3.5 text-slate-500 md:block" />
+            </button>
           </div>
         </header>
 
         {/* Main Content Scrollable Area */}
-        <main className="flex-1 overflow-y-auto p-6">
-          <div className="mx-auto max-w-7xl">
+        <main className="flex-1 overflow-y-auto bg-slate-100 px-4 py-6 sm:px-8">
+          <div className="mx-auto w-full">
              <LiveUpdatesProvider>
                <ExecutiveDataProvider>
                  <Outlet context={{ role: currentUser?.role ?? "", supervisorBadges }} />

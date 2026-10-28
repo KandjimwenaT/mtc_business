@@ -1,7 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useOutletContext } from "react-router";
-import { Badge, Button, Card, CardContent, Input, Label, Select, Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./ui-components";
-import { Clock, Filter, Loader2, Search, X } from "lucide-react";
+import { Button, Card, CardContent, Input, Label, Select, Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "./ui-components";
+import { ThemeIcon } from "./theme-icon";
+import ticketsIcon from "../../assets/New Theme Icon/tickets.svg";
+import inboxIcon from "../../assets/New Theme Icon/inbox.svg";
+import alertIcon from "../../assets/New Theme Icon/triangle-alert.svg";
+import alarmIcon from "../../assets/New Theme Icon/alarm-clock.svg";
+import { Filter, Loader2, Search, X } from "lucide-react";
 import { getAllTickets, getAssignedTickets, type TicketRecord } from "../api/ticketApi";
 import { getCurrentUser } from "../api/authApi";
 import { getTicketDetailPath } from "../utils/ticketNavigation";
@@ -13,22 +18,51 @@ import { defaultSupervisorBadges } from "../hooks/useSupervisorHybridBadges";
 import { useLiveRefresh } from "../hooks/useLiveRefresh";
 import StaffTicketCreate from "./staff/StaffTicketCreate";
 
+const CHIP = "inline-flex items-center rounded-md border px-2 py-[3px] text-[10px] font-semibold";
+
 const STATUS_CONFIG: Record<string, { label: string; className: string }> = {
-  new: { label: "New", className: "bg-blue-100 text-blue-800" },
-  assigned: { label: "Assigned", className: "bg-indigo-100 text-indigo-800" },
-  in_progress: { label: "In Progress", className: "bg-yellow-100 text-yellow-800" },
-  escalated: { label: "Escalated", className: "bg-orange-100 text-orange-800" },
-  resolved: { label: "Resolved", className: "bg-green-100 text-green-800" },
-  closed: { label: "Closed", className: "bg-slate-100 text-slate-600" },
-  rejected: { label: "Rejected", className: "bg-red-100 text-red-800" },
+  new: { label: "New", className: "border-sky-200 bg-sky-50 text-sky-700" },
+  assigned: { label: "Assigned", className: "border-indigo-200 bg-indigo-50 text-sky-700" },
+  in_progress: { label: "In Progress", className: "border-amber-200 bg-amber-50 text-amber-700" },
+  escalated: { label: "Escalated", className: "border-orange-200 bg-orange-50 text-orange-700" },
+  resolved: { label: "Resolved", className: "border-emerald-200 bg-emerald-50 text-emerald-700" },
+  closed: { label: "Closed", className: "border-slate-200 bg-slate-50 text-slate-600" },
+  rejected: { label: "Rejected", className: "border-rose-200 bg-red-50 text-rose-700" },
 };
 
 const SLA_BADGE_CLASSES: Record<string, string> = {
-  success: "bg-green-100 text-green-800",
-  warning: "bg-yellow-100 text-yellow-800",
-  danger: "bg-orange-100 text-orange-800",
-  breached: "bg-red-100 text-red-800",
+  success: "border-emerald-200 bg-emerald-50 text-emerald-700",
+  warning: "border-amber-200 bg-amber-50 text-amber-700",
+  danger: "border-orange-200 bg-orange-50 text-orange-700",
+  breached: "border-rose-200 bg-red-50 text-rose-700",
 };
+
+function MetricCard({
+  label,
+  value,
+  caption,
+  icon,
+  valueClassName = "text-slate-800",
+}: {
+  label: string;
+  value: string;
+  caption: string;
+  icon: string;
+  valueClassName?: string;
+}) {
+  return (
+    <div className="flex flex-col gap-3.5 rounded-xl border border-slate-200 bg-white p-4">
+      <div className="flex items-start justify-between gap-2">
+        <p className="min-w-0 text-xs font-medium leading-tight text-slate-500">{label}</p>
+        <ThemeIcon src={icon} className="h-4 w-4 text-slate-400" />
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <p className={`text-3xl font-normal tabular-nums ${valueClassName}`}>{value}</p>
+        <p className="text-xs font-normal text-slate-500">{caption}</p>
+      </div>
+    </div>
+  );
+}
 
 export default function Tickets() {
   const outletCtx = useOutletContext<StaffLayoutOutletContext | undefined>();
@@ -44,7 +78,7 @@ export default function Tickets() {
   const [showCreateForm, setShowCreateForm] = useState(false);
   const [statusFilter, setStatusFilter] = useState("all");
   const [categoryFilter, setCategoryFilter] = useState("all");
-  const canCreateTicket = ["admin", "executive_staff", "supervisor", "manager"].includes(currentUser?.role || "");
+  const canCreateTicket = ["admin", "super_admin", "executive_staff", "supervisor", "manager"].includes(currentUser?.role || "");
 
   const refreshBadges = supervisorBadges.refresh;
   const fetchTickets = useCallback(async (opts?: { silent?: boolean }) => {
@@ -91,7 +125,7 @@ export default function Tickets() {
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
-        <Loader2 className="h-8 w-8 animate-spin text-blue-600" />
+        <Loader2 className="h-8 w-8 animate-spin text-sky-700" />
         <span className="ml-2 text-slate-500">Loading tickets...</span>
       </div>
     );
@@ -101,8 +135,8 @@ export default function Tickets() {
     <div className="space-y-6 animate-in fade-in duration-500 slide-in-from-bottom-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900">Tickets & Complaints</h2>
-          <p className="text-sm text-slate-500">
+          <h2 className="text-3xl font-normal text-slate-800">Tickets & Complaints</h2>
+          <p className="text-xs text-slate-500">
             {isSupervisor && supervisorView === "executive"
               ? "My assigned executive tickets"
               : "Customer tickets linked to your assigned executives"}
@@ -111,15 +145,14 @@ export default function Tickets() {
         <div className="flex flex-wrap items-center gap-2">
           {canCreateTicket && (
             <Button
-              variant="default"
-              className="bg-blue-600 text-white hover:bg-blue-700 w-full sm:w-auto"
+              className="w-full sm:w-auto"
               onClick={() => setShowCreateForm((prev) => !prev)}
             >
               {showCreateForm ? "Hide Create Ticket" : "Create Ticket"}
             </Button>
           )}
           <Button
-            variant={showFilterPanel ? "default" : "outline"}
+            variant={showFilterPanel ? "primary" : "outline"}
             onClick={() => setShowFilterPanel(!showFilterPanel)}
             className="flex items-center gap-2 w-full sm:w-auto"
           >
@@ -140,7 +173,7 @@ export default function Tickets() {
       {isSupervisor && (
         <div className="flex flex-wrap items-center gap-2">
           <Button
-            variant={supervisorView === "executive" ? "default" : "outline"}
+            variant={supervisorView === "executive" ? "primary" : "outline"}
             onClick={() => setSupervisorView("executive")}
             className="inline-flex items-center gap-2"
           >
@@ -150,7 +183,7 @@ export default function Tickets() {
             )}
           </Button>
           <Button
-            variant={supervisorView === "manager" ? "default" : "outline"}
+            variant={supervisorView === "manager" ? "primary" : "outline"}
             onClick={() => setSupervisorView("manager")}
             className="inline-flex items-center gap-2"
           >
@@ -163,47 +196,24 @@ export default function Tickets() {
       )}
 
       <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-5">
-        <Card>
-          <CardContent className="pt-6">
-            <div className="text-sm font-medium text-slate-500">Total</div>
-            <div className="text-2xl font-bold">{tickets.length}</div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-6">
-            <div className="text-sm font-medium text-slate-500">Requests</div>
-            <div className="text-2xl font-bold text-blue-600">{requestCount}</div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-6">
-            <div className="text-sm font-medium text-slate-500">Complaints</div>
-            <div className="text-2xl font-bold text-orange-600">{complaintCount}</div>
-          </CardContent>
-        </Card>
-        <Card className={breachedCount > 0 ? "border-red-200 bg-red-50" : ""}>
-          <CardContent className="pt-6">
-            <div className="text-sm font-medium text-slate-500 flex items-center gap-1">
-              <Clock className="h-3.5 w-3.5" /> SLA Breached
-            </div>
-            <div className={`text-2xl font-bold ${breachedCount > 0 ? "text-red-600" : "text-green-600"}`}>
-              {breachedCount}
-            </div>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-6">
-            <div className="text-sm font-medium text-slate-500">SLA At Risk</div>
-            <div className="text-2xl font-bold text-orange-600">{atRiskCount}</div>
-          </CardContent>
-        </Card>
+        <MetricCard label="Total" value={tickets.length.toLocaleString()} caption="Tickets in this view" icon={ticketsIcon} />
+        <MetricCard label="Requests" value={requestCount.toLocaleString()} caption="Service requests" icon={inboxIcon} />
+        <MetricCard label="Complaints" value={complaintCount.toLocaleString()} caption="Customer complaints" icon={alertIcon} />
+        <MetricCard
+          label="SLA Breached"
+          value={breachedCount.toLocaleString()}
+          caption={breachedCount > 0 ? "Open tickets past their deadline" : "No open tickets past their deadline"}
+          icon={alarmIcon}
+          valueClassName={breachedCount > 0 ? "text-rose-700" : "text-emerald-700"}
+        />
+        <MetricCard label="SLA At Risk" value={atRiskCount.toLocaleString()} caption="Approaching the deadline" icon={alertIcon} />
       </div>
 
       {showFilterPanel && (
-        <Card className="animate-in slide-in-from-top-2 border-blue-100">
-          <CardContent className="pt-6">
+        <Card className="animate-in slide-in-from-top-2">
+          <CardContent className="p-4 pt-4 sm:p-4 sm:pt-4">
             <div className="flex items-center justify-between mb-4">
-              <h4 className="font-semibold text-sm text-slate-700">Filters</h4>
+              <h4 className="text-sm font-normal text-slate-800">Filters</h4>
               <Button
                 variant="ghost"
                 size="sm"
@@ -245,7 +255,7 @@ export default function Tickets() {
 
       {error && (
         <Card className="border-red-200 bg-red-50">
-          <CardContent className="pt-6 text-red-700 text-sm">{error}</CardContent>
+          <CardContent className="p-4 pt-4 text-sm text-rose-700 sm:p-4 sm:pt-4">{error}</CardContent>
         </Card>
       )}
 
@@ -286,24 +296,26 @@ export default function Tickets() {
               </TableRow>
             ) : (
               filteredTickets.map((ticket) => {
-                const statusCfg = STATUS_CONFIG[ticket.status] || { label: ticket.status, className: "bg-slate-100 text-slate-600" };
+                const statusCfg = STATUS_CONFIG[ticket.status] || { label: ticket.status, className: "border-slate-200 bg-slate-50 text-slate-600" };
                 const sla = getSlaInfo(ticket);
                 return (
                   <TableRow key={ticket.ticketId}>
-                    <TableCell className="font-medium text-blue-600">
-                      <Link to={getTicketDetailPath(currentUser?.role, ticket.ticketId)} className="hover:underline">
+                    <TableCell>
+                      <Link to={getTicketDetailPath(currentUser?.role, ticket.ticketId)} className="text-xs font-semibold text-sky-700 hover:underline">
                         {ticket.ticketNumber}
                       </Link>
                     </TableCell>
-                    <TableCell className="font-medium text-slate-900">{ticket.corporateName || ticket.accountName || "—"}</TableCell>
+                    <TableCell className="font-medium text-slate-800">{ticket.corporateName || ticket.accountName || "—"}</TableCell>
                     <TableCell>
-                      <Badge variant={ticket.category === "request" ? "default" : "danger"}>{ticket.category}</Badge>
+                      <span className={`${CHIP} capitalize ${ticket.category === "request" ? "border-sky-200 bg-sky-50 text-sky-700" : "border-rose-200 bg-red-50 text-rose-700"}`}>
+                        {ticket.category}
+                      </span>
                     </TableCell>
                     <TableCell className="capitalize">{ticket.type.replace(/_/g, " ")}</TableCell>
                     <TableCell className="max-w-[220px] truncate">{ticket.title}</TableCell>
                     <TableCell>{ticket.priority}</TableCell>
                     <TableCell>
-                      <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${statusCfg.className}`}>
+                      <span className={`${CHIP} ${statusCfg.className}`}>
                         {statusCfg.label}
                       </span>
                     </TableCell>
@@ -312,7 +324,7 @@ export default function Tickets() {
                         <span className="text-slate-400">—</span>
                       ) : (
                         <div className="flex items-center gap-1.5">
-                          <span className={`inline-flex items-center rounded-full px-2 py-0.5 text-xs font-medium ${SLA_BADGE_CLASSES[sla.status]}`}>
+                          <span className={`${CHIP} ${SLA_BADGE_CLASSES[sla.status]}`}>
                             {sla.label}
                           </span>
                           <span className="text-xs text-slate-500 whitespace-nowrap">{sla.time}</span>

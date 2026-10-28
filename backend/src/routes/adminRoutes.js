@@ -46,6 +46,8 @@ router.put("/executives/:supervisorPersonId/demote-executive", adminController.d
 
 // Portal access management
 router.post("/portal-access", adminController.createPortalAccess);
+router.put("/portal-users/:userId", adminController.updateManagedPortalUser);
+router.delete("/portal-users/:userId/record", adminController.deleteManagedPortalUser);
 router.delete("/portal-users/:userId", adminController.revokePortalAccess);
 router.get("/portal-users", adminController.getPortalUsers);
 

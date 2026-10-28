@@ -333,7 +333,7 @@ export default function Notifications() {
     <div className="space-y-6 animate-in fade-in duration-500 slide-in-from-bottom-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
-          <h2 className="text-2xl font-bold tracking-tight text-slate-900">Notification Center</h2>
+          <h2 className="text-3xl font-normal text-slate-800">Notification Center</h2>
           <p className="text-sm text-slate-500">
             {unreadCount > 0
               ? `You have ${unreadCount} unread notification${unreadCount > 1 ? "s" : ""}`

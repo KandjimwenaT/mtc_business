@@ -159,7 +159,7 @@ const ChangePassword: React.FC = () => {
           align-items: center;
           justify-content: center;
           padding: 40px 24px;
-          font-family: 'Helvetica Neue', Arial, sans-serif;
+          font-family: Inter, "Segoe UI", system-ui, -apple-system, sans-serif;
           position: relative;
           overflow: hidden;
         }
@@ -226,9 +226,9 @@ const ChangePassword: React.FC = () => {
         }
         .login-welcome {
           font-size: 1.4rem;
-          font-weight: 700;
+          font-weight: 600;
           color: #111827;
-          font-family: Georgia, serif;
+          font-family: Inter, "Segoe UI", system-ui, sans-serif;
           margin-bottom: 4px;
         }
         .login-welcome-sub {

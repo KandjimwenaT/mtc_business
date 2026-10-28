@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef, type ReactNode } from "react";
 import { useNavigate, useOutletContext, useSearchParams } from "react-router";
 import { toast } from "sonner";
 import { 
@@ -15,8 +15,11 @@ import {
   TableCell,
   TableHead,
   TableHeader,
-  TableRow
+  TableRow,
+  cn,
 } from "./ui-components";
+import { ThemeIcon } from "./theme-icon";
+import buildingIcon from "../../assets/New Theme Icon/building-2.svg";
 import { Building2, Search, Users, Star, X, FileText, Database, Loader2, CheckCircle, UserPlus, Trash2, AlertTriangle, ArrowRightLeft } from "lucide-react";
 import {
   getAccounts, getAccountContracts, getAccountServices, getPersonsByType,
@@ -35,6 +38,7 @@ import {
   assignContactPersonToMyCorporate,
   removeContactPersonFromMyCorporate,
   createContactPersonForMyCorporate,
+  getCurrentUser,
   getMyProfile,
   type ExecutiveAccountRecord,
   type ExpiringContractRecord as ExecutiveExpiringContractRecord,
@@ -127,6 +131,74 @@ const corporateApprovalLabel = (status: CorporateRecord["approvalStatus"] | unde
   return "Draft";
 };
 
+const listCardClass = (selected: boolean) =>
+  cn(
+    "cursor-pointer transition-colors",
+    selected ? "border-sky-700 ring-1 ring-sky-700" : "hover:border-sky-300"
+  );
+
+const statusChipClass = (tone: "sky" | "emerald" | "rose") =>
+  cn(
+    "inline-flex shrink-0 items-center rounded-md border px-2 py-[3px] text-[10px] font-semibold",
+    tone === "emerald" && "border-emerald-200 bg-emerald-50 text-emerald-700",
+    tone === "rose" && "border-rose-200 bg-red-50 text-rose-700",
+    tone === "sky" && "border-sky-200 bg-sky-50 text-sky-700"
+  );
+
+const approvalChipTone = (status: string | undefined): "sky" | "emerald" | "rose" => {
+  if (status === "approved") return "emerald";
+  if (status === "rejected") return "rose";
+  return "sky";
+};
+
+function ListRecordCard({
+  selected,
+  onClick,
+  title,
+  status,
+  statusLabel,
+  identifier,
+  subtitle,
+  meta,
+  active,
+  spend,
+  alert,
+}: {
+  selected: boolean;
+  onClick: () => void;
+  title: string;
+  status?: string;
+  statusLabel: string;
+  identifier: string;
+  subtitle: string;
+  meta: string;
+  active: boolean;
+  spend: string;
+  alert?: ReactNode;
+}) {
+  return (
+    <Card className={listCardClass(selected)} onClick={onClick}>
+      <CardContent className="p-4 pt-4 sm:p-4 sm:pt-4">
+        <div className="mb-2 flex items-start justify-between gap-2">
+          <h3 className="text-sm font-medium leading-tight text-slate-800">{title}</h3>
+          <span className={statusChipClass(approvalChipTone(status))}>{statusLabel}</span>
+        </div>
+        <div className="mb-1 text-xs text-slate-500">{identifier}</div>
+        <div className="mb-3 text-xs text-slate-500">{subtitle}</div>
+        <div className="flex items-center justify-between border-t border-slate-200 pt-3 text-xs text-slate-500">
+          <span className="flex items-center gap-1.5">
+            <ThemeIcon src={buildingIcon} className="h-3 w-3 text-slate-400" />
+            {meta}
+          </span>
+          <span className={statusChipClass(active ? "emerald" : "rose")}>{active ? "Active" : "Inactive"}</span>
+        </div>
+        <div className="mt-2 text-xs text-slate-500">Monthly spend: {spend}</div>
+        {alert}
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function Corporates() {
   const formatNad = (value: string | number | null | undefined) =>
     `N$ ${Number(value || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
@@ -135,19 +207,18 @@ export default function Corporates() {
   const outletCtx = useOutletContext<StaffLayoutOutletContext | undefined>();
   const supervisorBadges = outletCtx?.supervisorBadges ?? defaultSupervisorBadges();
   // Detect user role
-  const currentUser = (() => {
-    try { return JSON.parse(localStorage.getItem("currentUser") || "null"); } catch { return null; }
-  })();
+  const currentUser = getCurrentUser();
   const isSupervisor = isSupervisorRole(currentUser?.role);
   const hasManagerScope = isManagerRole(currentUser?.role);
   const hasExecutiveScope = isExecutiveRole(currentUser?.role);
   const [supervisorView, setSupervisorView] = useState<"executive" | "manager">("executive");
   const isManager = hasManagerScope && (!isSupervisor || supervisorView === "manager");
   const isExecutive = hasExecutiveScope && (!isSupervisor || supervisorView === "executive");
-  const isAdmin = currentUser?.role === "admin";
+  const isAdmin = currentUser?.role === "admin" || currentUser?.role === "super_admin";
   const isGm = isGmRole(currentUser?.role);
   const profileHref =
-    currentUser?.role === "admin" ? "/super-admin-profile" :
+    currentUser?.role === "super_admin" ? "/super-admin-profile" :
+    currentUser?.role === "admin" ? "/admin-profile" :
     currentUser?.role === "customer" ? "/account-manager-profile" :
     isSupervisor ? "/supervisor-profile" :
     hasManagerScope ? "/management-profile" :
@@ -1275,7 +1346,7 @@ export default function Corporates() {
     <div className="space-y-6 animate-in fade-in duration-500 slide-in-from-bottom-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900">Corporates & Accounts</h2>
+          <h2 className="text-3xl font-normal text-slate-800">Corporates & Accounts</h2>
           <p className="text-sm text-slate-500">
             {canManageCorporates
               ? "Review accounts, assign executives, and approve customer portal access."
@@ -1418,37 +1489,24 @@ export default function Corporates() {
             {/* Left sidebar: account cards */}
             <div className="md:col-span-1 space-y-4 max-h-[75vh] overflow-y-auto pr-1">
               {paginatedExecAccounts.map((acc) => (
-                <Card
+                <ListRecordCard
                   key={acc.accountId}
-                  className={`cursor-pointer transition-colors ${selectedExecAccount?.accountId === acc.accountId ? "border-mtc-blue ring-1 ring-mtc-blue" : "hover:border-mtc-blue"}`}
+                  selected={selectedExecAccount?.accountId === acc.accountId}
                   onClick={() => handleExecAccountSelect(acc)}
-                >
-                  <CardContent className="p-4">
-                    <div className="flex justify-between items-start mb-2">
-                      <h3 className="font-semibold text-slate-900 text-sm leading-tight">{acc.accountName}</h3>
-                      <Badge variant={
-                        acc.approvalStatus === "approved" ? "success" :
-                        acc.approvalStatus === "rejected" ? "danger" : "warning"
-                      } className="text-[10px] shrink-0 ml-2">
-                        {acc.approvalStatus === "approved" ? "Approved" : acc.approvalStatus === "rejected" ? "Rejected" : "Pending"}
-                      </Badge>
+                  title={acc.accountName}
+                  status={acc.approvalStatus}
+                  statusLabel={acc.approvalStatus === "approved" ? "Approved" : acc.approvalStatus === "rejected" ? "Rejected" : "Pending"}
+                  identifier={acc.accountNumber}
+                  subtitle={acc.portfolioOnly ? "Assigned corporate" : (acc.industry || acc.accountType)}
+                  meta={`${acc.services.length} Services`}
+                  active={acc.isActive}
+                  spend={formatNad(acc.monthlySpending)}
+                  alert={isAccountContactMissing(acc) ? (
+                    <div className="mt-2 inline-flex items-center gap-1 rounded-md border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">
+                      <AlertTriangle className="h-3 w-3" /> Profile incomplete
                     </div>
-                    <div className="text-xs text-slate-500 font-mono mb-1">{acc.accountNumber}</div>
-                    <div className="text-sm text-slate-500 mb-3">
-                      {acc.portfolioOnly ? "Assigned corporate" : (acc.industry || acc.accountType)}
-                    </div>
-                    <div className="flex items-center justify-between text-xs text-slate-600 border-t border-slate-100 pt-3">
-                      <span className="flex items-center gap-1"><Building2 className="h-3 w-3" /> {acc.services.length} Services</span>
-                      <Badge variant={acc.isActive ? "success" : "danger"} className="text-[10px]">{acc.isActive ? "Active" : "Inactive"}</Badge>
-                    </div>
-                    <div className="mt-2 text-xs text-slate-500">Monthly spend: {formatNad(acc.monthlySpending)}</div>
-                    {isAccountContactMissing(acc) && (
-                      <div className="mt-2 inline-flex items-center gap-1 text-[10px] font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5">
-                        <AlertTriangle className="h-3 w-3" /> Profile incomplete
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
+                  ) : undefined}
+                />
               ))}
               {alphabetFilteredExecAccounts.length === 0 && (
                 <div className="py-8 text-center text-slate-500 text-sm">
@@ -1760,59 +1818,43 @@ export default function Corporates() {
             {/* Left sidebar: account cards */}
             <div className="md:col-span-1 space-y-4 max-h-[75vh] overflow-y-auto pr-1">
               {showCorporatePanel ? paginatedCorporateRecords.map((corp) => (
-                <Card
+                <ListRecordCard
                   key={corp.corporateId}
-                  className={`cursor-pointer transition-colors ${selectedCorporate?.corporateId === corp.corporateId ? "border-mtc-blue ring-1 ring-mtc-blue" : "hover:border-mtc-blue"}`}
+                  selected={selectedCorporate?.corporateId === corp.corporateId}
                   onClick={() => setSelectedCorporate(corp)}
-                >
-                  <CardContent className="p-4">
-                    <div className="flex justify-between items-start mb-2">
-                      <h3 className="font-semibold text-slate-900 text-sm leading-tight">{corp.corporateName}</h3>
-                      <Badge variant={corp.approvalStatus === "approved" ? "success" : corp.approvalStatus === "rejected" ? "danger" : "warning"} className="text-[10px] shrink-0 ml-2">
-                        {corporateApprovalLabel(corp.approvalStatus)}
-                      </Badge>
+                  title={corp.corporateName}
+                  status={corp.approvalStatus}
+                  statusLabel={corporateApprovalLabel(corp.approvalStatus)}
+                  identifier={corp.corporateNumber}
+                  subtitle={corp.industry || corp.corporateType}
+                  meta={corp.corporateType}
+                  active={corp.isActive}
+                  spend={formatNad(corp.monthlySpending)}
+                  alert={corporatesWithIncompleteAccount.has(corp.corporateId) ? (
+                    <div className="mt-2 inline-flex items-center gap-1 rounded-md border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">
+                      <AlertTriangle className="h-3 w-3" /> Profile incomplete
                     </div>
-                    <div className="text-xs text-slate-500 font-mono mb-1">{corp.corporateNumber}</div>
-                    <div className="text-sm text-slate-500 mb-3">{corp.industry || corp.corporateType}</div>
-                    <div className="flex items-center justify-between text-xs text-slate-600 border-t border-slate-100 pt-3">
-                      <span className="flex items-center gap-1"><Building2 className="h-3 w-3" /> {corp.corporateType}</span>
-                      <Badge variant={corp.isActive ? "success" : "danger"} className="text-[10px]">{corp.isActive ? "Active" : "Inactive"}</Badge>
-                    </div>
-                    <div className="mt-2 text-xs text-slate-500">Monthly spend: {formatNad(corp.monthlySpending)}</div>
-                    {corporatesWithIncompleteAccount.has(corp.corporateId) && (
-                      <div className="mt-2 inline-flex items-center gap-1 text-[10px] font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5">
-                        <AlertTriangle className="h-3 w-3" /> Profile incomplete
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
+                  ) : undefined}
+                />
               )) : paginatedAccounts.map((acc) => (
-                <Card
+                <ListRecordCard
                   key={acc.accountId}
-                  className={`cursor-pointer transition-colors ${selectedAccount?.accountId === acc.accountId ? "border-mtc-blue ring-1 ring-mtc-blue" : "hover:border-mtc-blue"}`}
+                  selected={selectedAccount?.accountId === acc.accountId}
                   onClick={() => setSelectedAccount(acc)}
-                >
-                  <CardContent className="p-4">
-                    <div className="flex justify-between items-start mb-2">
-                      <h3 className="font-semibold text-slate-900 text-sm leading-tight">{acc.accountName}</h3>
-                      <Badge variant={acc.approvalStatus === "approved" ? "success" : acc.approvalStatus === "rejected" ? "danger" : "warning"} className="text-[10px] shrink-0 ml-2">
-                        {acc.approvalStatus === "approved" ? "Approved" : acc.approvalStatus === "rejected" ? "Rejected" : "Pending"}
-                      </Badge>
+                  title={acc.accountName}
+                  status={acc.approvalStatus}
+                  statusLabel={acc.approvalStatus === "approved" ? "Approved" : acc.approvalStatus === "rejected" ? "Rejected" : "Pending"}
+                  identifier={acc.accountNumber}
+                  subtitle={acc.industry || acc.accountType}
+                  meta={acc.accountType}
+                  active={acc.isActive}
+                  spend={formatNad(acc.monthlySpending)}
+                  alert={isAccountContactMissing(acc) ? (
+                    <div className="mt-2 inline-flex items-center gap-1 rounded-md border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700">
+                      <AlertTriangle className="h-3 w-3" /> Profile incomplete
                     </div>
-                    <div className="text-xs text-slate-500 font-mono mb-1">{acc.accountNumber}</div>
-                    <div className="text-sm text-slate-500 mb-3">{acc.industry || acc.accountType}</div>
-                    <div className="flex items-center justify-between text-xs text-slate-600 border-t border-slate-100 pt-3">
-                      <span className="flex items-center gap-1"><Building2 className="h-3 w-3" /> {acc.accountType}</span>
-                      <Badge variant={acc.isActive ? "success" : "danger"} className="text-[10px]">{acc.isActive ? "Active" : "Inactive"}</Badge>
-                    </div>
-                    <div className="mt-2 text-xs text-slate-500">Monthly spend: {formatNad(acc.monthlySpending)}</div>
-                    {isAccountContactMissing(acc) && (
-                      <div className="mt-2 inline-flex items-center gap-1 text-[10px] font-medium text-amber-700 bg-amber-50 border border-amber-200 rounded px-1.5 py-0.5">
-                        <AlertTriangle className="h-3 w-3" /> Profile incomplete
-                      </div>
-                    )}
-                  </CardContent>
-                </Card>
+                  ) : undefined}
+                />
               ))}
               {(showCorporatePanel ? alphabetFilteredCorporateRecords.length === 0 : alphabetFilteredAccounts.length === 0) && (
                 <div className="py-8 text-center text-slate-500 text-sm">

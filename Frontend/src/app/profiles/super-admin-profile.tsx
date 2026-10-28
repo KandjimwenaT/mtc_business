@@ -41,10 +41,8 @@ type Tab = "profile" | "users" | "noPortalUsers" | "pendingExecutives" | "roles"
 
 const USER_TYPES = [
   { value: "gm", label: "GM" },
-  { value: "admin", label: "Admin" },
   { value: "manager", label: "Manager" },
-  { value: "executive_staff", label: "Executive Staff" },
-  { value: "customer", label: "Account Manager" },
+  { value: "admin", label: "Admin" },
 ] as const;
 
 const ACCOUNT_TYPES = ["Corporate", "SME", "Government", "Retail", "Other"];
@@ -56,6 +54,7 @@ const ROLE_LABELS: Record<string, string> = {
   gm: "GM",
   admin: "Admin",
   manager: "Manager",
+  super_admin: "Super Admin",
 };
 
 export default function SuperAdminProfile() {
@@ -76,7 +75,7 @@ export default function SuperAdminProfile() {
 
   // ── Create User (profile tab) state ─────────────────────────────
   const [createUserForm, setCreateUserForm] = useState<PersonPayload>({
-    firstName: "", lastName: "", email: "", phone: "", type: "executive_staff", region: "", department: "",
+    firstName: "", lastName: "", email: "", phone: "", type: "manager", region: "", department: "",
   });
   const [creatingUser, setCreatingUser] = useState(false);
   const [gmList, setGmList] = useState<PersonRecord[]>([]);
@@ -695,7 +694,7 @@ export default function SuperAdminProfile() {
       toast.success("User created successfully", {
         description: `${createUserForm.firstName} ${createUserForm.lastName} added as ${ROLE_LABELS[createUserForm.type] || createUserForm.type}`,
       });
-      setCreateUserForm({ firstName: "", lastName: "", email: "", phone: "", type: "executive_staff", region: "", department: "" });
+      setCreateUserForm({ firstName: "", lastName: "", email: "", phone: "", type: "manager", region: "", department: "" });
       if (createUserForm.type === "customer") {
         getCorporatesWithoutContactPersons().then(setAvailableCorporateList).catch(() => {});
       }
@@ -1002,7 +1001,7 @@ export default function SuperAdminProfile() {
     <div className="space-y-6 animate-in fade-in duration-500 slide-in-from-bottom-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900">Super Admin Portal</h2>
+          <h2 className="text-3xl font-normal text-slate-800">Super Admin Portal</h2>
           <p className="text-sm text-slate-500">System administration, user management, and global settings</p>
         </div>
         <Badge className="text-sm px-3 py-1 bg-slate-900 text-white border-transparent w-fit">Super Admin</Badge>
@@ -1125,7 +1124,7 @@ export default function SuperAdminProfile() {
               <CardTitle className="text-base flex items-center gap-2">
                 <UserPlus className="h-5 w-5 text-mtc-blue" /> Create User
               </CardTitle>
-              <p className="text-xs text-slate-500">Add a new internal user to the database. Portal access is granted separately.</p>
+              <p className="text-xs text-slate-500">Add a GM, manager, or admin. Managers and supervisors also create the admins, executives, supervisors, and account managers in their department.</p>
             </CardHeader>
             <CardContent className="space-y-4">
           
@@ -1348,7 +1347,7 @@ export default function SuperAdminProfile() {
                 )}
               </div>
               <div className="flex justify-end gap-2 pt-4 border-t border-slate-200">
-                <Button variant="outline" onClick={() => setCreateUserForm({ firstName: "", lastName: "", email: "", phone: "", type: "executive_staff", region: "", department: "" })}>Reset</Button>
+                <Button variant="outline" onClick={() => setCreateUserForm({ firstName: "", lastName: "", email: "", phone: "", type: "manager", region: "", department: "" })}>Reset</Button>
                 <Button onClick={handleCreateUser} disabled={creatingUser}>
                   {creatingUser ? <><Loader2 className="h-4 w-4 mr-1 animate-spin" /> Creating...</> : <><UserPlus className="h-4 w-4 mr-1" /> Create User</>}
                 </Button>

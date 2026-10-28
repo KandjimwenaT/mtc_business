@@ -1,9 +1,11 @@
 const auth = require('./auth');
 
+const isSuperAdminRole = (role) => role === 'super_admin';
+
 const adminAuth = async (req, res, next) => {
   try {
     await auth(req, res, () => {
-      if (req.user.role !== 'admin') {
+      if (req.user.role !== 'admin' && !isSuperAdminRole(req.user.role)) {
         return res.status(403).json({ message: 'Access denied. Admin role required.' });
       }
       next();
@@ -14,19 +16,21 @@ const adminAuth = async (req, res, next) => {
   }
 };
 
-// Standalone middleware (assumes auth middleware already ran and set req.user)
+// Standalone middleware (assumes auth middleware already ran and set req.user).
+// Imports and other developer-console routes stay on the super admin account.
 const superAdminOnly = (req, res, next) => {
-  if (req.user.role !== 'admin') {
-    return res.status(403).json({ message: 'Access denied. Admin role required.' });
+  if (!isSuperAdminRole(req.user.role)) {
+    return res.status(403).json({ message: 'Access denied. Super admin role required.' });
   }
   next();
 };
 
-// Allow admin, manager, supervisor, executive staff, or GM (read-only oversight) roles.
+// Allow admin, super admin, manager, supervisor, executive staff, or GM (read-only oversight) roles.
 // Executive staff are permitted to use the corporate creation flows from the EBU side.
 const adminOrManager = (req, res, next) => {
   if (
     req.user.role !== 'admin' &&
+    !isSuperAdminRole(req.user.role) &&
     req.user.role !== 'manager' &&
     req.user.role !== 'supervisor' &&
     req.user.role !== 'executive_staff' &&

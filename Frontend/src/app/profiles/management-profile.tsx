@@ -6,9 +6,10 @@ import {
 } from "../components/ui-components";;
 import {
   Mail, Phone, Briefcase, FileText,
-  Settings, Plus, Trash2, X, CheckCircle, ArrowUp, Shield, Loader2, UserPlus, Key
+  Settings, Plus, Trash2, X, CheckCircle, ArrowUp, Shield, Loader2, UserPlus, Key,
+  Search, RefreshCw, Users, Pencil
 } from "lucide-react";
-import { getMyProfile } from "../api/authApi";
+import { getActualRole, getMyProfile } from "../api/authApi";
 import type { UserProfile } from "../api/authApi";
 import ProfileEditSection from "../components/profile-edit-section";
 import AuditLogPanel from "../components/audit-log-panel";
@@ -21,14 +22,34 @@ import {
   getExecutives,
   createPerson,
   createPortalAccess,
+  getPortalUsers,
+  updateManagedPortalUser,
+  deleteManagedPortalUser,
   promoteExecutiveToSupervisor,
   demoteSupervisorToExecutive,
   type CorporateRecord,
   type PersonRecord,
   type ExecutiveRecord,
+  type PortalUser,
 } from "../api/adminApi";
 
-type Tab = "profile" | "performance" | "templates" | "sla" | "upgrade" | "audit" | "settings";
+type Tab = "profile" | "users" | "performance" | "templates" | "sla" | "upgrade" | "audit" | "settings";
+
+const PORTAL_ROLE_LABELS: Record<string, string> = {
+  customer: "Account Manager",
+  executive_staff: "Executive",
+  supervisor: "Supervisor",
+  admin: "Admin",
+  manager: "Manager",
+  gm: "GM",
+  super_admin: "Super Admin",
+};
+
+const EDITABLE_PORTAL_ROLES = [
+  { value: "executive_staff", label: "Executive" },
+  { value: "supervisor", label: "Supervisor" },
+  { value: "admin", label: "Admin" },
+];
 
 function monthKey(iso: string): string {
   if (!iso) return "";
@@ -102,17 +123,29 @@ export default function ManagementProfile() {
   const [promotingExecutiveId, setPromotingExecutiveId] = useState<number | null>(null);
   const [demotingSupervisorId, setDemotingSupervisorId] = useState<number | null>(null);
   const [createExecutiveForm, setCreateExecutiveForm] = useState({
+    kind: "executive_staff" as "executive_staff" | "supervisor" | "customer" | "admin",
     firstName: "",
     lastName: "",
     email: "",
     phone: "",
     region: "",
+    corporateId: "",
   });
   const [showCreateExecutiveConfirm, setShowCreateExecutiveConfirm] = useState(false);
   const [creatingExecutive, setCreatingExecutive] = useState(false);
+  const [portalUsers, setPortalUsers] = useState<PortalUser[]>([]);
+  const [loadingPortalUsers, setLoadingPortalUsers] = useState(false);
+  const [searchUsers, setSearchUsers] = useState("");
+  const [editingPortalUser, setEditingPortalUser] = useState<PortalUser | null>(null);
+  const [editRole, setEditRole] = useState("");
+  const [editPortalAccess, setEditPortalAccess] = useState<"active" | "revoked">("active");
+  const [savingPortalUser, setSavingPortalUser] = useState(false);
+  const [deletingPortalUser, setDeletingPortalUser] = useState(false);
 
   const isManagerOrSupervisor =
     profile?.role === "manager" || profile?.role === "supervisor";
+  const previewingAsSuperAdmin = getActualRole() === "super_admin";
+  const canManagePortalUsers = profile?.role === "manager" && !previewingAsSuperAdmin;
 
   const loadManagerTeamData = async (currentProfile: UserProfile) => {
     setTeamDataLoading(true);
@@ -127,16 +160,21 @@ export default function ManagementProfile() {
           getExecutives().catch(() => [] as ExecutiveRecord[]),
         ]);
 
-      const corporatesForManager = allCorporates.filter(
-        (c) =>
-          c.managerId === currentProfile.roleProfileId ||
-          c.managerId === currentProfile.personId
-      );
-      const executivesForManager = [...allExecutives, ...allSupervisors].filter(
-        (e) =>
-          e.managerId === currentProfile.roleProfileId ||
-          e.managerId === currentProfile.personId
-      );
+      const seesAll = getActualRole() === "super_admin";
+      const corporatesForManager = seesAll
+        ? allCorporates
+        : allCorporates.filter(
+            (c) =>
+              c.managerId === currentProfile.roleProfileId ||
+              c.managerId === currentProfile.personId
+          );
+      const executivesForManager = seesAll
+        ? [...allExecutives, ...allSupervisors]
+        : [...allExecutives, ...allSupervisors].filter(
+            (e) =>
+              e.managerId === currentProfile.roleProfileId ||
+              e.managerId === currentProfile.personId
+          );
 
       setManagerCorporates(corporatesForManager);
       setManagerExecutives(executivesForManager);
@@ -158,15 +196,120 @@ export default function ManagementProfile() {
     loadManagerTeamData(profile).catch(() => toast.error("Failed to load team data"));
   }, [profile, isManagerOrSupervisor]);
 
+  const loadPortalUsers = async () => {
+    setLoadingPortalUsers(true);
+    try {
+      setPortalUsers(await getPortalUsers());
+    } catch (err: unknown) {
+      toast.error("Failed to load portal users", {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    } finally {
+      setLoadingPortalUsers(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab !== "users" || !canManagePortalUsers) return;
+    loadPortalUsers().catch(() => {});
+  }, [activeTab, canManagePortalUsers]);
+
+  const filteredPortalUsers = portalUsers.filter((user) => {
+    const query = searchUsers.trim().toLowerCase();
+    if (!query) return true;
+    const roleLabel = PORTAL_ROLE_LABELS[user.role] || user.role;
+    return [user.firstName, user.lastName, user.email, user.department, roleLabel]
+      .filter(Boolean)
+      .some((value) => String(value).toLowerCase().includes(query));
+  });
+
+  const openPortalUserEditor = (user: PortalUser) => {
+    setEditingPortalUser(user);
+    setEditRole(user.role);
+    setEditPortalAccess("active");
+  };
+
+  const handleSavePortalUser = async () => {
+    if (!editingPortalUser) return;
+    const removingAccess = editPortalAccess === "revoked";
+    const roleChanged = editRole !== editingPortalUser.role;
+    if (!removingAccess && !roleChanged) {
+      setEditingPortalUser(null);
+      return;
+    }
+    if (removingAccess) {
+      const confirmed = window.confirm(
+        `Remove portal access for ${editingPortalUser.firstName} ${editingPortalUser.lastName}? Their profile will be kept, and they will not be able to sign in.`
+      );
+      if (!confirmed) return;
+    }
+
+    setSavingPortalUser(true);
+    try {
+      await updateManagedPortalUser(
+        editingPortalUser.id,
+        removingAccess ? { portalAccess: false } : { role: editRole }
+      );
+      toast.success(removingAccess ? "Portal access revoked" : "Role updated", {
+        description: removingAccess
+          ? `${editingPortalUser.firstName} ${editingPortalUser.lastName} can no longer log in`
+          : `${editingPortalUser.firstName} ${editingPortalUser.lastName} is now ${PORTAL_ROLE_LABELS[editRole] || editRole}`,
+      });
+      setEditingPortalUser(null);
+      await loadPortalUsers();
+    } catch (err: unknown) {
+      toast.error(removingAccess ? "Failed to revoke access" : "Failed to update role", {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    } finally {
+      setSavingPortalUser(false);
+    }
+  };
+
+  const handleDeletePortalUser = async () => {
+    if (!editingPortalUser) return;
+    const confirmed = window.confirm(
+      `Delete ${editingPortalUser.firstName} ${editingPortalUser.lastName}? This removes their login and their profile. This cannot be undone.`
+    );
+    if (!confirmed) return;
+
+    setDeletingPortalUser(true);
+    try {
+      await deleteManagedPortalUser(editingPortalUser.id);
+      toast.success("User deleted", {
+        description: `${editingPortalUser.firstName} ${editingPortalUser.lastName} has been removed`,
+      });
+      setEditingPortalUser(null);
+      await loadPortalUsers();
+    } catch (err: unknown) {
+      toast.error("Failed to delete user", {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    } finally {
+      setDeletingPortalUser(false);
+    }
+  };
+
   const resetCreateExecutiveForm = () => {
     setCreateExecutiveForm({
+      kind: "executive_staff",
       firstName: "",
       lastName: "",
       email: "",
       phone: "",
       region: "",
+      corporateId: "",
     });
   };
+
+  const portalUserLabel =
+    createExecutiveForm.kind === "supervisor"
+      ? "Supervisor"
+      : createExecutiveForm.kind === "customer"
+        ? "Account Manager"
+        : createExecutiveForm.kind === "admin"
+          ? "Admin"
+          : "Executive";
 
   const handleCreateExecutiveSubmit = () => {
     const firstName = createExecutiveForm.firstName.trim();
@@ -175,6 +318,10 @@ export default function ManagementProfile() {
 
     if (!firstName || !lastName || !email) {
       toast.error("Please fill in all required fields");
+      return;
+    }
+    if (createExecutiveForm.kind === "customer" && (!createExecutiveForm.corporateId || !createExecutiveForm.phone.trim())) {
+      toast.error("Choose a corporate and enter a phone number for the account manager");
       return;
     }
     if (!profile?.personId) {
@@ -201,19 +348,20 @@ export default function ManagementProfile() {
         lastName,
         email,
         phone: phone || undefined,
-        type: "executive_staff",
-        region: createExecutiveForm.region || undefined,
+        type: createExecutiveForm.kind,
+        region: createExecutiveForm.kind === "customer" ? undefined : createExecutiveForm.region || undefined,
+        corporateId: createExecutiveForm.kind === "customer" ? Number(createExecutiveForm.corporateId) : undefined,
         managerId: profile.personId,
       });
 
       if (!createResponse.person?.id) {
-        throw new Error("Executive record was created but no person ID was returned");
+        throw new Error("User record was created but no person ID was returned");
       }
 
-      const response = await createPortalAccess(createResponse.person.id, "executive_staff");
+      const response = await createPortalAccess(createResponse.person.id, createExecutiveForm.kind);
       const emailSent = response.emailSent !== false;
 
-      toast.success("Executive created", {
+      toast.success(`${portalUserLabel} created`, {
         description: emailSent
           ? `Account details sent to ${email}`
           : "Email failed to send password",
@@ -223,7 +371,7 @@ export default function ManagementProfile() {
       resetCreateExecutiveForm();
       await loadManagerTeamData(profile);
     } catch (err: unknown) {
-      toast.error("Failed to create executive", {
+      toast.error(`Failed to create ${portalUserLabel.toLowerCase()}`, {
         description: err instanceof Error ? err.message : undefined,
       });
     } finally {
@@ -355,6 +503,7 @@ export default function ManagementProfile() {
 
   const tabs: { key: Tab; label: string }[] = [
     { key: "profile", label: "Manager / Supervisor Profile" },
+    ...(canManagePortalUsers ? [{ key: "users" as const, label: "User Management" }] : []),
     { key: "performance", label: "Executive Performance" },
     { key: "templates", label: "Control Card Templates" },
     { key: "sla", label: "SLA Configuration" },
@@ -367,7 +516,7 @@ export default function ManagementProfile() {
     <div className="space-y-6 animate-in fade-in duration-500 slide-in-from-bottom-4">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900">Manager / Supervisor Portal</h2>
+          <h2 className="text-3xl font-normal text-slate-800">Manager / Supervisor Portal</h2>
           <p className="text-sm text-slate-500">Executive management, SLA configuration, and template administration</p>
         </div>
         <Badge variant="default" className="text-sm px-3 py-1 bg-mtc-blue-dark text-white border-transparent w-fit">Manager / Supervisor</Badge>
@@ -417,18 +566,40 @@ export default function ManagementProfile() {
             </Card>
           </div>
 
-          {isManagerOrSupervisor && (
+          {isManagerOrSupervisor && previewingAsSuperAdmin && (
+            <p className="text-sm text-slate-500">
+              This is the manager screen with every department’s data. Portal users are still created from a manager or supervisor account.
+            </p>
+          )}
+
+          {isManagerOrSupervisor && !previewingAsSuperAdmin && (
             <Card>
               <CardHeader>
                 <CardTitle className="text-base flex items-center gap-2">
-                  <UserPlus className="h-5 w-5 text-mtc-blue" /> Create Executive
+                  <UserPlus className="h-5 w-5 text-mtc-blue" /> Create Portal User
                 </CardTitle>
                 <p className="text-xs text-slate-500 mt-1">
-                  Add a new executive to your department. Portal credentials will be emailed after you confirm the details.
+                  Add an executive, supervisor, account manager, or admin in your department. Portal credentials are emailed after you confirm.
                 </p>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+                  <div className="space-y-2">
+                    <Label>Portal user <span className="text-red-500">*</span></Label>
+                    <Select
+                      value={createExecutiveForm.kind}
+                      onChange={(e) => setCreateExecutiveForm((f) => ({
+                        ...f,
+                        kind: e.target.value as "executive_staff" | "supervisor" | "customer" | "admin",
+                        corporateId: "",
+                      }))}
+                    >
+                      <option value="executive_staff">Executive</option>
+                      <option value="supervisor">Supervisor</option>
+                      <option value="customer">Account Manager</option>
+                      <option value="admin">Admin</option>
+                    </Select>
+                  </div>
                   <div className="space-y-2">
                     <Label>First Name <span className="text-red-500">*</span></Label>
                     <Input
@@ -455,13 +626,14 @@ export default function ManagementProfile() {
                     />
                   </div>
                   <div className="space-y-2">
-                    <Label>Phone</Label>
+                    <Label>Phone{createExecutiveForm.kind === "customer" ? <span className="text-red-500"> *</span> : null}</Label>
                     <Input
                       placeholder="+264 ..."
                       value={createExecutiveForm.phone}
                       onChange={(e) => setCreateExecutiveForm((f) => ({ ...f, phone: e.target.value }))}
                     />
                   </div>
+                  {createExecutiveForm.kind !== "customer" && createExecutiveForm.kind !== "admin" && (
                   <div className="space-y-2">
                     <Label>Region</Label>
                     <Select
@@ -475,6 +647,23 @@ export default function ManagementProfile() {
                       <option value="Coastal Region">Coastal Region</option>
                     </Select>
                   </div>
+                  )}
+                  {createExecutiveForm.kind === "customer" && (
+                  <div className="space-y-2">
+                    <Label>Corporate <span className="text-red-500">*</span></Label>
+                    <Select
+                      value={createExecutiveForm.corporateId}
+                      onChange={(e) => setCreateExecutiveForm((f) => ({ ...f, corporateId: e.target.value }))}
+                    >
+                      <option value="">Select corporate...</option>
+                      {managerCorporates.map((corporate) => (
+                        <option key={corporate.corporateId} value={corporate.corporateId}>
+                          {corporate.corporateName}
+                        </option>
+                      ))}
+                    </Select>
+                  </div>
+                  )}
                   <div className="space-y-2">
                     <Label>Reports to Manager</Label>
                     <Input value={displayName} readOnly />
@@ -493,6 +682,145 @@ export default function ManagementProfile() {
               </CardContent>
             </Card>
           )}
+        </div>
+      )}
+
+      {activeTab === "users" && canManagePortalUsers && (
+        <Card>
+          <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <CardTitle className="text-base flex items-center gap-2">
+                <Users className="h-5 w-5 text-mtc-blue" /> Portal Users
+              </CardTitle>
+              <p className="text-xs text-slate-500 mt-1">
+                Executives, supervisors, account managers, and admins in your department who can sign in.
+              </p>
+            </div>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <div className="relative w-full sm:w-auto">
+                <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-slate-500" />
+                <Input
+                  className="pl-9 w-full sm:w-56 h-9 text-sm"
+                  placeholder="Search portal users..."
+                  value={searchUsers}
+                  onChange={(e) => setSearchUsers(e.target.value)}
+                />
+              </div>
+              <Button size="sm" variant="outline" onClick={() => loadPortalUsers()} disabled={loadingPortalUsers} className="w-full sm:w-auto">
+                <RefreshCw className={`h-4 w-4 mr-1 ${loadingPortalUsers ? "animate-spin" : ""}`} /> Refresh
+              </Button>
+            </div>
+          </CardHeader>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Name</TableHead>
+                <TableHead>Email</TableHead>
+                <TableHead>Role</TableHead>
+                <TableHead>Department</TableHead>
+                <TableHead>Created</TableHead>
+                <TableHead className="text-right">Actions</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {loadingPortalUsers ? (
+                <TableRow>
+                  <td colSpan={6} className="text-center py-8 text-slate-500 px-4">
+                    <Loader2 className="h-5 w-5 animate-spin inline mr-2" />Loading...
+                  </td>
+                </TableRow>
+              ) : filteredPortalUsers.length === 0 ? (
+                <TableRow>
+                  <td colSpan={6} className="text-center py-8 text-slate-400 px-4">No portal users found</td>
+                </TableRow>
+              ) : filteredPortalUsers.map((user) => (
+                <TableRow key={user.id}>
+                  <TableCell className="font-medium text-slate-900">{user.firstName} {user.lastName}</TableCell>
+                  <TableCell className="text-sm">{user.email}</TableCell>
+                  <TableCell><Badge variant="default">{PORTAL_ROLE_LABELS[user.role] || user.role}</Badge></TableCell>
+                  <TableCell className="text-sm text-slate-600">{user.department || "—"}</TableCell>
+                  <TableCell className="text-sm text-slate-500">{user.created_at ? new Date(user.created_at).toLocaleDateString() : "—"}</TableCell>
+                  <TableCell className="text-right">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      title="Edit role and portal access"
+                      onClick={() => openPortalUserEditor(user)}
+                    >
+                      <Pencil className="h-4 w-4" />
+                    </Button>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </Card>
+      )}
+
+      {editingPortalUser && (
+        <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in">
+          <Card className="w-full max-w-md">
+            <CardHeader className="flex flex-row items-center justify-between border-b border-slate-200 py-4">
+              <CardTitle className="text-lg">Edit Portal User</CardTitle>
+              <Button variant="ghost" size="sm" disabled={savingPortalUser || deletingPortalUser} onClick={() => setEditingPortalUser(null)}>
+                <X className="h-4 w-4" />
+              </Button>
+            </CardHeader>
+            <CardContent className="space-y-4 pt-6">
+              <div className="space-y-1 text-sm">
+                <p className="font-medium text-slate-900">{editingPortalUser.firstName} {editingPortalUser.lastName}</p>
+                <p className="text-slate-500">{editingPortalUser.email}</p>
+              </div>
+              <div className="space-y-2">
+                <Label>Role</Label>
+                {editingPortalUser.role === "customer" ? (
+                  <>
+                    <Input value="Account Manager" readOnly />
+                    <p className="text-xs text-slate-500">
+                      Account manager role stays tied to their corporate. You can remove their portal access.
+                    </p>
+                  </>
+                ) : (
+                  <Select value={editRole} onChange={(e) => setEditRole(e.target.value)}>
+                    {EDITABLE_PORTAL_ROLES.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </Select>
+                )}
+              </div>
+              <div className="space-y-2">
+                <Label>Portal access</Label>
+                <Select
+                  value={editPortalAccess}
+                  onChange={(e) => setEditPortalAccess(e.target.value as "active" | "revoked")}
+                >
+                  <option value="active">Active</option>
+                  <option value="revoked">Remove access</option>
+                </Select>
+                <p className="text-xs text-slate-500">
+                  Removing access deletes their login. Their profile stays, so access can be granted again later.
+                </p>
+              </div>
+              <div className="flex gap-2 pt-2">
+                <Button
+                  variant="outline"
+                  className="text-red-600 border-red-200 hover:bg-red-50"
+                  disabled={savingPortalUser || deletingPortalUser}
+                  onClick={handleDeletePortalUser}
+                >
+                  {deletingPortalUser ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : <Trash2 className="h-4 w-4 mr-1" />}
+                  Delete
+                </Button>
+                <Button variant="outline" className="flex-1" disabled={savingPortalUser || deletingPortalUser} onClick={() => setEditingPortalUser(null)}>
+                  Cancel
+                </Button>
+                <Button className="flex-1" disabled={savingPortalUser || deletingPortalUser} onClick={handleSavePortalUser}>
+                  {savingPortalUser ? <Loader2 className="h-4 w-4 mr-1 animate-spin" /> : null}
+                  Save
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
         </div>
       )}
 
@@ -895,7 +1223,7 @@ export default function ManagementProfile() {
         <div className="fixed inset-0 bg-slate-900/50 backdrop-blur-sm z-50 flex items-center justify-center p-4 animate-in fade-in">
           <Card className="w-full max-w-md">
             <CardHeader className="flex flex-row items-center justify-between border-b border-slate-200 py-4">
-              <CardTitle className="text-lg">Confirm Executive Details</CardTitle>
+              <CardTitle className="text-lg">Confirm {portalUserLabel} Details</CardTitle>
               <Button
                 variant="ghost"
                 size="sm"
@@ -907,17 +1235,20 @@ export default function ManagementProfile() {
             </CardHeader>
             <CardContent className="space-y-5 pt-6">
               <p className="text-sm text-slate-600">
-                Review the details below. A one-time password will be generated and emailed to the executive. They must change it on first login.
+                Review the details below. A one-time password will be generated and emailed to them. They must change it on first login.
               </p>
               <div className="space-y-3 text-sm">
                 {[
                   { label: "Full Name", value: `${createExecutiveForm.firstName.trim()} ${createExecutiveForm.lastName.trim()}` },
                   { label: "Email", value: createExecutiveForm.email.trim() },
                   { label: "Phone", value: createExecutiveForm.phone.trim() || "—" },
-                  { label: "Region", value: createExecutiveForm.region || "—" },
+                  { label: "Region", value: createExecutiveForm.kind === "customer" || createExecutiveForm.kind === "admin" ? "—" : (createExecutiveForm.region || "—") },
+                  { label: "Corporate", value: createExecutiveForm.kind === "customer"
+                    ? (managerCorporates.find((c) => String(c.corporateId) === createExecutiveForm.corporateId)?.corporateName || "—")
+                    : "—" },
                   { label: "Reports to Manager", value: displayName },
                   { label: "Department", value: profile?.department || "—" },
-                  { label: "Role", value: "Executive Staff" },
+                  { label: "Role", value: portalUserLabel },
                 ].map((row) => (
                   <div key={row.label} className="flex justify-between gap-4 border-b border-slate-100 pb-2">
                     <span className="text-slate-500 shrink-0">{row.label}</span>

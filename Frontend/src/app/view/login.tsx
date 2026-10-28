@@ -1,9 +1,9 @@
 import React, { useState } from "react";
 import { useNavigate } from "react-router";
+import { ArrowRight, Eye, EyeOff, Lock, MapPin } from "lucide-react";
 import { loginUser, touchSession } from "../api/authApi";
-
-
-import logo from '../../assets/logo.png';
+import logo from "../../assets/logo.png";
+import desert from "../../assets/namib-desert.jpg";
 
 const Login: React.FC = () => {
   const navigate = useNavigate();
@@ -25,7 +25,14 @@ const Login: React.FC = () => {
 
       localStorage.setItem("accessToken", response.accessToken);
       localStorage.setItem("refreshToken", response.refreshToken);
-      localStorage.setItem("currentUser", JSON.stringify(response.user));
+      localStorage.setItem(
+        "currentUser",
+        JSON.stringify({
+          ...response.user,
+          actualRole: response.user.role,
+          viewAsRole: null,
+        }),
+      );
       touchSession();
 
       if (response.user.mustChangePassword) {
@@ -44,461 +51,472 @@ const Login: React.FC = () => {
   };
 
   return (
-    <div className="login-container">
-      <div className="login-bg-blob login-bg-blob--top" />
-      <div className="login-bg-blob login-bg-blob--bottom" />
+    <div className="login-split">
+      <section className="login-hero" aria-hidden="false">
+        <img src={desert} alt="" className="login-hero-photo" />
+        <div className="login-hero-shade" />
 
-      {/* Logo & Heading */}
-      <div className="login-header">
-        <div className="login-logo">
-          <img src={logo} alt="MTC Logo" className="login-logo-img" />
+        <div className="login-hero-top">
+          <p className="login-hero-kicker">MTC Business Workforce Tool</p>
+          <h1>Business Connect</h1>
         </div>
-        <h1 className="login-title">MTC Namibia</h1>
-        <p className="login-subtitle">Business Connect – Sign in to continue</p>
-      </div>
 
-      {/* Card */}
-      <div className="login-card">
-        <h2 className="login-welcome">Welcome Back</h2>
-        <p className="login-welcome-sub">Enter your credentials to continue</p>
+        <div className="login-hero-bottom">
+          <span className="login-hero-accent" />
+          <h2>
+            Stronger connections.
+            <br />
+            Every step of the way.
+          </h2>
+          <p>
+            One workspace for customer relationships, service requests and the
+            follow-through that matters.
+          </p>
+          <div className="login-hero-rule" />
+          <p className="login-hero-place">
+            <MapPin size={15} strokeWidth={2} />
+            MTC Olympia, Namibia
+          </p>
+        </div>
+      </section>
 
-        <form onSubmit={handleSubmit} className="login-form">
-          {/* Role */}
-          {/* <div className="form-group">
-            <label htmlFor="role">I am a</label>
-            <div className="select-wrapper">
-              <select
-                id="role"
-                value={role}
-                onChange={(e) => setRole(e.target.value)}
-                required
-                className={!role ? "select-placeholder" : ""}
-              >
-                <option value="" disabled>
-                  Select your role
-                </option>
-                {roles.map((r) => (
-                  <option key={r} value={r}>
-                    {r}
-                  </option>
-                ))}
-              </select>
-              <span className="select-chevron">▾</span>
-            </div>
-          </div> */}
-
-          {/* Email */}
-          <div className="form-group">
-            <label htmlFor="email">Email Address</label>
-            <div className="input-wrapper">
-              <span className="input-icon">
-                <svg
-                  width="17"
-                  height="17"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
-                >
-                  <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" />
-                  <polyline points="22,6 12,13 2,6" />
-                </svg>
-              </span>
-              <input
-                type="email"
-                id="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="your.email@company.com"
-                required
-              />
-            </div>
+      <section className="login-panel">
+        <div className="login-panel-inner">
+          <div className="login-brand">
+            <img src={logo} alt="MTC" className="login-brand-mark" />
+            <span>MTC Namibia</span>
           </div>
 
-          {/* Password */}
-          <div className="form-group">
-            <label htmlFor="password">Password</label>
-            <div className="input-wrapper">
-              <span className="input-icon">
-                <svg
-                  width="17"
-                  height="17"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
+          <div className="login-form-slot">
+            <p className="login-eyebrow">Business Connect</p>
+            <h2 className="login-welcome">Welcome back.</h2>
+            <p className="login-welcome-sub">Sign in to your account to continue.</p>
+
+            <form onSubmit={handleSubmit} className="login-form">
+              <div className="form-group">
+                <label htmlFor="email">Email address</label>
+                <input
+                  type="email"
+                  id="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="example@company.com"
+                  autoComplete="email"
+                  required
+                />
+              </div>
+
+              <div className="form-group">
+                <label htmlFor="password">Password</label>
+                <div className="password-field">
+                  <input
+                    type={showPassword ? "text" : "password"}
+                    id="password"
+                    value={password}
+                    onChange={(e) => setPassword(e.target.value)}
+                    placeholder="Enter your password"
+                    autoComplete="current-password"
+                    required
+                  />
+                  <button
+                    type="button"
+                    className="eye-toggle"
+                    onClick={() => setShowPassword(!showPassword)}
+                    aria-label={showPassword ? "Hide password" : "Show password"}
+                  >
+                    {showPassword ? (
+                      <EyeOff size={18} strokeWidth={1.75} />
+                    ) : (
+                      <Eye size={18} strokeWidth={1.75} />
+                    )}
+                  </button>
+                </div>
+              </div>
+
+              <div className="login-forgot-row">
+                <button
+                  type="button"
+                  className="forgot-link"
+                  onClick={() => navigate("/forgot-password")}
                 >
-                  <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
-                  <path d="M7 11V7a5 5 0 0110 0v4" />
-                </svg>
-              </span>
-              <input
-                type={showPassword ? "text" : "password"}
-                id="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="Enter your password"
-                required
-              />
-              <button
-                type="button"
-                className="eye-toggle"
-                onClick={() => setShowPassword(!showPassword)}
-                aria-label="Toggle password visibility"
-              >
-                {showPassword ? (
-                  <svg
-                    width="17"
-                    height="17"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  >
-                    <path d="M17.94 17.94A10.07 10.07 0 0112 20c-7 0-11-8-11-8a18.45 18.45 0 015.06-5.94" />
-                    <path d="M9.9 4.24A9.12 9.12 0 0112 4c7 0 11 8 11 8a18.5 18.5 0 01-2.16 3.19" />
-                    <line x1="1" y1="1" x2="23" y2="23" />
-                  </svg>
-                ) : (
-                  <svg
-                    width="17"
-                    height="17"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeWidth="2"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                  >
-                    <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" />
-                    <circle cx="12" cy="12" r="3" />
-                  </svg>
-                )}
+                  Forgot your password?
+                </button>
+              </div>
+
+              {errorMessage && (
+                <p className="login-error" role="alert">
+                  {errorMessage}
+                </p>
+              )}
+
+              <button type="submit" className="login-button" disabled={loading}>
+                {loading ? "Signing in..." : "Sign In"}
+                {!loading && <ArrowRight size={18} strokeWidth={2} />}
               </button>
-            </div>
+            </form>
+
+            <p className="login-note">
+              <Lock size={14} strokeWidth={2} />
+              <span>
+                For authorised users only. Need access? Contact your system administrator.
+              </span>
+            </p>
           </div>
-
-          <button type="submit" className="login-button" disabled={loading}>
-            {loading ? "Signing in..." : "Sign In"}
-          </button>
-
-          {errorMessage && <p className="login-error">{errorMessage}</p>}
-        </form>
-
-        <div className="login-footer">
-          <button
-            type="button"
-            className="forgot-link forgot-link-btn"
-            onClick={() => navigate("/forgot-password")}
-          >
-            Forgot your password?
-          </button>
         </div>
 
-      </div>
-
-
-
-  
+        <footer className="login-legal">© 2026 MTC Namibia. All rights reserved.</footer>
+      </section>
 
       <style>{`
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-
-        .login-container {
+        .login-split {
           min-height: 100vh;
-          background: linear-gradient(135deg, #ddeeff 0%, #f0f7ff 50%, #ffffff 100%);
+          display: grid;
+          grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
+          background: #ffffff;
+          color: #101828;
+          font-family: Inter, "Segoe UI", system-ui, -apple-system, sans-serif;
+        }
+
+        .login-hero {
+          position: relative;
+          min-height: 100vh;
+          overflow: hidden;
+          color: #ffffff;
           display: flex;
           flex-direction: column;
-          align-items: center;
-          justify-content: center;
-          padding: 40px 24px;
-          font-family: 'Helvetica Neue', Arial, sans-serif;
-          position: relative;
-          overflow: hidden;
+          justify-content: space-between;
+          padding: 48px 52px 40px;
         }
 
-        .login-bg-blob {
-          position: fixed;
-          border-radius: 50%;
-          pointer-events: none;
-        }
-        .login-bg-blob--top {
-          top: -80px; left: -80px;
-          width: 320px; height: 320px;
-          background: radial-gradient(circle, rgba(26,122,191,0.12) 0%, transparent 70%);
-        }
-        .login-bg-blob--bottom {
-          bottom: -60px; right: -60px;
-          width: 280px; height: 280px;
-          background: radial-gradient(circle, rgba(26,122,191,0.09) 0%, transparent 70%);
-        }
-
-        /* Header */
-        .login-header {
-          text-align: center;
-          margin-bottom: 28px;
-          position: relative;
-          z-index: 1;
-        }
-        .login-logo {
-          width: 80px;
-          height: 80px;
-          border-radius: 18px;
-          display: inline-flex;
-          align-items: center;
-          justify-content: center;
-          margin-bottom: 16px;
-          position: relative;
-        }
-        .login-logo-img {
+        .login-hero-photo {
+          position: absolute;
+          inset: 0;
           width: 100%;
           height: 100%;
-          object-fit: contain;
-        }
-        .login-logo-text {
-          color: #fff;
-          font-size: 28px;
-          font-weight: 700;
-          font-style: italic;
-          font-family: Georgia, serif;
-          letter-spacing: 1px;
-        }
-        .login-logo-arrow {
-          position: absolute;
-          bottom: -7px;
-          right: 10px;
-          width: 0; height: 0;
-          border-left: 8px solid transparent;
-          border-right: 8px solid transparent;
-          border-top: 10px solid #e63946;
-        }
-        .login-title {
-          font-size: 2rem;
-          font-weight: 500;
-          color: #3b8fc7;
-          // font-family: Georgia, serif;
-          letter-spacing: -0.5px;
-          margin-bottom: 6px;
-        }
-        .login-subtitle {
-          font-size: 0.95rem;
-          color: #6b7280;
+          object-fit: cover;
+          object-position: center 42%;
         }
 
-        /* Card */
-        .login-card {
-          background: rgba(255,255,255,0.93);
-          backdrop-filter: blur(12px);
-          border-radius: 20px;
-          padding: 40px 44px;
-          width: 100%;
-          max-width: 480px;
-          box-shadow: 0 8px 40px rgba(26,122,191,0.12), 0 1px 3px rgba(0,0,0,0.06);
-          border: 1px solid rgba(255,255,255,0.8);
+        .login-hero-shade {
+          position: absolute;
+          inset: 0;
+          background:
+            linear-gradient(180deg, rgba(8, 16, 28, 0.55) 0%, rgba(8, 16, 28, 0.08) 28%, rgba(8, 16, 28, 0.05) 52%, rgba(6, 12, 22, 0.72) 100%),
+            linear-gradient(90deg, rgba(6, 12, 22, 0.18) 0%, rgba(6, 12, 22, 0) 40%);
+        }
+
+        .login-hero-top,
+        .login-hero-bottom {
           position: relative;
           z-index: 1;
-        }
-        .login-welcome {
-          font-size: 1.4rem;
-          font-weight: 700;
-          color: #111827;
-          font-family: Georgia, serif;
-          margin-bottom: 4px;
-        }
-        .login-welcome-sub {
-          font-size: 0.9rem;
-          color: #6b7280;
-          margin-bottom: 28px;
+          max-width: 560px;
         }
 
-        /* Form */
+        .login-hero-kicker {
+          margin: 0 0 10px;
+          font-size: 12px;
+          font-weight: 600;
+          letter-spacing: 0.16em;
+          text-transform: uppercase;
+          color: rgba(255, 255, 255, 0.88);
+        }
+
+        .login-hero-top h1 {
+          margin: 0;
+          font-size: 32px;
+          font-weight: 600;
+          line-height: 1.15;
+          letter-spacing: -0.02em;
+          color: #ffffff;
+        }
+
+        .login-hero-accent {
+          display: block;
+          width: 36px;
+          height: 3px;
+          border-radius: 99px;
+          background: #3db4ff;
+          margin-bottom: 22px;
+        }
+
+        .login-hero-bottom h2 {
+          margin: 0 0 18px;
+          font-size: clamp(34px, 3.4vw, 52px);
+          font-weight: 600;
+          line-height: 1.08;
+          letter-spacing: -0.03em;
+          color: #ffffff;
+        }
+
+        .login-hero-bottom p {
+          margin: 0;
+          max-width: 440px;
+          font-size: 16px;
+          line-height: 1.55;
+          color: rgba(255, 255, 255, 0.88);
+        }
+
+        .login-hero-rule {
+          height: 1px;
+          width: min(100%, 460px);
+          margin: 28px 0 18px;
+          background: rgba(255, 255, 255, 0.45);
+        }
+
+        .login-hero-place {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+          font-size: 14px;
+          color: rgba(255, 255, 255, 0.9);
+        }
+
+        .login-panel {
+          min-height: 100vh;
+          display: flex;
+          flex-direction: column;
+          background: #ffffff;
+        }
+
+        .login-panel-inner {
+          flex: 1;
+          width: 100%;
+          max-width: 456px;
+          margin: 0 auto;
+          padding: 40px 28px 0;
+          display: flex;
+          flex-direction: column;
+        }
+
+        .login-brand {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          color: #122033;
+          font-size: 22px;
+          font-weight: 600;
+          letter-spacing: -0.02em;
+        }
+
+        .login-brand-mark {
+          width: 44px;
+          height: 44px;
+          object-fit: cover;
+          border-radius: 8px;
+          flex-shrink: 0;
+        }
+
+        .login-form-slot {
+          flex: 1;
+          display: flex;
+          flex-direction: column;
+          justify-content: center;
+          padding: 28px 0 64px;
+        }
+
+        .login-eyebrow {
+          margin: 0 0 12px;
+          font-size: 12px;
+          font-weight: 700;
+          letter-spacing: 0.12em;
+          text-transform: uppercase;
+          color: #0084c8;
+        }
+
+        .login-welcome {
+          margin: 0 0 8px;
+          font-size: 36px;
+          font-weight: 700;
+          line-height: 1.15;
+          letter-spacing: -0.03em;
+          color: #101828;
+        }
+
+        .login-welcome-sub {
+          margin: 0 0 28px;
+          font-size: 15.5px;
+          line-height: 1.5;
+          color: #667085;
+        }
+
         .login-form {
           display: flex;
           flex-direction: column;
-          gap: 16px;
+          gap: 18px;
         }
+
         .form-group {
           display: flex;
           flex-direction: column;
           gap: 8px;
         }
+
         .form-group label {
-          font-size: 0.875rem;
+          font-size: 14px;
           font-weight: 600;
-          color: #374151;
+          color: #1d2939;
         }
 
-        /* Select */
-        .select-wrapper {
+        .form-group input,
+        .password-field input {
+          width: 100%;
+          height: 48px;
+          padding: 0 14px;
+          border: 1px solid #d7dee8;
+          border-radius: 8px;
+          background: #ffffff;
+          color: #101828;
+          font-size: 15px;
+          font-family: inherit;
+          outline: none;
+          transition: border-color 0.15s, box-shadow 0.15s;
+        }
+
+        .form-group input::placeholder,
+        .password-field input::placeholder {
+          color: #98a2b3;
+        }
+
+        .form-group input:focus,
+        .password-field input:focus {
+          border-color: #0084c8;
+          box-shadow: 0 0 0 3px rgba(0, 132, 200, 0.14);
+        }
+
+        .password-field {
           position: relative;
         }
-        .select-wrapper select {
-          width: 100%;
-          padding: 13px 40px 13px 16px;
-          border-radius: 10px;
-          border: 2px solid #e5e7eb;
-          background: #f8fafc;
-          color: #111827;
-          font-size: 0.9rem;
-          font-family: inherit;
-          outline: none;
-          appearance: none;
-          cursor: pointer;
-          transition: border-color 0.2s;
-        }
-        .select-wrapper select.select-placeholder {
-          color: #9ca3af;
-        }
-        .select-wrapper select:focus {
-          border-color: #3b8fc7;
-        }
-        .select-chevron {
-          position: absolute;
-          right: 14px;
-          top: 50%;
-          transform: translateY(-50%);
-          pointer-events: none;
-          color: #9ca3af;
-          font-size: 14px;
+
+        .password-field input {
+          padding-right: 46px;
         }
 
-        /* Input */
-        .input-wrapper {
+        .eye-toggle {
+          position: absolute;
+          top: 0;
+          right: 4px;
+          height: 48px;
+          width: 40px;
           display: flex;
           align-items: center;
-          background: #f8fafc;
-          border: 2px solid #e5e7eb;
-          border-radius: 10px;
-          padding: 0 14px;
-          transition: border-color 0.2s;
-        }
-        .input-wrapper:focus-within {
-          border-color: #3b8fc7;
-        }
-        .input-icon {
-          color: #9ca3af;
-          display: flex;
-          align-items: center;
-          margin-right: 10px;
-          flex-shrink: 0;
-        }
-        .input-wrapper input {
-          flex: 1;
-          padding: 13px 0;
+          justify-content: center;
           border: none;
           background: transparent;
-          font-size: 0.9rem;
-          font-family: inherit;
-          color: #111827;
-          outline: none;
-        }
-        .input-wrapper input::placeholder {
-          color: #9ca3af;
-        }
-        .eye-toggle {
-          background: none;
-          border: none;
+          color: #98a2b3;
           cursor: pointer;
-          color: #9ca3af;
-          display: flex;
-          align-items: center;
-          padding: 0;
-          margin-left: 8px;
-          flex-shrink: 0;
-        }
-        .eye-toggle:hover {
-          color: #6b7280;
+          border-radius: 8px;
         }
 
-        /* Button */
-        .login-button {
-          width: 100%;
-          padding: 14px;
-          border-radius: 10px;
-          background: linear-gradient(135deg, #3b8fc7 0%, #1565a8 100%);
-          color: #ffffff;
-          font-size: 1rem;
+        .eye-toggle:hover {
+          color: #667085;
+        }
+
+        .login-forgot-row {
+          display: flex;
+          justify-content: flex-end;
+          margin-top: -4px;
+        }
+
+        .forgot-link {
+          border: none;
+          background: transparent;
+          padding: 0;
+          color: #0084c8;
+          font-size: 14px;
           font-weight: 600;
           font-family: inherit;
-          border: none;
-          cursor: pointer;
-          letter-spacing: 0.3px;
-          box-shadow: 0 4px 14px rgba(26,122,191,0.35);
-          transition: background 0.2s, box-shadow 0.2s;
-          margin-top: 8px;
-        }
-        .login-button:hover:not(:disabled) {
-          background: linear-gradient(135deg, #1565a8 0%, #0f4f8a 100%);
-          box-shadow: 0 6px 18px rgba(26,122,191,0.45);
-        }
-        .login-button:disabled {
-          background: #5ba8d8;
-          box-shadow: none;
-          cursor: not-allowed;
-        }
-
-        .login-error {
-          margin-top: 12px;
-          color: #c62828;
-          font-size: 0.875rem;
-          text-align: center;
-          font-weight: 500;
-        }
-
-        /* Footer */
-        .login-footer {
-          text-align: center;
-          margin-top: 20px;
-        }
-        .forgot-link {
-          color: #3b8fc7;
-          font-size: 0.875rem;
-          font-weight: 500;
-          text-decoration: none;
-        }
-        .forgot-link-btn {
-          background: transparent;
-          border: none;
           cursor: pointer;
         }
+
         .forgot-link:hover {
           text-decoration: underline;
         }
-          .disclaimer {
-            margin-top: 40px;
-            font-size: 0.75rem;
-            color: #9ca3af;
+
+        .login-error {
+          margin: -4px 0 0;
+          color: #c62828;
+          font-size: 14px;
+          font-weight: 500;
+        }
+
+        .login-button {
+          height: 48px;
+          border: none;
+          border-radius: 8px;
+          background: #0084c8;
+          color: #ffffff;
+          font-size: 15.5px;
+          font-weight: 600;
+          font-family: inherit;
+          cursor: pointer;
+          display: inline-flex;
+          align-items: center;
+          justify-content: center;
+          gap: 8px;
+          transition: background 0.15s;
+        }
+
+        .login-button:hover:not(:disabled) {
+          background: #0073b0;
+        }
+
+        .login-button:disabled {
+          background: #7eb8dc;
+          cursor: not-allowed;
+        }
+
+        .login-note {
+          display: flex;
+          align-items: flex-start;
+          gap: 8px;
+          margin: 18px 0 0;
+          color: #667085;
+          font-size: 13.5px;
+          line-height: 1.45;
+        }
+
+        .login-note svg {
+          flex-shrink: 0;
+          margin-top: 2px;
+        }
+
+        .login-legal {
+          border-top: 1px solid #e6ebf2;
+          padding: 18px 24px 20px;
+          text-align: center;
+          color: #98a2b3;
+          font-size: 13px;
+        }
+
+        @media (max-width: 980px) {
+          .login-split {
+            grid-template-columns: 1fr;
           }
 
+          .login-hero {
+            display: none;
+          }
+
+          .login-panel,
+          .login-split {
+            min-height: 100vh;
+          }
+
+          .login-welcome {
+            font-size: 32px;
+          }
+        }
+
         @media (max-width: 520px) {
-          .login-container {
-            padding: 24px 16px;
+          .login-panel-inner {
+            padding: 28px 20px 0;
           }
-          .login-card {
-            padding: 28px 20px;
-          }
-          .login-header {
-            margin-bottom: 20px;
-          }
-          .login-title {
-            font-size: 1.5rem;
-          }
-          .login-subtitle {
-            font-size: 0.875rem;
+
+          .login-form-slot {
+            padding-bottom: 32px;
           }
         }
       `}</style>
-
-            <div className="disclaimer">
-          <p>© 2026 MTC Namibia. All rights reserved.</p>
-        </div>
-
     </div>
   );
 };

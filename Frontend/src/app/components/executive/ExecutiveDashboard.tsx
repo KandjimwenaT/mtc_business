@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router";
-import { getCurrentUser } from "../../api/authApi";
+import { getActualRole, getCurrentUser } from "../../api/authApi";
 import { profileIsEbu } from "../../utils/departmentSegment";
 import { getTicketDetailPath } from "../../utils/ticketNavigation";
 import { type TicketRecord } from "../../api/ticketApi";
@@ -8,6 +8,15 @@ import { getSlaHealthLabel } from "../../utils/sla";
 import { getMyLeads, type LeadRecord as LeadApiRecord } from "../../api/leadApi";
 import { useExecutiveData } from "../../hooks/useExecutiveData";
 import { useLiveRefresh } from "../../hooks/useLiveRefresh";
+import { ThemeIcon } from "../theme-icon";
+import { BreachedSlaBanner } from "../breached-sla-banner";
+import buildingIcon from "../../../assets/New Theme Icon/building-2-1.svg";
+import inboxIcon from "../../../assets/New Theme Icon/inbox.svg";
+import calendarIcon from "../../../assets/New Theme Icon/calendar-clock.svg";
+import starIcon from "../../../assets/New Theme Icon/star.svg";
+import ticketsIcon from "../../../assets/New Theme Icon/tickets-1.svg";
+import fileClockIcon from "../../../assets/New Theme Icon/file-clock.svg";
+import arrowRightIcon from "../../../assets/New Theme Icon/arrow-right.svg";
 import { 
   Card, 
   CardContent, 
@@ -38,6 +47,31 @@ import {
 
 const DAY_LABELS = ["Mon", "Tue", "Wed", "Thu", "Fri"] as const;
 
+function MetricCard({
+  label,
+  value,
+  caption,
+  icon,
+}: {
+  label: string;
+  value: string | number;
+  caption: string;
+  icon: string;
+}) {
+  return (
+    <div className="flex flex-col gap-3.5 rounded-xl border border-slate-200 bg-white p-4">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-xs font-medium text-slate-500">{label}</p>
+        <ThemeIcon src={icon} className="h-4 w-4 text-slate-400" />
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <p className="break-words text-3xl font-normal text-slate-800 tabular-nums">{value}</p>
+        <p className="text-xs text-slate-500">{caption}</p>
+      </div>
+    </div>
+  );
+}
+
 function toISODate(value: string | Date): string {
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return "";
@@ -61,7 +95,7 @@ export default function ExecutiveDashboard() {
     initialLoading,
     error,
   } = useExecutiveData();
-  const isEbu = profileIsEbu(profile);
+  const isEbu = profileIsEbu(profile) || getActualRole() === "super_admin";
 
   useEffect(() => {
     let isMounted = true;
@@ -326,92 +360,79 @@ export default function ExecutiveDashboard() {
   }
 
   return (
-    <div className="space-y-6 animate-in fade-in duration-500 slide-in-from-bottom-4">
-      <div>
-        <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900">Executive Dashboard</h2>
-        <p className="text-sm text-slate-500">Manage your corporate portfolio</p>
+    <div className="flex flex-col gap-7 animate-in fade-in duration-500">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-col gap-1.5">
+          <h2 className="text-3xl font-normal text-slate-800">Overview</h2>
+          <p className="text-xs text-slate-500">Manage your corporate portfolio</p>
+        </div>
+        <button
+          type="button"
+          onClick={() => navigate("/executive-tickets")}
+          className="inline-flex h-9 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-800"
+        >
+          View tickets
+          <ThemeIcon src={arrowRightIcon} className="h-4 w-4 text-slate-500" />
+        </button>
       </div>
 
-      <Card className="border-l-4 border-l-mtc-blue">
-        <CardHeader className="pb-2">
-          <CardTitle className="text-base">Reporting To</CardTitle>
-        </CardHeader>
-        <CardContent className="grid gap-4 pt-0 sm:grid-cols-2 lg:grid-cols-4">
-          <div>
-            <p className="text-xs text-slate-500">Executive</p>
-            <p className="font-semibold">{executiveName}</p>
-          </div>
-          <div>
-            <p className="text-xs text-slate-500">Manager</p>
-            <p className="font-semibold">{managerName}</p>
-          </div>
-          <div>
-            <p className="text-xs text-slate-500">Department</p>
-            <p className="font-semibold">{managerDepartment}</p>
-          </div>
-          <div>
-            <p className="text-xs text-slate-500">Contact</p>
-            <p className="font-semibold text-mtc-blue break-all">{managerEmail}</p>
-          </div>
-        </CardContent>
-      </Card>
-
-      <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
-        <Card>
-          <CardContent className="pt-6">
-            <p className="text-sm font-medium text-slate-500">My Corporates</p>
-            <div className="mt-2 text-2xl sm:text-3xl font-bold text-slate-900">{corporateCount}</div>
-            <p className="text-xs text-slate-400">{totalLines} total lines</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-6">
-            <p className="text-sm font-medium text-slate-500">Open Tickets</p>
-            <div className="mt-2 text-2xl sm:text-3xl font-bold text-slate-900">{openTicketsCount}</div>
-            <p className="text-xs text-slate-400">{breachedSlaCount} breached SLA</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-6">
-            <p className="text-sm font-medium text-slate-500">Pending Visits</p>
-            <div className="mt-2 text-2xl sm:text-3xl font-bold text-slate-900">{pendingVisitsCount}</div>
-            <p className="text-xs text-slate-400">Next: {nextVisitDate || "N/A"}</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-6">
-            <p className="text-sm font-medium text-slate-500">Avg Rating / SLAs</p>
-            <div className="mt-2 text-2xl sm:text-3xl font-bold text-slate-900">{avgRating > 0 ? avgRating.toFixed(1) : "N/A"}</div>
-            <p className="text-xs text-slate-400">Breached SLAs: {breachedSlaCount}</p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardContent className="pt-6">
-            <p className="text-sm font-medium text-slate-500">Monthly Spending</p>
-            <div className="mt-2 text-xl sm:text-2xl lg:text-3xl font-bold text-slate-900 break-words">
-              {`N$ ${Number(monthlySpendingTotal || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
-            </div>
-            <p className="text-xs text-slate-400">
-              {`${expiringContracts.length} contracts expiring in 6 months`}
-            </p>
-          </CardContent>
-        </Card>
-
-        {isEbu ? (
-         <Card>
-          <CardContent className="pt-6">
-            <p className="text-sm font-medium text-slate-500">My Leads</p>
-            <div className="mt-2 text-2xl sm:text-3xl font-bold text-slate-900">{leadsLoading ? "..." : leads.length}</div>
-            <p className="text-xs text-slate-400">{leadsLoading ? "Loading leads..." : `${activeLeadsCount} active • ${monthlyLeadsCount} this month`}</p>
-          </CardContent>
-        </Card>
-        ) : null}
+      <div className="grid gap-4 rounded-xl border border-slate-200 bg-white p-4 sm:grid-cols-2 lg:grid-cols-4">
+        <div>
+          <p className="text-xs text-slate-500">Executive</p>
+          <p className="mt-1 text-sm font-medium text-slate-800">{executiveName}</p>
+        </div>
+        <div>
+          <p className="text-xs text-slate-500">Manager</p>
+          <p className="mt-1 text-sm font-medium text-slate-800">{managerName}</p>
+        </div>
+        <div>
+          <p className="text-xs text-slate-500">Department</p>
+          <p className="mt-1 text-sm font-medium text-slate-800">{managerDepartment}</p>
+        </div>
+        <div>
+          <p className="text-xs text-slate-500">Contact</p>
+          <p className="mt-1 break-all text-sm font-medium text-sky-700">{managerEmail}</p>
+        </div>
       </div>
+
+      <section className="flex flex-col gap-3.5">
+        <div className="flex items-center justify-between gap-3">
+          <h3 className="text-base font-normal text-slate-800">Service operations</h3>
+          <p className="text-xs text-slate-500">Tickets, visits & service quality</p>
+        </div>
+        <BreachedSlaBanner count={breachedSlaCount} loading={initialLoading} onReview={() => navigate("/executive-tickets")} />
+        <div className="grid gap-3.5 sm:grid-cols-2 xl:grid-cols-3">
+          <MetricCard label="My Corporates" value={corporateCount} caption={`${totalLines} total lines`} icon={buildingIcon} />
+          <MetricCard label="Open Tickets" value={openTicketsCount} caption={`${breachedSlaCount} breached SLA`} icon={inboxIcon} />
+          <MetricCard label="Pending Visits" value={pendingVisitsCount} caption={`Next: ${nextVisitDate || "N/A"}`} icon={calendarIcon} />
+          <MetricCard label="Avg Rating" value={avgRating > 0 ? avgRating.toFixed(1) : "—"} caption={`Breached SLAs: ${breachedSlaCount}`} icon={starIcon} />
+          <MetricCard
+            label="Monthly Spending"
+            value={`N$ ${Number(monthlySpendingTotal || 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+            caption={`${expiringContracts.length} contracts expiring in 6 months`}
+            icon={ticketsIcon}
+          />
+          <MetricCard
+            label="Contracts expiring"
+            value={expiringContracts.length}
+            caption="Within 6 months"
+            icon={fileClockIcon}
+          />
+          {isEbu ? (
+            <MetricCard
+              label="My Leads"
+              value={leadsLoading ? "..." : leads.length}
+              caption={leadsLoading ? "Loading leads..." : `${activeLeadsCount} active · ${monthlyLeadsCount} this month`}
+              icon={inboxIcon}
+            />
+          ) : null}
+        </div>
+      </section>
 
       <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-7">
         <Card className="lg:col-span-4">
           <CardHeader>
-            <CardTitle>Ticketing Volume</CardTitle>
+            <CardTitle className="text-base font-normal text-slate-800">Ticketing Volume</CardTitle>
           </CardHeader>
           <CardContent className="pl-2">
             <div className="h-[220px] sm:h-[300px]">
@@ -424,7 +445,7 @@ export default function ExecutiveDashboard() {
                     cursor={{fill: 'rgba(226, 232, 240, 0.4)'}}
                     contentStyle={{ borderRadius: '8px', border: '1px solid #e2e8f0', boxShadow: '0 4px 6px -1px rgb(0 0 0 / 0.1)' }}
                   />
-                  <Bar dataKey="new" name="New Tickets" fill="#0072CE" radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="new" name="New Tickets" fill="#0369a1" radius={[4, 4, 0, 0]} />
                   <Bar dataKey="resolved" name="Resolved" fill="#60a5fa" radius={[4, 4, 0, 0]} />
                 </BarChart>
               </ResponsiveContainer>
@@ -434,7 +455,7 @@ export default function ExecutiveDashboard() {
         
         <Card className="lg:col-span-3">
           <CardHeader>
-            <CardTitle>SLA Health Distribution</CardTitle>
+            <CardTitle className="text-base font-normal text-slate-800">SLA Health Distribution</CardTitle>
           </CardHeader>
           <CardContent>
              <div className="h-[220px] sm:h-[300px] flex items-center justify-center relative w-full min-w-0">
@@ -462,7 +483,7 @@ export default function ExecutiveDashboard() {
               </ResponsiveContainer>
               <div className="absolute flex flex-col items-center">
                 <span className="text-sm text-slate-500">Total</span>
-                <span className="text-2xl font-bold">{slaData.reduce((sum, row) => sum + row.value, 0)}</span>
+                <span className="text-2xl font-normal text-slate-800">{slaData.reduce((sum, row) => sum + row.value, 0)}</span>
               </div>
             </div>
           </CardContent>
@@ -471,7 +492,7 @@ export default function ExecutiveDashboard() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Monthly Spending Trend</CardTitle>
+          <CardTitle className="text-base font-normal text-slate-800">Monthly Spending Trend</CardTitle>
         </CardHeader>
         <CardContent className="pl-2">
           <div className="h-[220px] sm:h-[280px]">
@@ -490,7 +511,7 @@ export default function ExecutiveDashboard() {
 
       <Card>
         <CardHeader>
-          <CardTitle>My Corporate Portfolio</CardTitle>
+          <CardTitle className="text-base font-normal text-slate-800">My Corporate Portfolio</CardTitle>
         </CardHeader>
         <CardContent>
           <Table>
@@ -519,7 +540,7 @@ export default function ExecutiveDashboard() {
                   </TableCell>
                   <TableCell className="font-medium">{row.value}</TableCell>
                   <TableCell className="text-right">
-                    <button className="text-mtc-blue hover:underline text-sm font-medium">View</button>
+                    <button className="text-xs font-semibold text-sky-700 hover:underline">View</button>
                   </TableCell>
                 </TableRow>
               ))}
@@ -541,7 +562,7 @@ export default function ExecutiveDashboard() {
             <div className="flex justify-end pt-4">
               <button
                 onClick={() => navigate("/corporates")}
-                className="text-mtc-blue hover:underline text-sm font-medium"
+                className="text-xs font-semibold text-sky-700 hover:underline"
               >
                 See more ({portfolioRows.length - 10} more) →
               </button>
@@ -553,7 +574,7 @@ export default function ExecutiveDashboard() {
       <div className="grid gap-6 lg:grid-cols-2">
         <Card>
           <CardHeader>
-            <CardTitle>Recent Tickets</CardTitle>
+            <CardTitle className="text-base font-normal text-slate-800">Recent Tickets</CardTitle>
           </CardHeader>
           <CardContent>
             <Table>
@@ -601,7 +622,7 @@ export default function ExecutiveDashboard() {
             </Table>
             <div className="mt-4 text-center">
               <button
-                className="text-mtc-blue hover:underline text-sm font-medium"
+                className="text-xs font-semibold text-sky-700 hover:underline"
                 onClick={() => navigate("/executive-tickets")}
               >
                 View All Tickets
@@ -612,7 +633,7 @@ export default function ExecutiveDashboard() {
 
         <Card>
           <CardHeader>
-            <CardTitle>Upcoming Visits</CardTitle>
+            <CardTitle className="text-base font-normal text-slate-800">Upcoming Visits</CardTitle>
           </CardHeader>
           <CardContent>
             <Table>
@@ -650,7 +671,7 @@ export default function ExecutiveDashboard() {
             </Table>
             <div className="mt-4 text-center">
               <button
-                className="text-mtc-blue hover:underline text-sm font-medium"
+                className="text-xs font-semibold text-sky-700 hover:underline"
                 onClick={() => navigate("/executive-visits")}
               >
                 View All Visits
@@ -662,7 +683,7 @@ export default function ExecutiveDashboard() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Back Office Activities</CardTitle>
+          <CardTitle className="text-base font-normal text-slate-800">Back Office Activities</CardTitle>
         </CardHeader>
         <CardContent>
           <Table>

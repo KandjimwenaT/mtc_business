@@ -38,6 +38,10 @@ import {
   cn,
 } from "../ui-components";
 import TicketVolumeChart from "../charts/TicketVolumeChart";
+import { BreachedSlaBanner } from "../breached-sla-banner";
+import { ThemeIcon } from "../theme-icon";
+import arrowRightIcon from "../../../assets/New Theme Icon/arrow-right.svg";
+import alertIcon from "../../../assets/New Theme Icon/triangle-alert.svg";
 import {
   LineChart,
   Line,
@@ -119,31 +123,31 @@ function StatCard({
   iconClassName?: string;
 }) {
   return (
-    <Card className="rounded-xl border border-slate-200/90 shadow-sm bg-white">
-      <CardContent className="pt-5 pb-4 px-5">
-        <div className="flex justify-between items-start gap-2">
-          <p className="text-sm font-medium text-slate-500">{label}</p>
-          <Icon className={cn("h-5 w-5 shrink-0 text-slate-400", iconClassName)} />
-        </div>
-        <div className="text-2xl sm:text-3xl font-bold text-slate-900 mt-2 tabular-nums break-words">{value}</div>
-        <p className={cn("text-xs mt-1", subClassName ?? "text-slate-400")}>{sub}</p>
-      </CardContent>
-    </Card>
+    <div className="flex flex-col gap-3.5 rounded-xl border border-slate-200 bg-white p-4">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-xs font-medium text-slate-500">{label}</p>
+        <Icon className={cn("h-4 w-4 shrink-0 text-slate-400", iconClassName)} />
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <p className="break-words text-3xl font-normal text-slate-800 tabular-nums">{value}</p>
+        <p className={cn("text-xs", subClassName ?? "text-slate-500")}>{sub}</p>
+      </div>
+    </div>
   );
 }
 
 function TrendStatCard({ label, value, sub }: { label: string; value: string | number; sub: string }) {
   return (
-    <Card className="rounded-xl border border-slate-200/90 shadow-sm bg-white">
-      <CardContent className="pt-5 pb-4 px-5">
-        <div className="flex justify-between items-start gap-2">
-          <p className="text-sm font-medium text-slate-500">{label}</p>
-          <TrendingUp className="h-4 w-4 shrink-0 text-emerald-600" aria-hidden />
-        </div>
-        <div className="text-2xl sm:text-3xl font-bold text-slate-900 mt-2 tabular-nums break-words">{value}</div>
-        <p className="text-xs mt-1 font-medium text-emerald-600">{sub}</p>
-      </CardContent>
-    </Card>
+    <div className="flex flex-col gap-3.5 rounded-xl border border-slate-200 bg-white p-4">
+      <div className="flex items-center justify-between gap-2">
+        <p className="text-xs font-medium text-slate-500">{label}</p>
+        <TrendingUp className="h-4 w-4 shrink-0 text-slate-400" aria-hidden />
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <p className="break-words text-3xl font-normal text-slate-800 tabular-nums">{value}</p>
+        <p className="text-xs text-slate-500">{sub}</p>
+      </div>
+    </div>
   );
 }
 
@@ -473,24 +477,42 @@ export default function GmDashboard() {
   }
 
   return (
-    <div className="space-y-8 animate-in fade-in duration-500 slide-in-from-bottom-4">
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900">GM Oversight Dashboard</h1>
-          <p className="text-sm text-slate-500 mt-1">
+    <div className="flex flex-col gap-7 animate-in fade-in duration-500">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex flex-col gap-1.5">
+          <h1 className="text-3xl font-normal text-slate-800">Overview</h1>
+          <p className="text-xs text-slate-500">
             Monitoring EBU and Key Accounts under managers reporting to {displayName}
           </p>
         </div>
-        <Badge className="w-fit bg-mtc-navy text-white border-transparent px-3 py-1">
-          <Crown className="h-3.5 w-3.5 mr-1.5 inline" />
-          Read-only
-        </Badge>
+        <div className="flex items-center gap-3">
+          <Badge className="w-fit border-transparent bg-indigo-50 px-3 py-1 text-sky-700">
+            <Crown className="mr-1.5 inline h-3.5 w-3.5" />
+            Read-only
+          </Badge>
+          <button
+            type="button"
+            onClick={() => navigate("/tickets")}
+            className="inline-flex h-9 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-800"
+          >
+            View tickets
+            <ThemeIcon src={arrowRightIcon} className="h-4 w-4 text-slate-500" />
+          </button>
+        </div>
       </div>
+
+      <section className="flex flex-col gap-3.5">
+        <div className="flex items-center justify-between gap-3">
+          <h3 className="text-base font-normal text-slate-800">Service operations</h3>
+          <p className="text-xs text-slate-500">Tickets, visits & service quality</p>
+        </div>
+        <BreachedSlaBanner count={breachedCount} onReview={() => navigate("/sla-monitoring")} />
+      </section>
 
       <Card className="rounded-xl border border-slate-200/90 shadow-sm overflow-hidden">
         <CardHeader className="flex flex-row items-center gap-2 space-y-0 border-b border-slate-100 bg-white pb-4">
           <Briefcase className="h-5 w-5 text-mtc-blue shrink-0" />
-          <CardTitle className="text-lg">Managers Under Your Oversight</CardTitle>
+          <CardTitle className="text-base font-normal">Managers Under Your Oversight</CardTitle>
         </CardHeader>
         <CardContent className="p-0">
           <div className="overflow-x-auto">
@@ -529,7 +551,7 @@ export default function GmDashboard() {
                       <TableCell className="text-right">
                         <button
                           type="button"
-                          className="text-mtc-blue hover:underline text-sm font-medium"
+                          className="text-xs font-semibold text-sky-700 hover:underline"
                           onClick={() => navigate("/corporates")}
                         >
                           View
@@ -597,55 +619,67 @@ export default function GmDashboard() {
         />
       </div>
 
-      <div className="grid gap-6 lg:grid-cols-7">
-        <Card className="lg:col-span-4 rounded-xl border border-slate-200/90 shadow-sm">
-          <CardHeader>
-            <CardTitle>Ticketing Volume</CardTitle>
-          </CardHeader>
-          <CardContent className="pl-2">
-            <TicketVolumeChart tickets={tickets} />
-          </CardContent>
-        </Card>
-
-        <Card className="lg:col-span-3 rounded-xl border border-slate-200/90 shadow-sm">
-          <CardHeader>
-            <CardTitle>SLA Health Distribution</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="h-[220px] sm:h-[300px] flex items-center justify-center relative w-full min-w-0">
-              <ResponsiveContainer width="100%" height="100%">
-                <PieChart>
-                  <Pie
-                    data={slaBuckets}
-                    cx="50%"
-                    cy="50%"
-                    innerRadius={60}
-                    outerRadius={88}
-                    paddingAngle={2}
-                    dataKey="value"
-                    nameKey="name"
-                    startAngle={90}
-                    endAngle={-270}
-                  >
-                    {slaBuckets.map((entry, index) => (
-                      <Cell key={`sla-${entry.name}-${index}`} fill={entry.color} stroke="none" />
-                    ))}
-                  </Pie>
-                  <Tooltip />
-                </PieChart>
-              </ResponsiveContainer>
-              <div className="absolute flex flex-col items-center pointer-events-none">
-                <span className="text-sm text-slate-500">Tickets</span>
-                <span className="text-2xl font-bold text-slate-800">{slaPieTotal || "—"}</span>
+      <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_24rem]">
+        <div className="rounded-xl border border-slate-200 bg-white p-5">
+          <TicketVolumeChart tickets={tickets} title="Ticketing Volume" onViewTickets={() => navigate("/tickets")} />
+        </div>
+        <div className="flex min-h-full flex-col gap-4 rounded-xl border border-slate-200 bg-white p-5">
+          <h3 className="text-base font-normal text-slate-800">SLA Health Distribution</h3>
+          {slaBuckets.some((row) => row.name !== "No tickets" && row.value > 0) ? (
+            <>
+              <div className="relative h-52 w-full min-w-0">
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie
+                      data={slaBuckets}
+                      cx="50%"
+                      cy="50%"
+                      innerRadius={52}
+                      outerRadius={72}
+                      paddingAngle={2}
+                      dataKey="value"
+                      nameKey="name"
+                      startAngle={90}
+                      endAngle={-270}
+                    >
+                      {slaBuckets.map((entry, index) => (
+                        <Cell key={`sla-${entry.name}-${index}`} fill={entry.color} stroke="none" />
+                      ))}
+                    </Pie>
+                    <Tooltip />
+                  </PieChart>
+                </ResponsiveContainer>
+                <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center">
+                  <span className="text-xs text-slate-500">Tickets</span>
+                  <span className="text-2xl font-normal text-slate-800 tabular-nums">{slaPieTotal}</span>
+                </div>
               </div>
-            </div>
-          </CardContent>
-        </Card>
+            </>
+          ) : (
+            <>
+              <div className="inline-flex items-center gap-1.5">
+                <ThemeIcon src={alertIcon} className="h-4 w-4 text-yellow-700" />
+                <p className="text-xs font-semibold text-yellow-700">Breakdown unavailable</p>
+              </div>
+              <div className="rounded-lg bg-orange-50 p-3.5 text-xs text-slate-500">
+                There are no open tickets with an SLA status to chart.
+              </div>
+            </>
+          )}
+          <button
+            type="button"
+            onClick={() => navigate("/sla-monitoring")}
+            className="mt-auto inline-flex items-center gap-1.5 text-xs font-semibold text-sky-700"
+          >
+            Review SLA data
+            <ThemeIcon src={arrowRightIcon} className="h-3.5 w-3.5 text-sky-700" />
+          </button>
+        </div>
       </div>
 
       <Card className="rounded-xl border border-slate-200/90 shadow-sm">
         <CardHeader>
-          <CardTitle>Monthly Spending Trend</CardTitle>
+          <CardTitle className="text-base font-normal">Monthly Spending Trend</CardTitle>
         </CardHeader>
         <CardContent className="pl-2">
           <div className="h-[220px] sm:h-[280px]">
@@ -666,7 +700,7 @@ export default function GmDashboard() {
         <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between space-y-0 border-b border-slate-100 bg-white pb-4">
           <div className="flex items-center gap-2">
             <Users className="h-5 w-5 text-mtc-blue shrink-0" />
-            <CardTitle className="text-lg">Executive Performance Overview</CardTitle>
+            <CardTitle className="text-base font-normal">Executive Performance Overview</CardTitle>
           </div>
           <div className="relative w-full sm:max-w-xs">
             <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-slate-400 pointer-events-none" />
@@ -775,7 +809,7 @@ export default function GmDashboard() {
       <Card className="rounded-xl border border-slate-200/90 shadow-sm overflow-hidden">
         <CardHeader className="flex flex-row items-center gap-2 space-y-0 border-b border-slate-100 bg-white pb-4">
           <List className="h-5 w-5 text-mtc-blue shrink-0" />
-          <CardTitle className="text-lg">Recent Activities</CardTitle>
+          <CardTitle className="text-base font-normal">Recent Activities</CardTitle>
         </CardHeader>
         <CardContent className="p-0">
           <div className="overflow-x-auto">

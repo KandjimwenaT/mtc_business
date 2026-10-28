@@ -6,8 +6,20 @@ import { getAllTickets, type TicketRecord } from "../api/ticketApi";
 import { getAllVisits, type VisitRecord } from "../api/visitApi";
 import { getSystemHealth, type SystemHealth } from "../api/adminApi";
 import { getSlaHealthLabel, getSlaState } from "../utils/sla";
+import { isExecutiveRole } from "../utils/roleCapabilities";
 import TicketVolumeChart from "./charts/TicketVolumeChart";
+import { ThemeIcon } from "./theme-icon";
+import { BreachedSlaBanner } from "./breached-sla-banner";
 import { useLiveRefresh } from "../hooks/useLiveRefresh";
+import inboxIcon from "../../assets/New Theme Icon/inbox.svg";
+import calendarIcon from "../../assets/New Theme Icon/calendar-clock.svg";
+import ticketsMonthIcon from "../../assets/New Theme Icon/tickets-1.svg";
+import starIcon from "../../assets/New Theme Icon/star.svg";
+import buildingIcon from "../../assets/New Theme Icon/building-2-1.svg";
+import usersIcon from "../../assets/New Theme Icon/users-round.svg";
+import fileClockIcon from "../../assets/New Theme Icon/file-clock.svg";
+import arrowRightIcon from "../../assets/New Theme Icon/arrow-right.svg";
+import alertIcon from "../../assets/New Theme Icon/triangle-alert.svg";
 import { 
   Card, 
   CardContent, 
@@ -48,6 +60,40 @@ function formatTrend(current: number, previous: number): string {
   const pct = Math.round(((current - previous) / previous) * 100);
   const sign = pct >= 0 ? "+" : "";
   return `${sign}${pct}% vs last month`;
+}
+
+function MetricCard({
+  label,
+  value,
+  caption,
+  icon,
+}: {
+  label: string;
+  value: string;
+  caption: string;
+  icon: string;
+}) {
+  return (
+    <div className="flex flex-1 flex-col gap-3.5 rounded-xl border border-slate-200 bg-white p-4">
+      <div className="flex items-center justify-between">
+        <p className="text-xs font-medium text-slate-500">{label}</p>
+        <ThemeIcon src={icon} className="h-4 w-4 text-slate-400" />
+      </div>
+      <div className="flex flex-col gap-1.5">
+        <p className="text-3xl font-normal text-slate-800 tabular-nums">{value}</p>
+        <p className="text-xs font-normal text-slate-500">{caption}</p>
+      </div>
+    </div>
+  );
+}
+
+function ActionLink({ label, onClick }: { label: string; onClick: () => void }) {
+  return (
+    <button type="button" onClick={onClick} className="inline-flex items-center gap-1.5 text-xs font-semibold text-sky-700">
+      {label}
+      <ThemeIcon src={arrowRightIcon} className="h-3.5 w-3.5 text-sky-700" />
+    </button>
+  );
 }
 
 function slaBadgeForTicket(ticket: TicketRecord): { label: string; variant: "success" | "warning" | "breached" | "neutral" } {
@@ -170,185 +216,205 @@ export default function Dashboard() {
   const ticketTrend = health
     ? formatTrend(health.tickets.createdThisMonth, health.tickets.createdLastMonth)
     : "";
+  const now = new Date();
+  const createdThisMonth = health?.tickets.createdThisMonth ?? allTickets.filter((ticket) => {
+    const created = new Date(ticket.createdAt);
+    return created.getMonth() === now.getMonth() && created.getFullYear() === now.getFullYear();
+  }).length;
+  const resolvedMtd = health?.tickets.resolvedMtd ?? 0;
+  const createdToday = health?.tickets.createdToday ?? 0;
+  const unassigned = health?.tickets.unassigned ?? openTickets.filter((ticket) => !ticket.assignedTo).length;
+  const ticketsHref =
+    currentUser?.role === "customer"
+      ? "/customerTickets"
+      : isExecutiveRole(currentUser?.role)
+        ? "/executive-tickets"
+        : "/tickets";
+  const corporatesHref = currentUser?.role === "admin" || currentUser?.role === "super_admin" ? "/admin-corporates" : "/corporates";
+  const slaHref = currentUser?.role === "admin" || currentUser?.role === "super_admin" || isExecutiveRole(currentUser?.role) ? ticketsHref : "/sla-monitoring";
 
   return (
-    <div className="space-y-6 animate-in fade-in duration-500 slide-in-from-bottom-4">
+    <div className="flex flex-col gap-7 animate-in fade-in duration-500">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h2 className="text-xl sm:text-2xl font-bold tracking-tight text-slate-900">Overview</h2>
-          <p className="text-sm text-slate-500">Live platform metrics from the database</p>
+        <div className="flex flex-col gap-1.5">
+          <h2 className="text-3xl font-normal text-slate-800">Overview</h2>
+          <p className="text-xs font-normal text-slate-500">Live platform metrics from the database</p>
         </div>
-        {/* {health?.database && (
-          <Badge variant={health.database.status === "ok" ? "success" : "danger"}>
-            Database {health.database.status === "ok" ? "connected" : "unreachable"}
-          </Badge>
-        )} */}
+        <button
+          type="button"
+          onClick={() => navigate(ticketsHref)}
+          className="inline-flex h-9 items-center gap-2 rounded-lg border border-slate-200 bg-white px-3 text-xs font-semibold text-slate-800"
+        >
+          View tickets
+          <ThemeIcon src={arrowRightIcon} className="h-4 w-4 text-slate-500" />
+        </button>
       </div>
 
       {loadError && (
         <p className="text-sm text-red-600">{loadError}</p>
       )}
 
-      <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-4">
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Open Tickets</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold tabular-nums">{loading ? "—" : openCount.toLocaleString()}</div>
-            <p className="text-xs text-slate-500">
-              {health ? `${health.tickets.unassigned} unassigned · ${ticketTrend}` : "Open request and complaint tickets"}
-            </p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Pending Visits</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold tabular-nums">{loading ? "—" : pendingVisits.toLocaleString()}</div>
-            <p className="text-xs text-slate-500">
-              {nextVisit
-                ? `Next: ${nextVisit.accountName} on ${new Date(`${nextVisit.visitDate}T12:00:00`).toLocaleDateString()}`
-                : "No upcoming scheduled visits"}
-            </p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Avg Rating</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-mtc-blue tabular-nums">
-              {loading ? "—" : avgRating != null ? avgRating.toFixed(1) : "—"}
-            </div>
-            <p className="text-xs text-slate-500">
-              {ratingCount > 0 ? `Based on ${ratingCount.toLocaleString()} visit reviews` : "No customer ratings yet"}
-            </p>
-          </CardContent>
-        </Card>
-        <Card>
-          <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-            <CardTitle className="text-sm font-medium">Breached SLAs</CardTitle>
-          </CardHeader>
-          <CardContent>
-            <div className="text-2xl font-bold text-slate-900 tabular-nums">{loading ? "—" : breached.toLocaleString()}</div>
-            <p className={`text-xs font-medium ${breached > 0 ? "text-red-500" : "text-slate-500"}`}>
-              {breached > 0 ? "Open tickets past their SLA deadline" : "No open SLA breaches"}
-            </p>
-          </CardContent>
-        </Card>
-      </div>
-
-      {health && (
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <Card>
-            <CardContent className="pt-5 pb-4">
-              <p className="text-sm font-medium text-slate-500">Corporates</p>
-              <div className="text-2xl font-bold mt-1 tabular-nums">{health.corporates.total.toLocaleString()}</div>
-              <p className="text-xs text-slate-400 mt-1">
-                {health.corporates.approved.toLocaleString()} approved · {health.corporates.waitingApproval} awaiting approval
-              </p>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="pt-5 pb-4">
-              <p className="text-sm font-medium text-slate-500">Active Accounts</p>
-              <div className="text-2xl font-bold mt-1 tabular-nums">{health.accounts.active.toLocaleString()}</div>
-              <p className="text-xs text-slate-400 mt-1">{health.accounts.total.toLocaleString()} accounts in total</p>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="pt-5 pb-4">
-              <p className="text-sm font-medium text-slate-500">Tickets this month</p>
-              <div className="text-2xl font-bold mt-1 tabular-nums">{health.tickets.createdThisMonth.toLocaleString()}</div>
-              <p className="text-xs text-slate-400 mt-1">
-                {health.tickets.resolvedMtd.toLocaleString()} resolved · {health.tickets.createdToday} today
-              </p>
-            </CardContent>
-          </Card>
-          <Card>
-            <CardContent className="pt-5 pb-4">
-              <p className="text-sm font-medium text-slate-500">Contracts expiring</p>
-              <div className="text-2xl font-bold mt-1 tabular-nums">{health.contracts.expiringWithin6Months.toLocaleString()}</div>
-              <p className="text-xs text-slate-400 mt-1">
-                Within 6 months · {health.visits.completedMtd} visits completed MTD
-              </p>
-            </CardContent>
-          </Card>
+      <section className="flex flex-col gap-3.5">
+        <div className="flex items-center justify-between gap-3">
+          <h3 className="text-base font-normal text-slate-800">Service operations</h3>
+          <p className="text-xs text-slate-500">Tickets, visits & service quality</p>
         </div>
-      )}
 
-      <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-7">
-        <Card className="lg:col-span-4">
-          <CardHeader>
-            <CardTitle>Ticketing Volume</CardTitle>
-          </CardHeader>
-          <CardContent className="pl-2">
-            {loading ? (
-              <div className="h-[220px] sm:h-[300px] flex items-center justify-center text-slate-500 text-sm gap-2">
-                <Loader2 className="h-4 w-4 animate-spin" /> Loading tickets...
-              </div>
-            ) : (
-              <TicketVolumeChart tickets={allTickets} />
-            )}
-          </CardContent>
-        </Card>
-        
-        <Card className="lg:col-span-3">
-          <CardHeader>
-            <CardTitle>SLA Health Distribution</CardTitle>
-          </CardHeader>
-          <CardContent>
-             <div className="h-[220px] sm:h-[300px] flex items-center justify-center relative w-full min-w-0">
-              {loading ? (
-                <p className="text-sm text-slate-500">Loading SLA data...</p>
-              ) : slaTotal === 0 ? (
-                <p className="text-sm text-slate-500">No open tickets with SLA status</p>
-              ) : (
-                <>
-                  <ResponsiveContainer width="100%" height="100%">
-                    <PieChart>
-                      <Pie
-                        id="sla-pie"
-                        data={slaData}
-                        cx="50%"
-                        cy="50%"
-                        innerRadius={60}
-                        outerRadius={80}
-                        paddingAngle={2}
-                        dataKey="value"
-                        nameKey="name"
-                        startAngle={90}
-                        endAngle={-270}
-                      >
-                        {slaData.map((entry, index) => (
-                          <Cell key={`sla-cell-${index}`} fill={entry.color} stroke="none" />
-                        ))}
-                      </Pie>
-                      <Tooltip />
-                    </PieChart>
-                  </ResponsiveContainer>
-                  <div className="absolute flex flex-col items-center">
-                    <span className="text-sm text-slate-500">Open</span>
-                    <span className="text-2xl font-bold tabular-nums">{slaTotal}</span>
-                  </div>
-                </>
-              )}
+        <BreachedSlaBanner count={breached} loading={loading} onReview={() => navigate(slaHref)} />
+
+        <div className="grid gap-3.5 md:grid-cols-2 xl:grid-cols-4">
+          <MetricCard
+            label="Open Tickets"
+            icon={inboxIcon}
+            value={loading ? "—" : openCount.toLocaleString()}
+            caption={health ? `${unassigned} unassigned · ${ticketTrend}` : "Open request and complaint tickets"}
+          />
+          <MetricCard
+            label="Pending Visits"
+            icon={calendarIcon}
+            value={loading ? "—" : pendingVisits.toLocaleString()}
+            caption={
+              nextVisit
+                ? `Next: ${nextVisit.accountName} on ${new Date(`${nextVisit.visitDate}T12:00:00`).toLocaleDateString()}`
+                : "No upcoming scheduled visits"
+            }
+          />
+          <MetricCard
+            label="Tickets this month"
+            icon={ticketsMonthIcon}
+            value={loading ? "—" : createdThisMonth.toLocaleString()}
+            caption={`${resolvedMtd.toLocaleString()} resolved · ${createdToday} today`}
+          />
+          <MetricCard
+            label="Avg Rating"
+            icon={starIcon}
+            value={loading ? "—" : avgRating != null ? avgRating.toFixed(1) : "—"}
+            caption={ratingCount > 0 ? `Based on ${ratingCount.toLocaleString()} visit reviews` : "No customer ratings yet"}
+          />
+        </div>
+      </section>
+
+      <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1fr)_24rem]">
+        <div className="rounded-xl border border-slate-200 bg-white p-5">
+          {loading ? (
+            <div className="flex h-40 items-center justify-center gap-2 text-sm text-slate-500">
+              <Loader2 className="h-4 w-4 animate-spin" /> Loading tickets...
             </div>
-            {slaData.length > 0 && (
-              <div className="flex flex-wrap justify-center gap-3 text-xs text-slate-500 mt-2">
+          ) : (
+            <TicketVolumeChart
+              tickets={allTickets}
+              title="Ticketing Volume"
+              onViewTickets={() => navigate(ticketsHref)}
+            />
+          )}
+        </div>
+
+        <div className="flex min-h-full flex-col gap-4 rounded-xl border border-slate-200 bg-white p-5">
+          <h3 className="text-base font-normal text-slate-800">SLA Health Distribution</h3>
+          {loading ? (
+            <p className="text-xs text-slate-500">Loading SLA data...</p>
+          ) : slaTotal === 0 ? (
+            <>
+              <div className="inline-flex items-center gap-1.5">
+                <ThemeIcon src={alertIcon} className="h-4 w-4 text-yellow-700" />
+                <p className="text-xs font-semibold text-yellow-700">Breakdown unavailable</p>
+              </div>
+              <div className="rounded-lg bg-orange-50 p-3.5">
+                <p className="text-xs font-medium text-slate-800">“No open tickets with SLA status”</p>
+                <p className="mt-2 text-xs leading-5 text-slate-500">
+                  {breached > 0
+                    ? `The summary reports ${breached.toLocaleString()} breached SLAs, but no SLA breakdown is available. Review the underlying data before assessing SLA health.`
+                    : "There are no open tickets with an SLA status to chart."}
+                </p>
+              </div>
+            </>
+          ) : (
+            <>
+              <div className="relative h-52 w-full min-w-0">
+                <ResponsiveContainer width="100%" height="100%">
+                  <PieChart>
+                    <Pie
+                      id="sla-pie"
+                      data={slaData}
+                      cx="50%"
+                      cy="50%"
+                      innerRadius={52}
+                      outerRadius={72}
+                      paddingAngle={2}
+                      dataKey="value"
+                      nameKey="name"
+                      startAngle={90}
+                      endAngle={-270}
+                    >
+                      {slaData.map((entry, index) => (
+                        <Cell key={`sla-cell-${index}`} fill={entry.color} stroke="none" />
+                      ))}
+                    </Pie>
+                    <Tooltip />
+                  </PieChart>
+                </ResponsiveContainer>
+                <div className="absolute inset-0 flex flex-col items-center justify-center">
+                  <span className="text-xs text-slate-500">Open</span>
+                  <span className="text-2xl font-normal text-slate-800 tabular-nums">{slaTotal}</span>
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-3 text-xs text-slate-500">
                 {slaData.map((row) => (
                   <span key={row.name} className="inline-flex items-center gap-1.5">
-                    <span className="h-2.5 w-2.5 rounded-full" style={{ background: row.color }} />
+                    <span className="size-1.5 rounded-full" style={{ background: row.color }} />
                     {row.name} ({row.value})
                   </span>
                 ))}
               </div>
-            )}
-          </CardContent>
-        </Card>
+            </>
+          )}
+          <div className="mt-auto pt-0.5">
+            <ActionLink label="Review SLA data" onClick={() => navigate(slaHref)} />
+          </div>
+        </div>
       </div>
+
+      {health && (
+        <section className="flex flex-col gap-3.5">
+          <div className="flex items-center justify-between gap-3">
+            <h3 className="text-base font-normal text-slate-800">Organization & accounts</h3>
+            <p className="text-xs text-slate-500">Portfolio overview</p>
+          </div>
+          <div className="grid overflow-hidden rounded-xl border border-slate-200 bg-white md:grid-cols-3">
+            <div className="flex flex-col gap-2.5 border-slate-200 p-4 md:border-r">
+              <div className="flex items-center justify-between">
+                <p className="text-xs font-medium text-slate-500">Corporates</p>
+                <ThemeIcon src={buildingIcon} className="h-4 w-4 text-slate-400" />
+              </div>
+              <p className="text-2xl font-normal text-slate-800 tabular-nums">{health.corporates.total.toLocaleString()}</p>
+              <p className="text-xs text-slate-500">
+                {health.corporates.approved.toLocaleString()} approved · {health.corporates.waitingApproval} awaiting approval
+              </p>
+              <ActionLink label="View corporates" onClick={() => navigate(corporatesHref)} />
+            </div>
+            <div className="flex flex-col gap-2.5 border-slate-200 p-4 md:border-r">
+              <div className="flex items-center justify-between">
+                <p className="text-xs font-medium text-slate-500">Active Accounts</p>
+                <ThemeIcon src={usersIcon} className="h-4 w-4 text-slate-400" />
+              </div>
+              <p className="text-2xl font-normal text-slate-800 tabular-nums">{health.accounts.active.toLocaleString()}</p>
+              <p className="text-xs text-slate-500">{health.accounts.total.toLocaleString()} accounts in total</p>
+              <ActionLink label="View accounts" onClick={() => navigate(corporatesHref)} />
+            </div>
+            <div className="flex flex-col gap-2.5 p-4">
+              <div className="flex items-center justify-between">
+                <p className="text-xs font-medium text-slate-500">Contracts expiring</p>
+                <ThemeIcon src={fileClockIcon} className="h-4 w-4 text-yellow-700" />
+              </div>
+              <p className="text-2xl font-normal text-slate-800 tabular-nums">{health.contracts.expiringWithin6Months.toLocaleString()}</p>
+              <p className="text-xs text-slate-500">
+                Within 6 months · {health.visits.completedMtd} visits completed MTD
+              </p>
+              <ActionLink label="Review contracts" onClick={() => navigate(corporatesHref)} />
+            </div>
+          </div>
+        </section>
+      )}
 
       <Card>
         <CardHeader>

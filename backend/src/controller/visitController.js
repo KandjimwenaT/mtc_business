@@ -10,8 +10,11 @@ const User = require("../models/User");
 const Notification = require("../models/Notification");
 const {
   createForUserIds,
+  notifyManagerTeam,
   resolveExecutivePortalUserId,
+  resolveExecutiveIdsReportingToManager,
   resolveManagerTeamNotificationUserIds,
+  resolveOversightExecutiveIds,
 } = require("../services/notificationService");
 const realtime = require("../services/realtimeService");
 const emailService = require("../services/emailService");
@@ -186,16 +189,24 @@ async function sendVisitReminderAndOverdueAlerts(visits) {
     const customerUserIds = customerByCorporateId.get(corporateId) || [];
     const executiveUserId = executiveToUserId.get(visit.executiveId) || null;
     const managerTeamIds = await resolveManagerTeamNotificationUserIds(visit.executiveId);
-    const targets = [...customerUserIds, executiveUserId, ...managerTeamIds].filter(Boolean);
+    const targets = [...new Set([...customerUserIds, executiveUserId, ...managerTeamIds].filter(Boolean))];
     if (!targets.length) continue;
+
+    const owner = visit.executiveName ? `${visit.executiveName} — ` : "";
 
     if (isReminderWindow) {
       const payload = {
         type: "visit",
         title: `Visit Reminder - ${visit.visitNumber}`,
-        message: `${visit.accountName}: upcoming visit on ${visit.visitDate} at ${visit.startTime}.`,
+        message: `${owner}${visit.accountName}: upcoming visit on ${visit.visitDate} at ${visit.startTime}.`,
         priority: "normal",
-        metadata: { visitId: visit.visitId, visitNumber: visit.visitNumber, kind: "reminder_24h" },
+        metadata: {
+          visitId: visit.visitId,
+          visitNumber: visit.visitNumber,
+          kind: "reminder_24h",
+          executiveId: visit.executiveId,
+          executiveName: visit.executiveName || null,
+        },
       };
       await Promise.all(targets.map((userId) => createNotificationIfMissing(userId, payload)));
     }
@@ -204,9 +215,15 @@ async function sendVisitReminderAndOverdueAlerts(visits) {
       const payload = {
         type: "visit",
         title: `Visit Overdue - ${visit.visitNumber}`,
-        message: `${visit.accountName}: scheduled visit at ${visit.startTime} on ${visit.visitDate} was not started and is overdue.`,
+        message: `${owner}${visit.accountName}: scheduled visit at ${visit.startTime} on ${visit.visitDate} was not started and is overdue.`,
         priority: "high",
-        metadata: { visitId: visit.visitId, visitNumber: visit.visitNumber, kind: "overdue" },
+        metadata: {
+          visitId: visit.visitId,
+          visitNumber: visit.visitNumber,
+          kind: "overdue",
+          executiveId: visit.executiveId,
+          executiveName: visit.executiveName || null,
+        },
       };
       await Promise.all(targets.map((userId) => createNotificationIfMissing(userId, payload)));
     }
@@ -373,6 +390,13 @@ exports.getMyVisits = async (req, res) => {
   try {
     const user = req.user;
 
+    if (user.role === "super_admin") {
+      const visits = await Visit.findAll({
+        order: [["visit_date", "ASC"], ["start_time", "ASC"]],
+      });
+      return res.status(200).json({ status: "Success", visits });
+    }
+
     if (!hasExecutiveScope(user.role)) {
       return res.status(403).json({ status: "Failed", message: "This endpoint is for executive and supervisor users" });
     }
@@ -430,7 +454,7 @@ exports.getAllVisits = async (req, res) => {
   try {
     const user = req.user;
 
-    if (!["manager", "supervisor", "admin", "gm"].includes(user.role)) {
+    if (!["manager", "supervisor", "admin", "super_admin", "gm"].includes(user.role)) {
       return res.status(403).json({ status: "Failed", message: "Unauthorized" });
     }
 
@@ -520,6 +544,23 @@ exports.respondToVisit = async (req, res) => {
           metadata: { visitId: visit.visitId, visitNumber: visit.visitNumber },
         });
       }
+      await notifyManagerTeam(
+        visit.executiveId,
+        {
+          type: "visit",
+          title: `Visit Approved - ${visit.visitNumber}`,
+          message: `${visit.accountName} approved ${visit.executiveName || "the executive"}'s visit on ${visit.visitDate} at ${visit.startTime}.`,
+          priority: "normal",
+          metadata: {
+            visitId: visit.visitId,
+            visitNumber: visit.visitNumber,
+            kind: "visit_approved",
+            executiveId: visit.executiveId,
+            executiveName: visit.executiveName || null,
+          },
+        },
+        { excludeUserIds: execRow?.userId ? [execRow.userId] : [] }
+      );
       await pushVisitCalendarSync(visit);
     } else if (action === "decline") {
       const execRow = await ExecutiveStaff.findByPk(visit.executiveId, { attributes: ["userId"] });
@@ -708,7 +749,7 @@ exports.getPendingReschedules = async (req, res) => {
   try {
     const user = req.user;
 
-    if (!["manager", "supervisor", "admin", "gm"].includes(user.role)) {
+    if (!["manager", "supervisor", "admin", "super_admin", "gm"].includes(user.role)) {
       return res.status(403).json({ status: "Failed", message: "Unauthorized" });
     }
 
@@ -777,6 +818,24 @@ exports.updateVisit = async (req, res) => {
       });
       await visit.reload();
       await pushVisitCalendarSync(visit);
+      await notifyManagerTeam(
+        visit.executiveId,
+        {
+          type: "visit",
+          title: `Visit Confirmed - ${visit.visitNumber}`,
+          message: `${visit.executiveName || "An executive"} confirmed ${visit.accountName} for ${visit.visitDate} at ${visit.startTime}.`,
+          priority: "normal",
+          metadata: {
+            visitId: visit.visitId,
+            visitNumber: visit.visitNumber,
+            kind: "visit_confirmed",
+            executiveId: visit.executiveId,
+            executiveName: visit.executiveName || null,
+          },
+        },
+        { excludeUserIds: [user.id], once: true }
+      );
+      realtime.broadcastResources(["visits", "dashboard", "notifications"]);
       return res.status(200).json({ status: "Success", visit });
     }
 
@@ -800,7 +859,31 @@ exports.updateVisit = async (req, res) => {
       } else if (status === "cancelled") {
         await pushVisitCalendarSync(visit, { cancel: true });
       }
-      realtime.broadcastResources(["visits", "dashboard"]);
+      if (status === "completed" || status === "cancelled") {
+        const completed = status === "completed";
+        await notifyManagerTeam(
+          visit.executiveId,
+          {
+            type: "visit",
+            title: completed
+              ? `Visit Completed - ${visit.visitNumber}`
+              : `Visit Cancelled - ${visit.visitNumber}`,
+            message: completed
+              ? `${visit.executiveName || "An executive"} completed the visit for ${visit.accountName} (${visit.purpose}) on ${visit.visitDate}.`
+              : `${visit.accountName} visit ${visit.visitNumber} (${visit.executiveName || "executive"}) was cancelled.`,
+            priority: completed ? "normal" : "high",
+            metadata: {
+              visitId: visit.visitId,
+              visitNumber: visit.visitNumber,
+              kind: completed ? "visit_completed" : "visit_cancelled",
+              executiveId: visit.executiveId,
+              executiveName: visit.executiveName || null,
+            },
+          },
+          { excludeUserIds: [user.id], once: true }
+        );
+      }
+      realtime.broadcastResources(["visits", "dashboard", "notifications"]);
       return res.status(200).json({ status: "Success", visit });
     }
 
@@ -935,6 +1018,29 @@ exports.submitControlCard = async (req, res) => {
       }
     } catch (notifyErr) {
       console.error("Failed to notify customer of meeting report:", notifyErr);
+    }
+
+    try {
+      await notifyManagerTeam(
+        visit.executiveId,
+        {
+          type: "visit",
+          title: `Visit Completed - ${visit.visitNumber}`,
+          message: `${visit.executiveName || "An executive"} submitted the meeting report for ${visit.accountName} (${visit.purpose}) on ${visit.visitDate}.`,
+          priority: "normal",
+          metadata: {
+            visitId: visit.visitId,
+            visitNumber: visit.visitNumber,
+            kind: "visit_completed",
+            accountId: visit.accountId,
+            executiveId: visit.executiveId,
+            executiveName: visit.executiveName || null,
+          },
+        },
+        { excludeUserIds: [user.id], once: true }
+      );
+    } catch (notifyErr) {
+      console.error("Failed to notify manager of completed visit:", notifyErr);
     }
 
     const controlCard = await ControlCard.findOne({ where: { visitId } });
@@ -1077,6 +1183,29 @@ exports.recordMeetingStart = async (req, res) => {
     });
     await visit.reload();
 
+    try {
+      await notifyManagerTeam(
+        visit.executiveId,
+        {
+          type: "visit",
+          title: `Visit Started - ${visit.visitNumber}`,
+          message: `${visit.executiveName || "An executive"} started the meeting with ${visit.accountName}.`,
+          priority: "normal",
+          metadata: {
+            visitId: visit.visitId,
+            visitNumber: visit.visitNumber,
+            kind: "visit_started",
+            executiveId: visit.executiveId,
+            executiveName: visit.executiveName || null,
+          },
+        },
+        { excludeUserIds: [user.id], once: true }
+      );
+    } catch (notifyErr) {
+      console.error("Failed to notify manager that visit started:", notifyErr);
+    }
+
+    realtime.broadcastResources(["visits", "dashboard", "notifications"]);
     return res.status(200).json({ status: "Success", visit, alreadyRecorded: false });
   } catch (error) {
     console.error("Record meeting start error:", error);
@@ -1126,6 +1255,28 @@ exports.updateControlCard = async (req, res) => {
         controlCard.accountHealth && ["green", "amber", "red"].includes(controlCard.accountHealth);
       if (hasFeedback && hasHealth) {
         await visitRow.update({ status: "completed" });
+        await visitRow.reload();
+        try {
+          await notifyManagerTeam(
+            visitRow.executiveId,
+            {
+              type: "visit",
+              title: `Visit Completed - ${visitRow.visitNumber}`,
+              message: `${visitRow.executiveName || "An executive"} completed the visit for ${visitRow.accountName} (${visitRow.purpose}) on ${visitRow.visitDate}.`,
+              priority: "normal",
+              metadata: {
+                visitId: visitRow.visitId,
+                visitNumber: visitRow.visitNumber,
+                kind: "visit_completed",
+                executiveId: visitRow.executiveId,
+                executiveName: visitRow.executiveName || null,
+              },
+            },
+            { excludeUserIds: [user.id], once: true }
+          );
+        } catch (notifyErr) {
+          console.error("Failed to notify manager of completed visit:", notifyErr);
+        }
       }
     }
     if (visitRow) await visitRow.reload();
@@ -1229,11 +1380,7 @@ exports.submitRating = async (req, res) => {
 async function getManagerExecIds(userId) {
   const manager = await Manager.findOne({ where: { userId } });
   if (!manager) return null;
-  const execs = await ExecutiveStaff.findAll({
-    where: { managerId: manager.managerId },
-    attributes: ["executiveId"],
-  });
-  return execs.map((e) => e.executiveId);
+  return resolveExecutiveIdsReportingToManager(manager);
 }
 
 /**
@@ -1243,24 +1390,7 @@ async function getManagerExecIds(userId) {
  * returns an empty team — use the supervisor's ExecutiveStaff.managerId instead (same as peers).
  */
 async function getSupervisorManagedExecutiveIds(user) {
-  const exec = await ExecutiveStaff.findOne({
-    where: { userId: user.id },
-    attributes: ["executiveId", "managerId"],
-  });
-  if (!exec) {
-    const fallback = await getManagerExecIds(user.id);
-    return fallback === null ? [] : fallback;
-  }
-  if (!exec.managerId) {
-    return exec.executiveId ? [exec.executiveId] : [];
-  }
-  const team = await ExecutiveStaff.findAll({
-    where: { managerId: exec.managerId },
-    attributes: ["executiveId"],
-  });
-  const ids = team.map((t) => t.executiveId).filter(Boolean);
-  if (ids.length) return ids;
-  return exec.executiveId ? [exec.executiveId] : [];
+  return resolveOversightExecutiveIds(user);
 }
 
 // Manager gets visits for their executives
@@ -1268,7 +1398,7 @@ exports.getManagerVisits = async (req, res) => {
   try {
     const user = req.user;
 
-    if (!["manager", "supervisor", "admin", "gm"].includes(user.role)) {
+    if (!["manager", "supervisor", "admin", "super_admin", "gm"].includes(user.role)) {
       return res.status(403).json({ status: "Failed", message: "Unauthorized" });
     }
 
@@ -1277,6 +1407,8 @@ exports.getManagerVisits = async (req, res) => {
     if (user.role === "gm") {
       const gmProfile = await resolveGmProfile(user);
       whereClause = await buildGmVisitWhereClause(gmProfile);
+    } else if (user.role === "super_admin") {
+      whereClause = {};
     } else if (user.role === "supervisor") {
       const execIds = await getSupervisorManagedExecutiveIds(user);
       whereClause.executiveId =
@@ -1295,8 +1427,42 @@ exports.getManagerVisits = async (req, res) => {
       order: [["visit_date", "DESC"], ["start_time", "ASC"]],
     });
 
-    if (user.role !== "gm") {
+    if (user.role !== "gm" && user.role !== "super_admin") {
       await sendVisitReminderAndOverdueAlerts(visits);
+    }
+
+    if (user.role === "manager" || user.role === "supervisor") {
+      const cutoff = new Date();
+      cutoff.setDate(cutoff.getDate() - 60);
+      const cutoffDate = cutoff.toISOString().slice(0, 10);
+      const doneVisits = visits.filter((visit) => {
+        if (!["completed", "follow_up_pending"].includes(visit.status)) return false;
+        const visitDate = visit.visitDate ? String(visit.visitDate).slice(0, 10) : "";
+        return !visitDate || visitDate >= cutoffDate;
+      });
+      await Promise.all(
+        doneVisits.map((visit) =>
+          notifyManagerTeam(
+            visit.executiveId,
+            {
+              type: "visit",
+              title: `Visit Completed - ${visit.visitNumber}`,
+              message: `${visit.executiveName || "An executive"} completed the visit for ${visit.accountName} (${visit.purpose}) on ${visit.visitDate}.`,
+              priority: "normal",
+              metadata: {
+                visitId: visit.visitId,
+                visitNumber: visit.visitNumber,
+                kind: "visit_completed",
+                executiveId: visit.executiveId,
+                executiveName: visit.executiveName || null,
+              },
+            },
+            { once: true, skipEmail: true }
+          ).catch((err) => {
+            console.error("Failed to backfill completed-visit notification:", err?.message || err);
+          })
+        )
+      );
     }
 
     return res.status(200).json({ status: "Success", visits });
@@ -1320,8 +1486,34 @@ exports.getManagerVisits = async (req, res) => {
 exports.getDepartmentTeam = async (req, res) => {
   try {
     const user = req.user;
-    if (!["executive_staff", "supervisor", "manager", "admin"].includes(user.role)) {
+    if (!["executive_staff", "supervisor", "manager", "admin", "super_admin"].includes(user.role)) {
       return res.status(403).json({ status: "Failed", message: "Unauthorized" });
+    }
+
+    if (user.role === "super_admin") {
+      const [managers, executives] = await Promise.all([
+        Manager.findAll({ order: [["first_name", "ASC"], ["last_name", "ASC"]] }),
+        ExecutiveStaff.findAll({ order: [["first_name", "ASC"], ["last_name", "ASC"]] }),
+      ]);
+      const members = [
+        ...managers.map((manager) => ({
+          id: `manager_${manager.managerId}`,
+          firstName: manager.firstName,
+          lastName: manager.lastName,
+          fullName: `${manager.firstName || ""} ${manager.lastName || ""}`.trim(),
+          email: manager.email,
+          role: "manager",
+        })),
+        ...executives.map((exec) => ({
+          id: `exec_${exec.executiveId}`,
+          firstName: exec.firstName,
+          lastName: exec.lastName,
+          fullName: `${exec.firstName || ""} ${exec.lastName || ""}`.trim(),
+          email: exec.email,
+          role: "executive_staff",
+        })),
+      ];
+      return res.status(200).json({ status: "Success", department: null, members });
     }
 
     let manager = null;
@@ -1399,7 +1591,7 @@ exports.getManagerControlCards = async (req, res) => {
   try {
     const user = req.user;
 
-    if (!["manager", "supervisor", "admin", "gm"].includes(user.role)) {
+    if (!["manager", "supervisor", "admin", "super_admin", "gm"].includes(user.role)) {
       return res.status(403).json({ status: "Failed", message: "Unauthorized" });
     }
 
@@ -1408,6 +1600,8 @@ exports.getManagerControlCards = async (req, res) => {
     if (user.role === "gm") {
       const gmProfile = await resolveGmProfile(user);
       whereClause = await buildGmVisitWhereClause(gmProfile);
+    } else if (user.role === "super_admin") {
+      whereClause = {};
     } else if (user.role === "supervisor") {
       const execIds = await getSupervisorManagedExecutiveIds(user);
       whereClause.executiveId =

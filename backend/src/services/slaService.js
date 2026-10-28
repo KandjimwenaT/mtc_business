@@ -2,11 +2,11 @@ const SlaConfig = require("../models/SlaConfig");
 const Ticket = require("../models/Ticket");
 const TicketActivityLog = require("../models/TicketActivityLog");
 const ExecutiveStaff = require("../models/ExecutiveStaff");
-const Manager = require("../models/Manager");
 const GM = require("../models/GM");
 const { normalizeDepartmentSegment } = require("./departmentSegment");
 const {
   createForUserIds,
+  resolveLineManagerProfile,
   resolveManagerTeamNotificationUserIds,
 } = require("./notificationService");
 
@@ -329,8 +329,7 @@ function computeSlaState(ticket, now = Date.now()) {
 async function resolveGmUserIdForTicket(ticket) {
   if (!ticket?.executiveId) return null;
   const executive = await ExecutiveStaff.findByPk(ticket.executiveId);
-  if (!executive?.managerId) return null;
-  const manager = await Manager.findByPk(executive.managerId);
+  const manager = await resolveLineManagerProfile(executive);
   if (!manager?.gmId) return null;
   const gm = await GM.findByPk(manager.gmId);
   return gm?.userId || null;
@@ -342,16 +341,20 @@ async function notifyEscalation(ticket, level) {
   let title = `SLA Escalation L${level} - ${ticket.ticketNumber}`;
   let message = `${ticket.ticketNumber} reached SLA escalation level ${level}.`;
 
+  const executive = ticket.executiveId ? await ExecutiveStaff.findByPk(ticket.executiveId, { attributes: ["firstName", "lastName"] }) : null;
+  const executiveName = executive ? `${executive.firstName || ""} ${executive.lastName || ""}`.trim() : "";
+  const ownerBit = executiveName ? `${executiveName}: ` : "";
+
   if (level === 1) {
     recipientIds = teamIds;
-    message = `${ticket.ticketNumber} has been escalated to the supervisor (L1).`;
+    message = `${ownerBit}${ticket.ticketNumber} has been escalated to the supervisor (L1).`;
   } else if (level === 2) {
     recipientIds = teamIds;
-    message = `${ticket.ticketNumber} has been escalated to management (L2).`;
+    message = `${ownerBit}${ticket.ticketNumber} has been escalated to management (L2).`;
   } else if (level === 3) {
     const gmUserId = await resolveGmUserIdForTicket(ticket);
     recipientIds = gmUserId ? [gmUserId, ...teamIds] : teamIds;
-    message = `${ticket.ticketNumber} has been escalated to the GM (L3).`;
+    message = `${ownerBit}${ticket.ticketNumber} has been escalated to the GM (L3).`;
   }
 
   if (!recipientIds.length) return;

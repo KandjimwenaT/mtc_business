@@ -15,9 +15,10 @@ const Service = require("../models/Service");
 const Contract = require("../models/Contract");
 const Invoice = require("../models/Invoice");
 const Notification = require("../models/Notification");
-const { createForUserIds } = require("../services/notificationService");
+const { createForUserIds, createForUserIdsIfMissing, resolveManagerTeamNotificationUserIds } = require("../services/notificationService");
 const { recordAudit, actorDisplayName, clientIp } = require("../services/auditService");
 const {
+  ensureDefaultAccountForCorporate,
   getCorporateIdsForAccountManager,
   enrichAccountsWithCorporateContact,
   propagateContactPersonToCorporateAccounts,
@@ -974,17 +975,25 @@ exports.changePassword = async (req, res) => {
 exports.getMyAccounts = async (req, res) => {
   try {
     const user = req.user;
+    const superAdmin = user.role === "super_admin";
 
-    if (!hasExecutiveScope(user.role)) {
+    if (!superAdmin && !hasExecutiveScope(user.role)) {
       return res.status(403).json({ status: "Failed", message: "This endpoint is for executive and supervisor users" });
     }
 
-    const exec = await resolveExecutiveStaffForUser(user);
-    if (!exec) {
-      return res.status(404).json({ status: "Failed", message: "Executive profile not found" });
+    let accounts;
+    let placeholderCorporates = [];
+    if (superAdmin) {
+      accounts = await Account.findAll({ order: [["created_at", "DESC"]] });
+    } else {
+      const exec = await resolveExecutiveStaffForUser(user);
+      if (!exec) {
+        return res.status(404).json({ status: "Failed", message: "Executive profile not found" });
+      }
+      const portfolio = await loadExecutivePortfolioAccounts(exec);
+      accounts = portfolio.accounts;
+      placeholderCorporates = portfolio.placeholderCorporates;
     }
-
-    const { accounts, placeholderCorporates } = await loadExecutivePortfolioAccounts(exec);
     const corporateIds = [...new Set(accounts.map((acc) => acc.corporateId).filter((id) => Number.isInteger(id)))];
     const corporates = corporateIds.length
       ? await Corporate.findAll({ where: { corporateId: corporateIds } })
@@ -1113,7 +1122,8 @@ exports.getMyAccounts = async (req, res) => {
 exports.getMyExpiringContracts = async (req, res) => {
   try {
     const user = req.user;
-    if (!hasExecutiveScope(user.role)) {
+    const superAdmin = user.role === "super_admin";
+    if (!superAdmin && !hasExecutiveScope(user.role)) {
       return res.status(403).json({ status: "Failed", message: "This endpoint is for executive and supervisor users" });
     }
 
@@ -1122,12 +1132,17 @@ exports.getMyExpiringContracts = async (req, res) => {
       ? Math.min(Math.max(Math.trunc(requestedMonths), 1), 24)
       : 6;
 
-    const exec = await resolveExecutiveStaffForUser(user);
-    if (!exec) {
-      return res.status(404).json({ status: "Failed", message: "Executive profile not found" });
+    let accounts;
+    if (superAdmin) {
+      accounts = await Account.findAll({ order: [["created_at", "DESC"]] });
+    } else {
+      const exec = await resolveExecutiveStaffForUser(user);
+      if (!exec) {
+        return res.status(404).json({ status: "Failed", message: "Executive profile not found" });
+      }
+      const portfolio = await loadExecutivePortfolioAccounts(exec);
+      accounts = portfolio.accounts;
     }
-
-    const { accounts } = await loadExecutivePortfolioAccounts(exec);
     if (!accounts.length) {
       return res.status(200).json({ status: "Success", contracts: [] });
     }
@@ -1197,9 +1212,19 @@ exports.getMyExpiringContracts = async (req, res) => {
       : [];
     const existingTitleSet = new Set(existingAlerts.map((n) => n.title));
 
+    const executiveProfile = await ExecutiveStaff.findOne({
+      where: { userId: user.id },
+      attributes: ["executiveId", "firstName", "lastName"],
+    });
+
     // Fire-and-forget: don't block the HTTP response on notifications/emails.
     setImmediate(() => {
       (async () => {
+        const managerOversightIds = executiveProfile?.executiveId
+          ? (await resolveManagerTeamNotificationUserIds(executiveProfile.executiveId)).filter((id) => id !== user.id)
+          : [];
+        const executiveName = `${executiveProfile?.firstName || ""} ${executiveProfile?.lastName || ""}`.trim();
+
         for (const item of candidateAlerts) {
           if (existingTitleSet.has(item.notificationTitle)) continue;
           try {
@@ -1223,6 +1248,33 @@ exports.getMyExpiringContracts = async (req, res) => {
             );
           } catch (notifyErr) {
             console.error("Failed to create contract expiry notification:", notifyErr);
+          }
+
+          if (managerOversightIds.length) {
+            try {
+              await createForUserIdsIfMissing(
+                managerOversightIds,
+                {
+                  type: "sla",
+                  title: item.notificationTitle,
+                  message: `${executiveName ? `${executiveName}: ` : ""}${item.corporateName || item.account.accountName} contract (${item.contract.contractType}) expires in ${item.daysRemaining} day(s).`,
+                  priority: item.daysRemaining <= 30 ? "high" : "normal",
+                  metadata: {
+                    kind: "contract_expiring",
+                    contractId: item.contract.contractId,
+                    accountId: item.account.accountId,
+                    corporateId: item.account.corporateId || null,
+                    contractEndDate: item.contract.contractEndDate,
+                    daysRemaining: item.daysRemaining,
+                    executiveId: executiveProfile?.executiveId || null,
+                    executiveName: executiveName || null,
+                  },
+                },
+                { skipEmail: true }
+              );
+            } catch (notifyErr) {
+              console.error("Failed to copy contract expiry notification to manager:", notifyErr);
+            }
           }
 
           try {
@@ -1269,16 +1321,21 @@ exports.getMyExpiringContracts = async (req, res) => {
 exports.getMyMonthlySpendingSummary = async (req, res) => {
   try {
     const user = req.user;
-    if (!hasExecutiveScope(user.role)) {
+    if (user.role !== "super_admin" && !hasExecutiveScope(user.role)) {
       return res.status(403).json({ status: "Failed", message: "This endpoint is for executive and supervisor users" });
     }
 
-    const exec = await resolveExecutiveStaffForUser(user);
-    if (!exec) {
-      return res.status(404).json({ status: "Failed", message: "Executive profile not found" });
+    let accounts;
+    if (user.role === "super_admin") {
+      accounts = await Account.findAll({ attributes: ["accountId"] });
+    } else {
+      const exec = await resolveExecutiveStaffForUser(user);
+      if (!exec) {
+        return res.status(404).json({ status: "Failed", message: "Executive profile not found" });
+      }
+      const portfolio = await loadExecutivePortfolioAccounts(exec);
+      accounts = portfolio.accounts;
     }
-
-    const { accounts } = await loadExecutivePortfolioAccounts(exec);
     const accountIds = accounts.map((a) => a.accountId);
     if (!accountIds.length) {
       return res.status(200).json({ status: "Success", summary: { total: "0.00", currency: "NAD", byCorporate: {}, byAccount: {} } });
@@ -1318,19 +1375,25 @@ exports.getMyMonthlySpendingSummary = async (req, res) => {
 exports.getMyMonthlySpendingTrend = async (req, res) => {
   try {
     const user = req.user;
-    if (!hasExecutiveScope(user.role)) {
+    if (user.role !== "super_admin" && !hasExecutiveScope(user.role)) {
       return res.status(403).json({ status: "Failed", message: "This endpoint is for executive and supervisor users" });
     }
     const requestedMonths = Number(req.query.months || 6);
     const months = Number.isFinite(requestedMonths) ? Math.min(Math.max(Math.trunc(requestedMonths), 3), 24) : 6;
 
-    const exec = await resolveExecutiveStaffForUser(user);
-    if (!exec) {
-      return res.status(404).json({ status: "Failed", message: "Executive profile not found" });
+    let accountIds;
+    if (user.role === "super_admin") {
+      const allAccounts = await Account.findAll({ attributes: ["accountId"] });
+      accountIds = allAccounts.map((a) => a.accountId);
+    } else {
+      const exec = await resolveExecutiveStaffForUser(user);
+      if (!exec) {
+        return res.status(404).json({ status: "Failed", message: "Executive profile not found" });
+      }
+      const portfolio = await loadExecutivePortfolioAccounts(exec);
+      accountIds = portfolio.accounts.map((a) => a.accountId);
     }
 
-    const { accounts } = await loadExecutivePortfolioAccounts(exec);
-    const accountIds = accounts.map((a) => a.accountId);
     if (!accountIds.length) return res.status(200).json({ status: "Success", trend: [] });
 
     const invoices = await Invoice.findAll({
@@ -1399,6 +1462,10 @@ exports.getMyAccount = async (req, res) => {
     const corporateById = Object.fromEntries(
       linkedCorporates.map((c) => [c.corporateId, c])
     );
+
+    for (const corp of linkedCorporates) {
+      await ensureDefaultAccountForCorporate(corp, accountManager);
+    }
 
     const accounts = await Account.findAll({
       where: { corporateId: linkedCorporateIds },
@@ -1820,6 +1887,10 @@ const clearMirroredContactFromCorporateAccounts = async (corporateId, accountMan
 exports.getMyCorporates = async (req, res) => {
   try {
     const user = req.user;
+    if (user.role === "super_admin") {
+      const corporates = await Corporate.findAll({ order: [["corporate_name", "ASC"]] });
+      return res.status(200).json({ status: "Success", corporates });
+    }
     if (!hasExecutiveScope(user.role)) {
       return res.status(403).json({ status: "Failed", message: "This endpoint is for executive and supervisor users" });
     }
@@ -1849,6 +1920,18 @@ exports.getMyCorporates = async (req, res) => {
 exports.getMyAccountManagers = async (req, res) => {
   try {
     const user = req.user;
+    if (user.role === "super_admin") {
+      const ams = await AccountManager.findAll({ order: [["first_name", "ASC"]] });
+      const corporateIds = [...new Set(ams.map((am) => am.corporateId).filter((id) => Number.isInteger(id)))];
+      const corporates = corporateIds.length
+        ? await Corporate.findAll({ where: { corporateId: corporateIds } })
+        : [];
+      const corpMap = Object.fromEntries(corporates.map((c) => [c.corporateId, c]));
+      const persons = ams.map((am) =>
+        serializeAccountManagerAsContactPerson(am, corpMap[am.corporateId]?.corporateName || null)
+      );
+      return res.status(200).json({ status: "Success", persons });
+    }
     if (!hasExecutiveScope(user.role)) {
       return res.status(403).json({ status: "Failed", message: "This endpoint is for executive and supervisor users" });
     }
@@ -1957,6 +2040,7 @@ exports.assignContactPersonToMyCorporate = async (req, res) => {
     });
 
     try {
+      await ensureDefaultAccountForCorporate(corporate, accountManager);
       await propagateContactPersonToCorporateAccounts(corporate.corporateId, accountManager);
     } catch (propagationError) {
       console.error("Propagate contact to corporate accounts failed:", propagationError);
@@ -2101,6 +2185,7 @@ exports.createContactPersonForMyCorporate = async (req, res) => {
     });
 
     try {
+      await ensureDefaultAccountForCorporate(corporate, accountManager);
       await propagateContactPersonToCorporateAccounts(corporate.corporateId, accountManager);
     } catch (propagationError) {
       console.error("Propagate contact to corporate accounts failed:", propagationError);
