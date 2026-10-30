@@ -1,7 +1,7 @@
 const express = require("express");
 const router = express.Router();
 const adminController = require("../controller/adminController");
-const { superAdminOnly } = require("../middleware/adminAuth");
+const { superAdminOrManager } = require("../middleware/adminAuth");
 const keyAccountsImportUpload = require("../middleware/keyAccountsImportUpload");
 
 // All routes are protected by auth + superAdminAuth middleware (applied in server.js)
@@ -21,24 +21,24 @@ router.get("/executives/pending-onboarding", adminController.getPendingImportedE
 router.post("/executives/:executiveId/complete-onboarding", adminController.completeImportedExecutiveOnboarding);
 router.post(
   "/imports/key-accounts",
-  superAdminOnly,
+  superAdminOrManager,
   keyAccountsImportUpload.single("file"),
   adminController.importKeyAccountsFromExcelUpload
 );
 router.get(
   "/imports/key-accounts/jobs/:jobId",
-  superAdminOnly,
+  superAdminOrManager,
   adminController.getKeyAccountsImportJob
 );
 router.post(
   "/imports/ebu",
-  superAdminOnly,
+  superAdminOrManager,
   keyAccountsImportUpload.single("file"),
   adminController.importEbuFromExcelUpload
 );
 router.get(
   "/imports/ebu/jobs/:jobId",
-  superAdminOnly,
+  superAdminOrManager,
   adminController.getEbuImportJob
 );
 router.put("/executives/:executivePersonId/promote-supervisor", adminController.promoteExecutiveToSupervisor);

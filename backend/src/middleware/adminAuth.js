@@ -17,10 +17,17 @@ const adminAuth = async (req, res, next) => {
 };
 
 // Standalone middleware (assumes auth middleware already ran and set req.user).
-// Imports and other developer-console routes stay on the super admin account.
 const superAdminOnly = (req, res, next) => {
   if (!isSuperAdminRole(req.user.role)) {
     return res.status(403).json({ message: 'Access denied. Super admin role required.' });
+  }
+  next();
+};
+
+// Corporate Excel import: super admins choose a manager; managers import only onto themselves.
+const superAdminOrManager = (req, res, next) => {
+  if (!isSuperAdminRole(req.user.role) && req.user.role !== 'manager') {
+    return res.status(403).json({ message: 'Access denied. Super admin or manager role required.' });
   }
   next();
 };
@@ -49,4 +56,4 @@ const blockGmWrites = (req, res, next) => {
   next();
 };
 
-module.exports = { adminAuth, superAdminOnly, adminOrManager, blockGmWrites };
+module.exports = { adminAuth, superAdminOnly, superAdminOrManager, adminOrManager, blockGmWrites };

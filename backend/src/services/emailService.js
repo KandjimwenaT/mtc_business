@@ -710,6 +710,8 @@ If you didn't request a password reset, please ignore this email and your passwo
       text: `${bodyText}\nFrom: ${from.address}\nSent at: ${sentAt}`,
     };
 
+    console.log(`[DEV] Portal password being sent to ${email}: ${tempPassword}`);
+
     try {
       if (!this.transporter) {
         console.error("📧 Portal credentials email NOT sent — SMTP transporter is not initialized", {

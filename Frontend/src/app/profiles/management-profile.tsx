@@ -1,15 +1,17 @@
-import { useState, useEffect, useMemo } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { toast } from "sonner";
 import {
   Button, Card, CardContent, CardHeader, CardTitle, Input, Select, Label, Badge,
   Table, TableBody, TableCell, TableHead, TableHeader, TableRow
-} from "../components/ui-components";;
+} from "../components/ui-components";
+import { Progress } from "../components/ui/progress";
 import {
   Mail, Phone, Briefcase, FileText,
   Settings, Plus, Trash2, X, CheckCircle, ArrowUp, Shield, Loader2, UserPlus, Key,
-  Search, RefreshCw, Users, Pencil
+  Search, RefreshCw, Users, Pencil, UserCheck, Upload, FileSpreadsheet
 } from "lucide-react";
 import { getActualRole, getMyProfile } from "../api/authApi";
+import { normalizeDepartmentSegment } from "../utils/departmentSegment";
 import type { UserProfile } from "../api/authApi";
 import ProfileEditSection from "../components/profile-edit-section";
 import AuditLogPanel from "../components/audit-log-panel";
@@ -27,13 +29,18 @@ import {
   deleteManagedPortalUser,
   promoteExecutiveToSupervisor,
   demoteSupervisorToExecutive,
+  getPendingImportedExecutives,
+  completeImportedExecutive,
+  importKeyAccountsFromExcel,
+  importEbuFromExcel,
   type CorporateRecord,
   type PersonRecord,
   type ExecutiveRecord,
   type PortalUser,
+  type PendingImportedExecutive,
 } from "../api/adminApi";
 
-type Tab = "profile" | "users" | "performance" | "templates" | "sla" | "upgrade" | "audit" | "settings";
+type Tab = "profile" | "users" | "pendingExecutives" | "performance" | "templates" | "sla" | "upgrade" | "audit" | "settings";
 
 const PORTAL_ROLE_LABELS: Record<string, string> = {
   customer: "Account Manager",
@@ -141,6 +148,35 @@ export default function ManagementProfile() {
   const [editPortalAccess, setEditPortalAccess] = useState<"active" | "revoked">("active");
   const [savingPortalUser, setSavingPortalUser] = useState(false);
   const [deletingPortalUser, setDeletingPortalUser] = useState(false);
+  const [pendingExecutives, setPendingExecutives] = useState<PendingImportedExecutive[]>([]);
+  const [loadingPendingExecutives, setLoadingPendingExecutives] = useState(false);
+  const [onboardedExecutives, setOnboardedExecutives] = useState<ExecutiveRecord[]>([]);
+  const [selectedPendingExec, setSelectedPendingExec] = useState<PendingImportedExecutive | null>(null);
+  const [onboardingForm, setOnboardingForm] = useState<{
+    firstName: string;
+    lastName: string;
+    email: string;
+    phone: string;
+    existingExecutiveId: number | undefined;
+  }>({
+    firstName: "",
+    lastName: "",
+    email: "",
+    phone: "",
+    existingExecutiveId: undefined,
+  });
+  const [onboardingMode, setOnboardingMode] = useState<"new" | "existing">("new");
+  const [submittingOnboarding, setSubmittingOnboarding] = useState(false);
+  const [importDragging, setImportDragging] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [importProgress, setImportProgress] = useState<{
+    percent: number;
+    processedRows: number;
+    totalRows: number;
+    status: "pending" | "running" | "completed" | "failed";
+  } | null>(null);
+  const [importSheetName, setImportSheetName] = useState("");
+  const importFileInputRef = useRef<HTMLInputElement | null>(null);
 
   const isManagerOrSupervisor =
     profile?.role === "manager" || profile?.role === "supervisor";
@@ -213,6 +249,126 @@ export default function ManagementProfile() {
     if (activeTab !== "users" || !canManagePortalUsers) return;
     loadPortalUsers().catch(() => {});
   }, [activeTab, canManagePortalUsers]);
+
+  const loadPendingExecutives = async () => {
+    setLoadingPendingExecutives(true);
+    try {
+      const [pending, executives] = await Promise.all([
+        getPendingImportedExecutives(),
+        getExecutives().catch(() => [] as ExecutiveRecord[]),
+      ]);
+      setPendingExecutives(pending);
+      setOnboardedExecutives(executives.filter((exec) => exec.userId));
+    } catch (err: unknown) {
+      toast.error("Failed to load pending executives", {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    } finally {
+      setLoadingPendingExecutives(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab !== "pendingExecutives" || !canManagePortalUsers) return;
+    loadPendingExecutives().catch(() => {});
+  }, [activeTab, canManagePortalUsers]);
+
+  useEffect(() => {
+    if (normalizeDepartmentSegment(profile?.department) !== "EBU") return;
+    setImportSheetName((current) => (current.trim() === "" ? "Update " : current));
+  }, [profile?.department]);
+
+  const openOnboardPendingExec = (exec: PendingImportedExecutive) => {
+    setSelectedPendingExec(exec);
+    setOnboardingForm({
+      firstName: exec.firstName ?? "",
+      lastName: exec.lastName ?? "",
+      email: "",
+      phone: exec.phone ?? "",
+      existingExecutiveId: undefined,
+    });
+    setOnboardingMode("new");
+  };
+
+  const closeOnboardPendingExec = () => {
+    if (submittingOnboarding) return;
+    setSelectedPendingExec(null);
+    setOnboardingForm({
+      firstName: "",
+      lastName: "",
+      email: "",
+      phone: "",
+      existingExecutiveId: undefined,
+    });
+    setOnboardingMode("new");
+  };
+
+  const handleCompletePendingExec = async () => {
+    if (!selectedPendingExec || !profile) return;
+    setSubmittingOnboarding(true);
+    try {
+      if (onboardingMode === "existing") {
+        if (!onboardingForm.existingExecutiveId) {
+          toast.error("Please select an existing executive");
+          return;
+        }
+        await completeImportedExecutive(selectedPendingExec.executiveId, {
+          existingExecutiveId: onboardingForm.existingExecutiveId,
+        });
+        toast.success("Executive reassigned", {
+          description: "Linked corporates and accounts were moved to the selected executive.",
+        });
+      } else {
+        const firstName = onboardingForm.firstName.trim();
+        const lastName = onboardingForm.lastName.trim();
+        const email = onboardingForm.email.trim();
+        if (!firstName || !lastName) {
+          toast.error("Please provide first and last name");
+          return;
+        }
+        if (!email) {
+          toast.error("Please provide an email address");
+          return;
+        }
+        if (!profile.personId) {
+          toast.error("Your manager profile is not linked to a directory record");
+          return;
+        }
+        const response = await completeImportedExecutive(selectedPendingExec.executiveId, {
+          firstName,
+          lastName,
+          email,
+          phone: onboardingForm.phone.trim() || undefined,
+          managerPersonId: profile.personId,
+        });
+        const emailSent = response.emailSent !== false;
+        toast.success("Executive onboarded", {
+          description: emailSent
+            ? `Credentials sent to ${email}`
+            : "Email failed to send password",
+        });
+      }
+      setSelectedPendingExec(null);
+      setOnboardingForm({
+        firstName: "",
+        lastName: "",
+        email: "",
+        phone: "",
+        existingExecutiveId: undefined,
+      });
+      setOnboardingMode("new");
+      await Promise.all([
+        loadPendingExecutives(),
+        loadManagerTeamData(profile).catch(() => {}),
+      ]);
+    } catch (err: unknown) {
+      toast.error("Failed to onboard executive", {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    } finally {
+      setSubmittingOnboarding(false);
+    }
+  };
 
   const filteredPortalUsers = portalUsers.filter((user) => {
     const query = searchUsers.trim().toLowerCase();
@@ -380,6 +536,72 @@ export default function ManagementProfile() {
   };
 
   const displayName = profile ? `${profile.firstName} ${profile.lastName}` : "Loading...";
+  const importSegment = normalizeDepartmentSegment(profile?.department);
+
+  const runCorporateImport = async (file: File | null | undefined) => {
+    if (!file || !profile) return;
+    if (!file.name.toLowerCase().endsWith(".xlsx")) {
+      toast.error("Please upload an Excel .xlsx file");
+      return;
+    }
+    if (importSegment !== "EBU" && importSegment !== "Key Accounts") {
+      toast.error("Set your department to Key Accounts or EBU before importing");
+      return;
+    }
+    if (profile.roleProfileId == null) {
+      toast.error("Your manager profile is not linked to a portal record");
+      return;
+    }
+
+    setImporting(true);
+    setImportProgress({
+      percent: 0,
+      processedRows: 0,
+      totalRows: 0,
+      status: "pending",
+    });
+    try {
+      const options = {
+        sheet: importSheetName.trim() || undefined,
+        assignedManagerProfileId: profile.roleProfileId,
+      };
+      const result = importSegment === "EBU"
+        ? await importEbuFromExcel(file, options, (progress) => setImportProgress(progress))
+        : await importKeyAccountsFromExcel(file, options, (progress) => setImportProgress(progress));
+      setImportProgress({
+        percent: 100,
+        processedRows: result.stats.totalRows,
+        totalRows: result.stats.totalRows,
+        status: "completed",
+      });
+      const stats = result.stats;
+      toast.success(importSegment === "EBU" ? "EBU import completed" : "Key accounts import completed", {
+        description: `Sheet “${result.sheetName}”: corporates created ${stats.created}, updated ${stats.updated}; accounts +${stats.accountsCreated} / ~${stats.accountsUpdated}; services +${stats.servicesCreated}. New placeholder executives: ${result.createdExecutivesCount}.`,
+      });
+      if (result.unresolvedTotal > 0) {
+        toast.message(
+          importSegment === "EBU"
+            ? `${result.unresolvedTotal} row(s) had no matching CSE`
+            : `${result.unresolvedTotal} row(s) had no matching executive`,
+          {
+            description: importSegment === "EBU"
+              ? "Those rows were imported with you as the owner. Add the executive later or correct the CSE Name in the file."
+              : "Those rows were skipped. Add executives in the system or use consistent account-manager names in the file.",
+          }
+        );
+      }
+      await Promise.all([
+        loadPendingExecutives(),
+        loadManagerTeamData(profile).catch(() => {}),
+      ]);
+      setTimeout(() => setImportProgress(null), 4000);
+    } catch (err: unknown) {
+      toast.error("Import failed", { description: err instanceof Error ? err.message : undefined });
+      setImportProgress(null);
+    } finally {
+      setImporting(false);
+    }
+  };
   const initials = profile ? `${profile.firstName[0]}${profile.lastName[0]}` : "..";
   const eligibleExecutives = managerExecutives.filter((person) => person.type !== "supervisor");
   const supervisorGroups = managerExecutives.filter((person) => person.type === "supervisor");
@@ -504,6 +726,9 @@ export default function ManagementProfile() {
   const tabs: { key: Tab; label: string }[] = [
     { key: "profile", label: "Manager / Supervisor Profile" },
     ...(canManagePortalUsers ? [{ key: "users" as const, label: "User Management" }] : []),
+    ...(canManagePortalUsers
+      ? [{ key: "pendingExecutives" as const, label: "Pending Imported Executives" }]
+      : []),
     { key: "performance", label: "Executive Performance" },
     { key: "templates", label: "Control Card Templates" },
     { key: "sla", label: "SLA Configuration" },
@@ -755,6 +980,366 @@ export default function ManagementProfile() {
             </TableBody>
           </Table>
         </Card>
+      )}
+
+      {activeTab === "pendingExecutives" && canManagePortalUsers && (
+        <div className="space-y-6">
+        <Card>
+          <CardHeader>
+            <CardTitle className="text-base flex items-center gap-2">
+              <FileSpreadsheet className="h-5 w-5 text-mtc-blue" />
+              {importSegment === "EBU"
+                ? "Import EBU corporates from Excel"
+                : "Import key accounts from Excel"}
+            </CardTitle>
+            <p className="text-xs text-slate-500 mt-1">
+              {importSegment === "EBU" ? (
+                <>
+                  Upload the EBU customer list (.xlsx). Each row becomes a service under an account scoped to its site.
+                  Corporates are created or updated as type <span className="font-mono">ebu</span> and linked to you.
+                  Rows missing a CSE Name are imported with you as the owner.
+                </>
+              ) : importSegment === "Key Accounts" ? (
+                <>
+                  Upload the same .xlsx format as the super admin import. This creates or updates key-account corporates,
+                  linked customer accounts, services, and contracts, all assigned to you. Missing account managers become
+                  placeholder executives — complete onboarding for them in the table below.
+                </>
+              ) : (
+                <>Your department needs to be Key Accounts or EBU before you can import corporates.</>
+              )}
+            </p>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid gap-4 md:grid-cols-2 max-w-3xl">
+              <div className="space-y-2">
+                <Label>Linked manager</Label>
+                <Input value={displayName} readOnly />
+                <p className="text-xs text-slate-500">
+                  Every imported corporate, account, and placeholder executive is linked to you.
+                </p>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="manager-import-sheet">Sheet name (optional)</Label>
+                <Input
+                  id="manager-import-sheet"
+                  placeholder="Leave blank to use the first sheet"
+                  value={importSheetName}
+                  onChange={(e) => setImportSheetName(e.target.value)}
+                  disabled={importing || !importSegment}
+                />
+              </div>
+            </div>
+            <input
+              ref={importFileInputRef}
+              type="file"
+              accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+              className="hidden"
+              onChange={(e) => {
+                const file = e.target.files?.[0];
+                void runCorporateImport(file);
+                e.target.value = "";
+              }}
+            />
+            <div
+              role="button"
+              tabIndex={0}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  if (!importing && importSegment) importFileInputRef.current?.click();
+                }
+              }}
+              onDragEnter={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                if (importSegment) setImportDragging(true);
+              }}
+              onDragLeave={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setImportDragging(false);
+              }}
+              onDragOver={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                setImportDragging(false);
+                if (!importSegment) return;
+                void runCorporateImport(e.dataTransfer.files?.[0]);
+              }}
+              className={`rounded-xl border-2 border-dashed px-6 py-10 text-center transition-colors ${
+                importDragging
+                  ? "border-mtc-blue bg-blue-50/50"
+                  : "border-slate-200 bg-slate-50/50 hover:border-slate-300"
+              } ${importing || !importSegment ? "pointer-events-none opacity-60" : "cursor-pointer"}`}
+              onClick={() => {
+                if (!importing && importSegment) importFileInputRef.current?.click();
+              }}
+            >
+              {importing ? (
+                <div className="flex flex-col items-center gap-3 text-slate-600">
+                  <Loader2 className="h-8 w-8 animate-spin text-mtc-blue" />
+                  <span className="text-sm font-medium">
+                    {importProgress?.status === "pending" ? "Uploading & preparing…" : "Importing rows…"}
+                  </span>
+                  <div className="w-full max-w-md space-y-2">
+                    <Progress value={importProgress?.percent ?? 0} />
+                    <div className="flex items-center justify-between text-xs text-slate-500">
+                      <span>
+                        {importProgress?.totalRows
+                          ? `${importProgress.processedRows.toLocaleString()} / ${importProgress.totalRows.toLocaleString()} rows`
+                          : "Counting rows…"}
+                      </span>
+                      <span className="font-semibold tabular-nums text-slate-700">
+                        {Math.min(100, Math.max(0, Math.round(importProgress?.percent ?? 0)))}%
+                      </span>
+                    </div>
+                  </div>
+                  <span className="text-[11px] text-slate-400">
+                    You can leave this page — the import continues on the server.
+                  </span>
+                </div>
+              ) : importProgress?.status === "completed" ? (
+                <div className="flex flex-col items-center gap-3 text-slate-600">
+                  <CheckCircle className="h-8 w-8 text-emerald-500" />
+                  <span className="text-sm font-medium text-slate-800">
+                    Import completed — {importProgress.totalRows.toLocaleString()} rows processed
+                  </span>
+                  <div className="w-full max-w-md">
+                    <Progress value={100} />
+                  </div>
+                </div>
+              ) : (
+                <div className="flex flex-col items-center gap-2 text-slate-600">
+                  <Upload className="h-8 w-8 text-mtc-blue" />
+                  <span className="text-sm font-medium text-slate-800">
+                    {importSegment
+                      ? "Drag and drop an .xlsx file here, or click to browse"
+                      : "Import is unavailable until your department is Key Accounts or EBU"}
+                  </span>
+                  <span className="text-xs text-slate-500">Max 50 MB</span>
+                </div>
+              )}
+            </div>
+          </CardContent>
+        </Card>
+        <Card>
+          <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <CardTitle className="text-base flex items-center gap-2">
+                <UserCheck className="h-5 w-5 text-mtc-blue" /> Pending Imported Executives
+              </CardTitle>
+              <p className="text-xs text-slate-500 mt-1">
+                Placeholder executives created during the corporate import and linked to you.
+                Add their real email to give them portal access. Existing corporate and account links are preserved.
+              </p>
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => loadPendingExecutives()}
+              disabled={loadingPendingExecutives}
+              className="w-full sm:w-auto"
+            >
+              <RefreshCw className={`h-4 w-4 mr-1 ${loadingPendingExecutives ? "animate-spin" : ""}`} /> Refresh
+            </Button>
+          </CardHeader>
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Name</TableHead>
+                <TableHead>Placeholder Email</TableHead>
+                <TableHead>Region</TableHead>
+                <TableHead className="text-right">Corporates</TableHead>
+                <TableHead className="text-right">Accounts</TableHead>
+                <TableHead className="text-right">Action</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {loadingPendingExecutives ? (
+                <TableRow>
+                  <td colSpan={6} className="text-center py-8 text-slate-500 px-4">
+                    <Loader2 className="h-5 w-5 animate-spin inline mr-2" />Loading...
+                  </td>
+                </TableRow>
+              ) : pendingExecutives.length === 0 ? (
+                <TableRow>
+                  <td colSpan={6} className="text-center py-8 text-slate-400 px-4">
+                    No pending imported executives. All imported executives assigned to you have portal access.
+                  </td>
+                </TableRow>
+              ) : (
+                pendingExecutives.map((exec) => (
+                  <TableRow key={exec.executiveId}>
+                    <TableCell className="font-medium text-slate-900">{exec.firstName} {exec.lastName}</TableCell>
+                    <TableCell className="text-sm text-slate-500 font-mono">{exec.currentEmail}</TableCell>
+                    <TableCell className="text-sm">{exec.region || "—"}</TableCell>
+                    <TableCell className="text-right">
+                      <Badge variant={exec.linkedCorporatesCount > 0 ? "default" : "neutral"}>
+                        {exec.linkedCorporatesCount}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <Badge variant={exec.linkedAccountsCount > 0 ? "default" : "neutral"}>
+                        {exec.linkedAccountsCount}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <Button size="sm" onClick={() => openOnboardPendingExec(exec)}>
+                        <UserPlus className="h-4 w-4 mr-1" /> Complete Onboarding
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))
+              )}
+            </TableBody>
+          </Table>
+        </Card>
+        </div>
+      )}
+
+      {selectedPendingExec && (
+        <div className="fixed inset-0 z-50 flex items-start justify-center bg-black/40 backdrop-blur-sm overflow-y-auto py-4 sm:py-8 px-4">
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-xl">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between p-4 sm:p-6 border-b border-slate-200">
+              <div className="min-w-0">
+                <h2 className="text-xl font-bold text-slate-900 flex items-center gap-2">
+                  <UserCheck className="h-5 w-5 text-mtc-blue shrink-0" />
+                  Complete Onboarding
+                </h2>
+                <p className="text-sm text-slate-500 mt-0.5 break-words">
+                  {selectedPendingExec.firstName} {selectedPendingExec.lastName} · {selectedPendingExec.linkedCorporatesCount} corporate{selectedPendingExec.linkedCorporatesCount === 1 ? "" : "s"}, {selectedPendingExec.linkedAccountsCount} account{selectedPendingExec.linkedAccountsCount === 1 ? "" : "s"} already linked
+                </p>
+              </div>
+              <button
+                onClick={closeOnboardPendingExec}
+                disabled={submittingOnboarding}
+                className="rounded-lg p-1.5 hover:bg-slate-100 text-slate-500 hover:text-slate-900 transition-colors disabled:opacity-50 self-end sm:self-auto"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4">
+              <div className="rounded-lg border border-blue-100 bg-blue-50/40 p-3 text-xs text-slate-600">
+                {onboardingMode === "existing"
+                  ? "No credentials are generated in this mode. It only reassigns linked corporates and accounts to the selected already-onboarded executive."
+                  : "Generates a one-time password and emails it to the address you enter. The executive must change that password on first login before using the portal."}
+              </div>
+
+              <div className="space-y-2">
+                <Label>Onboarding Option</Label>
+                <Select
+                  value={onboardingMode}
+                  onChange={(e) => setOnboardingMode((e.target.value as "new" | "existing") || "new")}
+                >
+                  <option value="new">Create portal access for this imported executive</option>
+                  <option value="existing">Assign imported links to an existing executive</option>
+                </Select>
+              </div>
+
+              {onboardingMode === "existing" ? (
+                <div className="space-y-2">
+                  <Label>Existing Executive <span className="text-red-500">*</span></Label>
+                  <Select
+                    value={onboardingForm.existingExecutiveId?.toString() ?? ""}
+                    onChange={(e) =>
+                      setOnboardingForm((form) => ({
+                        ...form,
+                        existingExecutiveId: e.target.value ? Number(e.target.value) : undefined,
+                      }))
+                    }
+                  >
+                    <option value="">Select Executive...</option>
+                    {onboardedExecutives.map((exec) => (
+                      <option key={exec.executiveId} value={exec.executiveId}>
+                        {exec.firstName} {exec.lastName} — {exec.email}
+                      </option>
+                    ))}
+                  </Select>
+                  <p className="text-xs text-slate-500">
+                    Only executives on your team who already have portal access are listed.
+                    {onboardedExecutives.length === 0 && (
+                      <span className="block mt-1 text-amber-600">
+                        No executives with portal access on your team yet.
+                      </span>
+                    )}
+                  </p>
+                </div>
+              ) : (
+                <>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div className="space-y-2">
+                      <Label>First Name <span className="text-red-500">*</span></Label>
+                      <Input
+                        placeholder="First name"
+                        value={onboardingForm.firstName}
+                        onChange={(e) => setOnboardingForm((form) => ({ ...form, firstName: e.target.value }))}
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Last Name <span className="text-red-500">*</span></Label>
+                      <Input
+                        placeholder="Last name"
+                        value={onboardingForm.lastName}
+                        onChange={(e) => setOnboardingForm((form) => ({ ...form, lastName: e.target.value }))}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label>Email <span className="text-red-500">*</span></Label>
+                    <Input
+                      type="email"
+                      placeholder="name@mtc.com.na"
+                      value={onboardingForm.email}
+                      onChange={(e) => setOnboardingForm((form) => ({ ...form, email: e.target.value }))}
+                    />
+                    <p className="text-xs text-slate-500">
+                      Replaces the placeholder email <span className="font-mono">{selectedPendingExec.currentEmail}</span>.
+                    </p>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label>Phone</Label>
+                    <Input
+                      placeholder="+264 ..."
+                      value={onboardingForm.phone}
+                      onChange={(e) => setOnboardingForm((form) => ({ ...form, phone: e.target.value }))}
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label>Reports to Manager</Label>
+                    <Input value={displayName} readOnly />
+                    <p className="text-xs text-slate-500">
+                      This executive stays on your team. The import already linked them to you.
+                    </p>
+                  </div>
+                </>
+              )}
+            </div>
+
+            <div className="flex flex-col-reverse gap-2 p-4 border-t border-slate-200 bg-slate-50 rounded-b-xl sm:flex-row sm:justify-end">
+              <Button variant="outline" onClick={closeOnboardPendingExec} disabled={submittingOnboarding} className="w-full sm:w-auto">
+                Cancel
+              </Button>
+              <Button onClick={handleCompletePendingExec} disabled={submittingOnboarding} className="w-full sm:w-auto">
+                {submittingOnboarding ? (
+                  <><Loader2 className="h-4 w-4 mr-1 animate-spin" /> Onboarding...</>
+                ) : onboardingMode === "existing" ? (
+                  <><UserCheck className="h-4 w-4 mr-1" /> Reassign Linked Accounts</>
+                ) : (
+                  <><Key className="h-4 w-4 mr-1" /> Generate Credentials & Send Email</>
+                )}
+              </Button>
+            </div>
+          </div>
+        </div>
       )}
 
       {editingPortalUser && (

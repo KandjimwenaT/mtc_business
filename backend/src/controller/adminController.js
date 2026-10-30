@@ -3668,10 +3668,65 @@ exports.deleteManagedPortalUser = async (req, res) => {
   }
 };
 
+// Placeholder executives a manager may onboard: the staff row is stamped with
+// their portal manager id (or legacy person id), or a linked corporate/account
+// is. Other managers in the same department stay hidden.
+async function filterPendingExecutivesForManager(executives, user) {
+  const managerCtx = await resolveRequesterManagerContext(user);
+  if (!managerCtx?.managerProfile) return [];
+
+  const scopeIds = new Set(
+    [managerCtx.managerProfile.managerId, managerCtx.managerPersonId]
+      .map((id) => Number(id))
+      .filter((id) => Number.isInteger(id) && id > 0)
+  );
+  if (!scopeIds.size) return [];
+
+  const needsLinkCheck = executives.filter((exec) => {
+    const managerId = Number(exec.managerId);
+    return !Number.isInteger(managerId) || !scopeIds.has(managerId);
+  });
+  const linkedExecutiveIds = new Set();
+  if (needsLinkCheck.length) {
+    const ids = needsLinkCheck.map((exec) => exec.executiveId);
+    const scopeList = [...scopeIds];
+    const [corporates, accounts] = await Promise.all([
+      Corporate.findAll({
+        where: {
+          executiveId: { [Op.in]: ids },
+          managerId: { [Op.in]: scopeList },
+        },
+        attributes: ["executiveId"],
+      }),
+      Account.findAll({
+        where: {
+          executiveId: { [Op.in]: ids },
+          managerId: { [Op.in]: scopeList },
+        },
+        attributes: ["executiveId"],
+      }),
+    ]);
+    for (const row of [...corporates, ...accounts]) {
+      const executiveId = Number(row.executiveId);
+      if (Number.isInteger(executiveId) && executiveId > 0) linkedExecutiveIds.add(executiveId);
+    }
+  }
+
+  return executives.filter((exec) => {
+    const managerId = Number(exec.managerId);
+    const executiveId = Number(exec.executiveId);
+    return (
+      (Number.isInteger(managerId) && scopeIds.has(managerId)) ||
+      linkedExecutiveIds.has(executiveId)
+    );
+  });
+}
+
 // ── List placeholder executives created by the import script ──────
 // Returns ExecutiveStaff rows with no linked portal user. Each row also
 // reports how many corporates and accounts already point at it, so the
 // admin UI can prioritize who to onboard first.
+// Managers only receive placeholders imported for their own team.
 exports.getPendingImportedExecutives = async (req, res) => {
   try {
     const executives = await ExecutiveStaff.findAll({
@@ -3703,8 +3758,10 @@ exports.getPendingImportedExecutives = async (req, res) => {
       accountCounts.map((row) => [row.executiveId, Number(row.count) || 0])
     );
 
-    // Department scoping: EBU admin only sees EBU placeholders, Key Accounts
-    // admin only sees KAM placeholders. Super-admins (no department) see all.
+    // Managers see only placeholders assigned to them, even when several
+    // managers share a department. Everyone else keeps department scoping:
+    // EBU admin only sees EBU placeholders, Key Accounts admin only sees KAM
+    // placeholders. Super-admins (no department) see all.
     // Department is derived from ExecutiveStaff.managerId -> Manager.department;
     // if no managerId, fall back to any linked corporate's department via the
     // existing corporateSegmentScope helper. Orphans (no resolvable segment)
@@ -3712,7 +3769,9 @@ exports.getPendingImportedExecutives = async (req, res) => {
     const requesterDepartment = await resolveRequesterDepartment(req.user);
 
     let visibleExecutives = executives;
-    if (requesterDepartment) {
+    if (req.user?.role === "manager") {
+      visibleExecutives = await filterPendingExecutivesForManager(executives, req.user);
+    } else if (requesterDepartment) {
       const managerIdSet = new Set();
       for (const exec of executives) {
         if (exec.managerId != null) managerIdSet.add(exec.managerId);
@@ -3790,7 +3849,7 @@ exports.getPendingImportedExecutives = async (req, res) => {
 // in the response.
 exports.completeImportedExecutiveOnboarding = async (req, res) => {
   const { executiveId } = req.params;
-  const { email, phone, managerPersonId, firstName, lastName, existingExecutiveId } = req.body || {};
+  let { email, phone, managerPersonId, firstName, lastName, existingExecutiveId } = req.body || {};
 
   try {
     const executive = await ExecutiveStaff.findByPk(executiveId);
@@ -3804,6 +3863,16 @@ exports.completeImportedExecutiveOnboarding = async (req, res) => {
         status: "Failed",
         message: "This executive already has portal access",
       });
+    }
+
+    if (req.user?.role === "manager") {
+      const owned = await filterPendingExecutivesForManager([executive], req.user);
+      if (!owned.length) {
+        return res.status(403).json({
+          status: "Failed",
+          message: "You can only onboard executives imported for your team",
+        });
+      }
     }
 
     // Option B: map imported records to an already-onboarded executive.
@@ -3828,6 +3897,15 @@ exports.completeImportedExecutiveOnboarding = async (req, res) => {
           status: "Failed",
           message: "Selected executive not found",
         });
+      }
+      if (req.user?.role === "manager") {
+        const oversightIds = await resolveOversightExecutiveIds(req.user);
+        if (!oversightIds.map(Number).includes(selectedExecutiveId)) {
+          return res.status(403).json({
+            status: "Failed",
+            message: "You can only reassign links to an executive on your team",
+          });
+        }
       }
       if (!targetExecutive.userId) {
         const linkedUser = await User.findOne({
@@ -3861,6 +3939,17 @@ exports.completeImportedExecutiveOnboarding = async (req, res) => {
         corporatesReassigned: corporateCount,
         accountsReassigned: accountCount,
       });
+    }
+
+    if (req.user?.role === "manager") {
+      const managerCtx = await resolveRequesterManagerContext(req.user);
+      if (!managerCtx?.managerPersonId) {
+        return res.status(400).json({
+          status: "Failed",
+          message: "Your manager profile is not linked to a directory record",
+        });
+      }
+      managerPersonId = managerCtx.managerPersonId;
     }
 
     if (!email || !managerPersonId) {
@@ -4006,7 +4095,85 @@ exports.completeImportedExecutiveOnboarding = async (req, res) => {
   }
 };
 
-/** Super-admin: full key-accounts import from uploaded .xlsx (same behavior as CLI with all include flags). */
+// Managers always import onto their own portal profile. Super admins keep the
+// manager id from the request. The selected manager must belong to the segment
+// the route is importing.
+async function resolveImportAssignment(req, segment) {
+  let assignedManagerProfileId;
+
+  if (req.user?.role === "manager") {
+    const managerCtx = await resolveRequesterManagerContext(req.user);
+    const ownId = Number(managerCtx?.managerProfile?.managerId);
+    if (!Number.isInteger(ownId) || ownId <= 0) {
+      return { errorStatus: 403, errorMessage: "Manager profile not found" };
+    }
+    assignedManagerProfileId = ownId;
+  } else {
+    const rawMgr = req.body && req.body.managerId;
+    if (rawMgr == null || String(rawMgr).trim() === "") {
+      return { errorStatus: 400, errorMessage: "Manager selection is required" };
+    }
+    assignedManagerProfileId = Number(String(rawMgr).trim());
+    if (!Number.isInteger(assignedManagerProfileId) || assignedManagerProfileId <= 0) {
+      return { errorStatus: 400, errorMessage: "managerId must be a positive integer" };
+    }
+  }
+
+  const managerRow = await Manager.findByPk(assignedManagerProfileId);
+  if (!managerRow) {
+    return {
+      errorStatus: 400,
+      errorMessage: "Invalid manager selection — use a portal manager id from GET /admin/managers",
+    };
+  }
+
+  const managerDepartment = await resolveManagerDepartment(managerRow);
+  const managerMatches =
+    segment === "ebu"
+      ? isEbuDepartment(managerDepartment)
+      : isKeyAccountsDepartment(managerDepartment);
+  if (!managerMatches) {
+    const isManager = req.user?.role === "manager";
+    return {
+      errorStatus: isManager ? 403 : 400,
+      errorMessage:
+        segment === "ebu"
+          ? isManager
+            ? "Only EBU managers can run the EBU import"
+            : "Selected manager is not in EBU"
+          : isManager
+            ? "Only Key Accounts managers can run the Key Accounts import"
+            : "Selected manager is not in Key Accounts",
+    };
+  }
+
+  const requesterDepartment = await resolveRequesterDepartment(req.user);
+  if (requesterDepartment) {
+    const requesterMatches =
+      segment === "ebu"
+        ? isEbuDepartment(requesterDepartment)
+        : isKeyAccountsDepartment(requesterDepartment);
+    if (!requesterMatches) {
+      return {
+        errorStatus: 403,
+        errorMessage:
+          segment === "ebu"
+            ? "Only EBU admins can run the EBU import"
+            : "Only Key Accounts admins can run the Key Accounts import",
+      };
+    }
+  }
+
+  return { assignedManagerProfileId };
+}
+
+function importJobHiddenFromRequester(req, job) {
+  if (req.user?.role !== "manager") return false;
+  return Number(job.requestedBy) !== Number(req.user.id);
+}
+
+/** Key-accounts import from uploaded .xlsx (same behavior as CLI with all include flags).
+ *  Super admins choose the manager. Managers import only onto their own profile. */
 // POST /admin/imports/key-accounts
 //
 // Large imports easily exceed the reverse-proxy's idle timeout (504 Gateway
@@ -4025,39 +4192,14 @@ exports.importKeyAccountsFromExcelUpload = async (req, res) => {
 
     const sheet = req.body && req.body.sheet != null ? String(req.body.sheet).trim() : "";
 
-    const rawMgr = req.body && req.body.managerId;
-    if (rawMgr == null || String(rawMgr).trim() === "") {
-      return res
-        .status(400)
-        .json({ status: "Failed", message: "Manager selection is required" });
-    }
-    const assignedManagerProfileId = Number(String(rawMgr).trim());
-    if (!Number.isInteger(assignedManagerProfileId) || assignedManagerProfileId <= 0) {
-      return res
-        .status(400)
-        .json({ status: "Failed", message: "managerId must be a positive integer" });
-    }
-    const managerRow = await Manager.findByPk(assignedManagerProfileId);
-    if (!managerRow) {
-      return res.status(400).json({
+    const assignment = await resolveImportAssignment(req, "key_accounts");
+    if (assignment.errorStatus) {
+      return res.status(assignment.errorStatus).json({
         status: "Failed",
-        message: "Invalid manager selection — use a portal manager id from GET /admin/managers",
+        message: assignment.errorMessage,
       });
     }
-    const managerDepartment = await resolveManagerDepartment(managerRow);
-    if (!isKeyAccountsDepartment(managerDepartment)) {
-      return res.status(400).json({
-        status: "Failed",
-        message: "Selected manager is not in Key Accounts",
-      });
-    }
-    const requesterDepartment = await resolveRequesterDepartment(req.user);
-    if (requesterDepartment && !isKeyAccountsDepartment(requesterDepartment)) {
-      return res.status(403).json({
-        status: "Failed",
-        message: "Only Key Accounts admins can run the Key Accounts import",
-      });
-    }
+    const assignedManagerProfileId = assignment.assignedManagerProfileId;
 
     // Pre-flight: count rows so we can return a real `totalRows` in the 202.
     // This parses the workbook once; the background worker parses it again to
@@ -4074,7 +4216,7 @@ exports.importKeyAccountsFromExcelUpload = async (req, res) => {
     const job = keyAccountsImportJobs.createJob({
       totalRows: preflight.totalRows,
       sheetName: preflight.sheetName,
-      requestedBy: req.user?.userId ?? null,
+      requestedBy: req.user?.id ?? null,
     });
 
     // Keep the buffer in a local so the closure doesn't pin `req`.
@@ -4155,7 +4297,7 @@ exports.getKeyAccountsImportJob = (req, res) => {
     return res.status(400).json({ status: "Failed", message: "Missing jobId" });
   }
   const job = keyAccountsImportJobs.getJob(jobId);
-  if (!job) {
+  if (!job || importJobHiddenFromRequester(req, job)) {
     return res.status(404).json({
       status: "Failed",
       message: "Import job not found or expired",
@@ -4182,39 +4324,14 @@ exports.importEbuFromExcelUpload = async (req, res) => {
 
     const sheet = req.body && req.body.sheet != null ? String(req.body.sheet).trim() : "";
 
-    const rawMgr = req.body && req.body.managerId;
-    if (rawMgr == null || String(rawMgr).trim() === "") {
-      return res
-        .status(400)
-        .json({ status: "Failed", message: "Manager selection is required" });
-    }
-    const assignedManagerProfileId = Number(String(rawMgr).trim());
-    if (!Number.isInteger(assignedManagerProfileId) || assignedManagerProfileId <= 0) {
-      return res
-        .status(400)
-        .json({ status: "Failed", message: "managerId must be a positive integer" });
-    }
-    const managerRow = await Manager.findByPk(assignedManagerProfileId);
-    if (!managerRow) {
-      return res.status(400).json({
+    const assignment = await resolveImportAssignment(req, "ebu");
+    if (assignment.errorStatus) {
+      return res.status(assignment.errorStatus).json({
         status: "Failed",
-        message: "Invalid manager selection — use a portal manager id from GET /admin/managers",
+        message: assignment.errorMessage,
       });
     }
-    const managerDepartment = await resolveManagerDepartment(managerRow);
-    if (!isEbuDepartment(managerDepartment)) {
-      return res.status(400).json({
-        status: "Failed",
-        message: "Selected manager is not in EBU",
-      });
-    }
-    const requesterDepartment = await resolveRequesterDepartment(req.user);
-    if (requesterDepartment && !isEbuDepartment(requesterDepartment)) {
-      return res.status(403).json({
-        status: "Failed",
-        message: "Only EBU admins can run the EBU import",
-      });
-    }
+    const assignedManagerProfileId = assignment.assignedManagerProfileId;
 
     let preflight;
     try {
@@ -4227,7 +4344,7 @@ exports.importEbuFromExcelUpload = async (req, res) => {
     const job = keyAccountsImportJobs.createJob({
       totalRows: preflight.totalRows,
       sheetName: preflight.sheetName,
-      requestedBy: req.user?.userId ?? null,
+      requestedBy: req.user?.id ?? null,
     });
 
     const workbookBuffer = req.file.buffer;
@@ -4300,7 +4417,7 @@ exports.getEbuImportJob = (req, res) => {
     return res.status(400).json({ status: "Failed", message: "Missing jobId" });
   }
   const job = keyAccountsImportJobs.getJob(jobId);
-  if (!job) {
+  if (!job || importJobHiddenFromRequester(req, job)) {
     return res.status(404).json({
       status: "Failed",
       message: "Import job not found or expired",
