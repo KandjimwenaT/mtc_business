@@ -95,7 +95,6 @@ async function resolveLineManagerProfile(executive) {
 
   if (
     resolved &&
-    executive.managerId &&
     executive.managerId !== resolved.managerId &&
     typeof executive.update === "function"
   ) {
@@ -159,6 +158,196 @@ async function resolveExecutiveIdsReportingToManager(managerRow) {
   return [...new Set(execs.map((row) => row.executiveId).filter(Boolean))];
 }
 
+function collectPositiveIds(values) {
+  const ids = new Set();
+  for (const value of values) {
+    const id = Number(value);
+    if (Number.isInteger(id) && id > 0) ids.add(id);
+  }
+  return ids;
+}
+
+/**
+ * Executives a manager should see activity for: staff who report to them, plus
+ * anyone already assigned on that manager's corporates or accounts.
+ */
+async function resolveExecutiveIdsForManagerBook(managerRow) {
+  const reporting = await resolveExecutiveIdsReportingToManager(managerRow);
+  const ids = collectPositiveIds(reporting);
+  const scopeIds = await resolveManagerScopeIds(managerRow);
+  if (!scopeIds.length) return [...ids];
+
+  const [corporates, accounts, people] = await Promise.all([
+    Corporate.findAll({
+      where: { managerId: { [Op.in]: scopeIds }, executiveId: { [Op.ne]: null } },
+      attributes: ["executiveId"],
+    }),
+    Account.findAll({
+      where: { managerId: { [Op.in]: scopeIds }, executiveId: { [Op.ne]: null } },
+      attributes: ["executiveId"],
+    }),
+    Person.findAll({
+      where: {
+        managerId: { [Op.in]: scopeIds },
+        type: { [Op.in]: ["executive_staff", "supervisor"] },
+      },
+      attributes: ["email"],
+    }),
+  ]);
+  for (const row of [...corporates, ...accounts]) {
+    const id = Number(row.executiveId);
+    if (Number.isInteger(id) && id > 0) ids.add(id);
+  }
+
+  const emails = [...new Set(people.map((person) => String(person.email || "").trim()).filter(Boolean))];
+  if (emails.length) {
+    const staff = await ExecutiveStaff.findAll({
+      where: { email: { [Op.in]: emails } },
+      attributes: ["executiveId", "managerId"],
+    });
+    for (const row of staff) {
+      const id = Number(row.executiveId);
+      if (Number.isInteger(id) && id > 0) ids.add(id);
+      if (!row.managerId && managerRow.managerId && typeof row.update === "function") {
+        row.update({ managerId: managerRow.managerId }).catch((err) => {
+          console.error("Failed to align executive manager id:", err?.message || err);
+        });
+      }
+    }
+  }
+  return [...ids];
+}
+
+/**
+ * Signed-in manager or supervisor, plus the executive ids they oversee.
+ * found is false when a manager login has no Manager row.
+ */
+async function resolveOversightScope(user) {
+  if (!user?.id) return { found: false, manager: null, executiveIds: [] };
+
+  if (user.role === "supervisor") {
+    const exec = await ExecutiveStaff.findOne({ where: { userId: user.id } });
+    if (exec) {
+      const lineManager = await resolveLineManagerProfile(exec);
+      if (lineManager) {
+        const executiveIds = await resolveExecutiveIdsForManagerBook(lineManager);
+        if (executiveIds.length) return { found: true, manager: lineManager, executiveIds };
+      }
+      if (exec.managerId) {
+        const team = await ExecutiveStaff.findAll({
+          where: { managerId: exec.managerId },
+          attributes: ["executiveId"],
+        });
+        const executiveIds = team.map((row) => row.executiveId).filter(Boolean);
+        if (executiveIds.length) {
+          const manager = await Manager.findByPk(exec.managerId);
+          return { found: true, manager: manager || null, executiveIds };
+        }
+      }
+      return {
+        found: true,
+        manager: null,
+        executiveIds: exec.executiveId ? [exec.executiveId] : [],
+      };
+    }
+  }
+
+  let manager = await Manager.findOne({ where: { userId: user.id } });
+  if (!manager && user.email) manager = await findManagerByEmail(user.email);
+  if (!manager) return { found: false, manager: null, executiveIds: [] };
+  return {
+    found: true,
+    manager,
+    executiveIds: await resolveExecutiveIdsForManagerBook(manager),
+  };
+}
+
+/**
+ * Which of these account ids sit on the manager's book: the account or its
+ * corporate is assigned to the manager, or to an executive they oversee.
+ */
+async function filterAccountIdsInManagerBook(managerRow, executiveIds, accountIds) {
+  const requested = [...new Set(
+    (accountIds || [])
+      .map((id) => Number(id))
+      .filter((id) => Number.isInteger(id) && id > 0)
+  )];
+  if (!managerRow || !requested.length) return [];
+
+  const scopeIds = await resolveManagerScopeIds(managerRow);
+  const scope = new Set(scopeIds);
+  const executives = new Set(
+    (executiveIds || [])
+      .map((id) => Number(id))
+      .filter((id) => Number.isInteger(id) && id > 0)
+  );
+  if (!scope.size && !executives.size) return [];
+
+  const accounts = await Account.findAll({
+    where: { accountId: { [Op.in]: requested } },
+    attributes: ["accountId", "executiveId", "managerId", "corporateId"],
+  });
+  const corporateIds = [...new Set(
+    accounts.map((account) => Number(account.corporateId)).filter((id) => Number.isInteger(id) && id > 0)
+  )];
+  const corporates = corporateIds.length
+    ? await Corporate.findAll({
+        where: { corporateId: { [Op.in]: corporateIds } },
+        attributes: ["corporateId", "executiveId", "managerId"],
+      })
+    : [];
+  const corporateById = new Map(corporates.map((corporate) => [Number(corporate.corporateId), corporate]));
+
+  const belongs = (executiveId, managerId) => {
+    const executive = Number(executiveId);
+    const manager = Number(managerId);
+    return (executives.size && executives.has(executive)) || (scope.size && scope.has(manager));
+  };
+
+  return accounts
+    .filter((account) => {
+      if (belongs(account.executiveId, account.managerId)) return true;
+      const corporate = corporateById.get(Number(account.corporateId));
+      return Boolean(corporate && belongs(corporate.executiveId, corporate.managerId));
+    })
+    .map((account) => Number(account.accountId));
+}
+
+/** Keep tickets, visits, or control cards this manager or supervisor may see. */
+async function filterRecordsByOversight(user, records) {
+  const scope = await resolveOversightScope(user);
+  if (!scope.found) return { scope, records: [] };
+
+  const allowedExec = new Set(
+    scope.executiveIds.map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0)
+  );
+  const matched = [];
+  const byAccount = [];
+  for (const record of records || []) {
+    const executiveId = Number(record.executiveId);
+    if (Number.isInteger(executiveId) && executiveId > 0 && allowedExec.has(executiveId)) {
+      matched.push(record);
+    } else {
+      byAccount.push(record);
+    }
+  }
+  if (!byAccount.length) return { scope, records: matched };
+
+  const allowedAccounts = new Set(
+    await filterAccountIdsInManagerBook(
+      scope.manager,
+      scope.executiveIds,
+      byAccount.map((record) => record.accountId)
+    )
+  );
+  return {
+    scope,
+    records: matched.concat(
+      byAccount.filter((record) => allowedAccounts.has(Number(record.accountId)))
+    ),
+  };
+}
+
 /**
  * Executive profile ids a manager or supervisor may oversee.
  * Supervisors follow their ExecutiveStaff line manager (teammates are not moved
@@ -172,7 +361,7 @@ async function resolveOversightExecutiveIds(user) {
     if (exec) {
       const lineManager = await resolveLineManagerProfile(exec);
       if (lineManager) {
-        const ids = await resolveExecutiveIdsReportingToManager(lineManager);
+        const ids = await resolveExecutiveIdsForManagerBook(lineManager);
         if (ids.length) return ids;
       }
       if (exec.managerId) {
@@ -190,7 +379,7 @@ async function resolveOversightExecutiveIds(user) {
   let manager = await Manager.findOne({ where: { userId: user.id } });
   if (!manager && user.email) manager = await findManagerByEmail(user.email);
   if (!manager) return [];
-  return resolveExecutiveIdsReportingToManager(manager);
+  return resolveExecutiveIdsForManagerBook(manager);
 }
 
 /**
@@ -450,5 +639,8 @@ module.exports = {
   resolveExecutiveIdsReportingToManager,
   resolveLineManagerProfile,
   resolveOversightExecutiveIds,
+  resolveOversightScope,
+  filterAccountIdsInManagerBook,
+  filterRecordsByOversight,
   resolveBroadcastRecipientUserIds,
 };

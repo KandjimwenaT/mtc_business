@@ -13,6 +13,7 @@ import {
    Star,
    CalendarDays,
    FileText,
+   BarChart3,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { cn } from "./ui-components";
@@ -23,6 +24,8 @@ import corporatesIcon from "../../assets/New Theme Icon/building-2.svg";
 import ticketsIcon from "../../assets/New Theme Icon/tickets.svg";
 import bellIcon from "../../assets/New Theme Icon/bell.svg";
 import profileIcon from "../../assets/New Theme Icon/circle-user-round.svg";
+import auditLogIcon from "../../assets/New Theme Icon/file-clock.svg";
+import reportsIcon from "../../assets/New Theme Icon/chart-no-axes-combined.svg";
 import logOutIcon from "../../assets/New Theme Icon/log-out.svg";
 import chevronRightIcon from "../../assets/New Theme Icon/chevron-right.svg";
 import chevronDownIcon from "../../assets/New Theme Icon/chevron-down.svg";
@@ -133,6 +136,7 @@ export default function Layout() {
         { name: "Customer Account", href: "/customerAccount", icon: Star },
         { name: "Tickets", href: "/customerTickets", icon: Ticket },
         { name: "Visit Calendar", href: "/visitCalendar", icon: CalendarDays },
+        { name: "Reports", href: "/reports", icon: BarChart3 },
         { name: "Notifications", href: "/notifications", icon: Bell },
         { name: "My Profile", href: profileHref, icon: UserCircle },
       ]
@@ -157,7 +161,11 @@ export default function Layout() {
           ? [{ name: "SLA Monitoring", href: "/sla-monitoring", icon: Timer }]
           : []),
         ...(!isPortalAdmin ? [{ name: "Vehicles", href: "/vehicles", icon: Car }] : []),
+        { name: "Reports", href: "/reports", icon: BarChart3 },
         { name: "Notifications", href: notificationsHref, icon: Bell },
+        ...(hasManagerScope || isGm
+          ? [{ name: "Audit Log", href: "/audit-log", icon: FileText }]
+          : []),
         { name: "My Profile", href: profileHref, icon: UserCircle },
       ];
 
@@ -168,6 +176,8 @@ export default function Layout() {
     "Customer Account": corporatesIcon,
     Tickets: ticketsIcon,
     Notifications: bellIcon,
+    Reports: reportsIcon,
+    "Audit Log": auditLogIcon,
     "My Profile": profileIcon,
   };
 

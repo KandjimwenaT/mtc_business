@@ -28,6 +28,7 @@ const Complaint = require('./src/models/Complaint');
 const AccountRequest = require('./src/models/AccountRequest');
 const Ticket = require('./src/models/Ticket');
 const TicketInternalNote = require('./src/models/TicketInternalNote');
+const TicketCustomerMessage = require('./src/models/TicketCustomerMessage');
 const TicketActivityLog = require('./src/models/TicketActivityLog');
 const Visit = require('./src/models/Visit');
 const ControlCard = require('./src/models/ControlCard');
@@ -418,6 +419,20 @@ const startServer = async () => {
   } catch (err) {
     // Fresh environments may not have services table yet; Service.sync will create it.
   }
+  // Admins set available / out of office on their profile.
+  try {
+    const usersTable = await queryInterface.describeTable('users');
+    const dt = require('sequelize').DataTypes;
+    if (!usersTable.availability_status) {
+      await queryInterface.addColumn('users', 'availability_status', {
+        type: dt.STRING,
+        allowNull: false,
+        defaultValue: 'available',
+      });
+    }
+  } catch (err) {
+    // Fresh environments may not have users table yet; User.sync will create it.
+  }
   // Create missing tables; existing tables are left unchanged (no alter).
   await User.sync();
   await Person.sync();
@@ -433,8 +448,39 @@ const startServer = async () => {
   await Invoice.sync();
   await Complaint.sync();
   await AccountRequest.sync();
+  try {
+    const ticketTable = await queryInterface.describeTable('tickets');
+    const dt = require('sequelize').DataTypes;
+    if (!ticketTable.assigned_admin_person_id) {
+      await queryInterface.addColumn('tickets', 'assigned_admin_person_id', {
+        type: dt.INTEGER,
+        allowNull: true,
+      });
+    }
+    if (!ticketTable.admin_assignment_status) {
+      await queryInterface.addColumn('tickets', 'admin_assignment_status', {
+        type: dt.STRING,
+        allowNull: true,
+      });
+    }
+    if (!ticketTable.admin_assignment_reason) {
+      await queryInterface.addColumn('tickets', 'admin_assignment_reason', {
+        type: dt.TEXT,
+        allowNull: true,
+      });
+    }
+    const statusType = String(ticketTable.status?.type || ticketTable.status || "");
+    if (!statusType.includes("completed")) {
+      await queryInterface.sequelize.query(
+        "ALTER TABLE tickets MODIFY COLUMN status ENUM('new','assigned','in_progress','escalated','resolved','closed','rejected','completed') NOT NULL DEFAULT 'new'"
+      );
+    }
+  } catch (err) {
+    // Fresh environments may not have tickets yet; Ticket.sync will create it.
+  }
   await Ticket.sync();
   await TicketInternalNote.sync();
+  await TicketCustomerMessage.sync();
   await TicketActivityLog.sync();
   await Visit.sync();
   await ControlCard.sync();

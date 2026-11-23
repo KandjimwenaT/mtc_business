@@ -4,7 +4,7 @@ export type SlaStateKey = "healthy" | "warning" | "at_risk" | "breached" | "clos
 
 export type SlaBadgeStatus = "success" | "warning" | "danger" | "breached";
 
-const CLOSED = new Set(["resolved", "closed", "rejected"]);
+const CLOSED = new Set(["resolved", "closed", "completed", "rejected"]);
 
 function hoursBetween(fromMs: number, toMs: number) {
   return (toMs - fromMs) / 3_600_000;

@@ -27,6 +27,7 @@ const STATUS_CONFIG: Record<string, { label: string; className: string }> = {
   escalated: { label: "Escalated", className: "border-orange-200 bg-orange-50 text-orange-700" },
   resolved: { label: "Resolved", className: "border-emerald-200 bg-emerald-50 text-emerald-700" },
   closed: { label: "Closed", className: "border-slate-200 bg-slate-50 text-slate-600" },
+  completed: { label: "Completed", className: "border-emerald-200 bg-emerald-50 text-emerald-700" },
   rejected: { label: "Rejected", className: "border-rose-200 bg-red-50 text-rose-700" },
 };
 
@@ -237,6 +238,7 @@ export default function Tickets() {
                   <option value="escalated">Escalated</option>
                   <option value="resolved">Resolved</option>
                   <option value="closed">Closed</option>
+                  <option value="completed">Completed</option>
                   <option value="rejected">Rejected</option>
                 </Select>
               </div>
@@ -332,7 +334,20 @@ export default function Tickets() {
                       )}
                     </TableCell>
                     <TableCell>{ticket.submittedBy}</TableCell>
-                    <TableCell>{ticket.assignedTo || "—"}</TableCell>
+                    <TableCell>
+                      <div>{ticket.assignedTo || "—"}</div>
+                      {ticket.viewerIsAssignedAdmin ? (
+                        <div className={`text-xs ${ticket.adminAssignmentStatus === "declined" ? "text-red-700" : "text-slate-500"}`}>
+                          {ticket.adminAssignmentStatus === "accepted"
+                            ? "You accepted"
+                            : ticket.adminAssignmentStatus === "declined"
+                              ? "You declined"
+                              : "Waiting for you"}
+                        </div>
+                      ) : ticket.assignedAdminName ? (
+                        <div className="text-xs text-slate-500">With {ticket.assignedAdminName}</div>
+                      ) : null}
+                    </TableCell>
                     <TableCell>{format(new Date(ticket.createdAt), "dd MMM yyyy")}</TableCell>
                   </TableRow>
                 );

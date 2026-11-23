@@ -15,6 +15,7 @@ import type { UserProfile } from "../api/authApi";
 import { getMyAccounts } from "../api/authApi";
 import type { ExecutiveAccountRecord } from "../api/authApi";
 import ProfileEditSection from "../components/profile-edit-section";
+import DepartmentAdminsCard from "../components/department-admins-card";
 
 type Tab = "profile" | "tickets" | "vehicle" | "settings";
 
@@ -76,6 +77,7 @@ export default function ExecutiveProfile() {
 
       {/* EXECUTIVE PROFILE */}
       {activeTab === "profile" && (
+        <div className="space-y-6">
         <div className="grid gap-6 md:grid-cols-3">
           <Card className="md:col-span-1">
             <CardContent className="pt-6 flex flex-col items-center text-center">
@@ -174,6 +176,8 @@ export default function ExecutiveProfile() {
               </CardContent>
             )}
           </Card>
+        </div>
+        <DepartmentAdminsCard />
         </div>
       )}
 

@@ -214,14 +214,16 @@ async function managerHasCorporateScope(corporate, managerProfile, managerPerson
 
   if (matchesStoredManager) return true;
 
-  if (assignedId != null && assignedId !== undefined) return false;
-
   if (!corporate.executiveId) return false;
 
   const execStaff = await ExecutiveStaff.findByPk(corporate.executiveId, {
     attributes: ["managerId"],
   });
-  return !!(execStaff && execStaff.managerId === managerProfile.managerId);
+  if (!execStaff?.managerId) return false;
+  return (
+    execStaff.managerId === managerProfile.managerId ||
+    (managerPersonId !== null && execStaff.managerId === managerPersonId)
+  );
 }
 
 async function resolveRequesterManagerContext(user) {
@@ -290,12 +292,16 @@ async function assertCorporateInManagerScope(managerCtx, corporateId) {
     managerCtx.managerProfile,
     managerCtx.managerPersonId
   );
-  if (!allowed) {
-    const error = new Error("You can only create account managers for corporates in your department");
-    error.statusCode = 403;
-    throw error;
+  if (allowed) return corporate;
+
+  const departmentMap = await buildCorporateDepartmentMap([corporate]);
+  if (departmentsMatch(departmentMap.get(corporate.corporateId), managerCtx.managerProfile.department)) {
+    return corporate;
   }
-  return corporate;
+
+  const error = new Error("You can only create account managers for corporates in your department");
+  error.statusCode = 403;
+  throw error;
 }
 
 function isoMonth(dateValue) {
@@ -1209,11 +1215,97 @@ async function scopePortalUsersForRequester(users, requester) {
   return visible;
 }
 
+// Contact persons an executive added who still need the manager to grant portal access.
+exports.getCustomersAwaitingPortalAccess = async (req, res) => {
+  try {
+    if (!isManagerOrSupervisorRole(req.user.role)) {
+      return res.status(403).json({
+        status: "Failed",
+        message: "Only managers can grant customer portal access",
+      });
+    }
+
+    const managerCtx = await resolveRequesterManagerContext(req.user);
+    if (!managerCtx?.managerProfile) {
+      return res.status(404).json({ status: "Failed", message: "Manager profile not found" });
+    }
+
+    const contacts = await AccountManager.findAll({
+      where: { hasPortalAccess: false },
+      order: [["created_at", "DESC"]],
+    });
+    if (!contacts.length) {
+      return res.status(200).json({ status: "Success", customers: [] });
+    }
+
+    const contactIds = contacts.map((contact) => contact.accountManagerId);
+    const junction = await CorporateContactPerson.findAll({
+      where: { accountManagerId: { [Op.in]: contactIds } },
+      attributes: ["accountManagerId", "corporateId"],
+    });
+    const corporateIdsByContact = new Map(contacts.map((contact) => {
+      const ids = new Set();
+      if (Number.isInteger(contact.corporateId)) ids.add(contact.corporateId);
+      return [contact.accountManagerId, ids];
+    }));
+    for (const link of junction) {
+      const ids = corporateIdsByContact.get(link.accountManagerId);
+      if (ids && Number.isInteger(link.corporateId)) ids.add(link.corporateId);
+    }
+
+    const allCorporateIds = [...new Set(
+      [...corporateIdsByContact.values()].flatMap((ids) => [...ids])
+    )];
+    const corporates = allCorporateIds.length
+      ? await Corporate.findAll({ where: { corporateId: { [Op.in]: allCorporateIds } } })
+      : [];
+    const corporateById = new Map(corporates.map((corporate) => [corporate.corporateId, corporate]));
+    const departmentMap = await buildCorporateDepartmentMap(corporates);
+    const managerDepartment = managerCtx.managerProfile.department;
+
+    const customers = [];
+    for (const contact of contacts) {
+      const linkedIds = [...(corporateIdsByContact.get(contact.accountManagerId) || [])];
+      let matched = null;
+      for (const corporateId of linkedIds) {
+        const corporate = corporateById.get(corporateId);
+        if (!corporate) continue;
+        const owned = await managerHasCorporateScope(
+          corporate,
+          managerCtx.managerProfile,
+          managerCtx.managerPersonId
+        );
+        const sameDepartment = departmentsMatch(departmentMap.get(corporate.corporateId), managerDepartment);
+        if (owned || sameDepartment) {
+          matched = corporate;
+          break;
+        }
+      }
+      if (!matched) continue;
+      customers.push({
+        id: contact.accountManagerId,
+        firstName: contact.firstName,
+        lastName: contact.lastName,
+        email: contact.email,
+        phone: contact.phone,
+        corporateId: matched.corporateId,
+        corporateName: matched.corporateName,
+        createdAt: contact.createdAt,
+      });
+    }
+
+    return res.status(200).json({ status: "Success", customers });
+  } catch (error) {
+    console.error("Get customers awaiting portal access error:", error);
+    return res.status(500).json({ status: "Failed", message: "Internal server error" });
+  }
+};
+
 // ── List portal users ────────────────────────────────────────────
 exports.getPortalUsers = async (req, res) => {
   try {
     const users = await User.findAll({
-      attributes: ["id", "firstName", "lastName", "email", "phone", "role", "created_at"],
+      attributes: ["id", "firstName", "lastName", "email", "phone", "role", "availabilityStatus", "created_at"],
       order: [["created_at", "DESC"]],
     });
     const visibleUsers = await scopePortalUsersForRequester(users, req.user);
@@ -1255,7 +1347,7 @@ exports.getSystemHealth = async (req, res) => {
     const todayStr = toDateOnly(now);
     const inSixMonthsStr = toDateOnly(inSixMonths);
 
-    const openTicketStatuses = { [Op.notIn]: ["resolved", "closed", "rejected"] };
+    const openTicketStatuses = { [Op.notIn]: ["resolved", "closed", "completed", "rejected"] };
     const pendingVisitStatuses = { [Op.in]: ["pending", "approved", "confirmed", "rescheduled"] };
 
     const dbStarted = Date.now();
@@ -1338,7 +1430,7 @@ exports.getSystemHealth = async (req, res) => {
       }),
       Ticket.count({
         where: {
-          status: { [Op.in]: ["resolved", "closed"] },
+          status: { [Op.in]: ["resolved", "closed", "completed"] },
           [Op.or]: [
             { resolvedAt: { [Op.gte]: thisMonthStart } },
             { closedAt: { [Op.gte]: thisMonthStart } },

@@ -9,7 +9,7 @@ exports.listAuditLogs = async (req, res) => {
     if (!VIEW_ROLES.has(req.user?.role)) {
       return res.status(403).json({
         status: "Failed",
-        message: "Access denied. Admin, manager, or supervisor role required.",
+        message: "Access denied. Admin, manager, supervisor, or GM role required.",
       });
     }
 

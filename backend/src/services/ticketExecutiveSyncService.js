@@ -1,5 +1,6 @@
 const { Op } = require("sequelize");
 const Account = require("../models/Account");
+const Corporate = require("../models/Corporate");
 const Ticket = require("../models/Ticket");
 const TicketActivityLog = require("../models/TicketActivityLog");
 const ExecutiveStaff = require("../models/ExecutiveStaff");
@@ -29,7 +30,13 @@ async function syncOpenTicketWithAccountExecutive(ticketInstance, options = {}) 
   const account = await Account.findByPk(ticket.accountId, {
     attributes: ["accountId", "executiveId", "corporateId"],
   });
-  const accountExecutiveId = normalizeExecutiveProfileId(account?.executiveId);
+  let accountExecutiveId = normalizeExecutiveProfileId(account?.executiveId);
+  if (!accountExecutiveId && account?.corporateId) {
+    const corporate = await Corporate.findByPk(account.corporateId, {
+      attributes: ["executiveId"],
+    });
+    accountExecutiveId = normalizeExecutiveProfileId(corporate?.executiveId);
+  }
   const ticketExecutiveId = normalizeExecutiveProfileId(ticket.executiveId);
 
   if (!accountExecutiveId || accountExecutiveId === ticketExecutiveId) {
@@ -41,6 +48,7 @@ async function syncOpenTicketWithAccountExecutive(ticketInstance, options = {}) 
 
   await ticket.update({
     executiveId: accountExecutiveId,
+    assignedAdminPersonId: null,
     assignedTo,
     status: ticket.status === "new" ? "assigned" : ticket.status,
   });
@@ -115,6 +123,7 @@ async function reassignOpenTicketsForCorporate({
   for (const ticket of ticketsToReassign) {
     await ticket.update({
       executiveId: normalizedExecutiveId,
+      assignedAdminPersonId: null,
       assignedTo: displayName,
       status: ticket.status === "new" ? "assigned" : ticket.status,
     });

@@ -8,6 +8,7 @@ const Person = require("../models/Person");
 const User = require("../models/User");
 const Notification = require("../models/Notification");
 const TicketInternalNote = require("../models/TicketInternalNote");
+const TicketCustomerMessage = require("../models/TicketCustomerMessage");
 const TicketActivityLog = require("../models/TicketActivityLog");
 const emailService = require("../services/emailService");
 const { Op } = require("sequelize");
@@ -15,7 +16,7 @@ const {
   createForUserIds,
   notifyManagerTeam,
   resolveManagerTeamNotificationUserIds,
-  resolveOversightExecutiveIds,
+  filterRecordsByOversight,
 } = require("../services/notificationService");
 const realtime = require("../services/realtimeService");
 const {
@@ -30,6 +31,7 @@ const {
   normalizeExecutiveProfileId,
 } = require("../services/ticketExecutiveSyncService");
 const slaService = require("../services/slaService");
+const { departmentsMatch } = require("../services/departmentSegment");
 
 const hasExecutiveScope = (role) => ["executive_staff", "supervisor"].includes(role);
 const INTERNAL_NOTE_AUTHOR_ROLES = ["admin", "super_admin", "manager", "supervisor", "gm", "executive_staff"];
@@ -189,24 +191,70 @@ async function toTicketWithAccountContext(ticketInstance) {
   };
 }
 
-async function buildTicketDetailPayload(ticketInstance) {
+async function resolveExecutiveProfileForUser(user) {
+  if (!user || !["executive_staff", "supervisor"].includes(user.role)) return null;
+  let executive = await ExecutiveStaff.findOne({ where: { userId: user.id } });
+  if (!executive && user.email) {
+    executive = await ExecutiveStaff.findOne({ where: { email: user.email } });
+  }
+  return executive;
+}
+
+async function userIsAssignedExecutive(user, ticket) {
+  const executive = await resolveExecutiveProfileForUser(user);
+  if (!executive || ticket?.executiveId == null) return false;
+  return Number(executive.executiveId) === Number(ticket.executiveId);
+}
+
+async function customerOwnsTicket(user, ticket) {
+  const accounts = await getCustomerCorporateAccounts(user.email);
+  return accounts.some((account) => Number(account.accountId) === Number(ticket.accountId));
+}
+
+async function loadCustomerMessages(ticketId) {
+  const messages = await TicketCustomerMessage.findAll({
+    where: { ticketId },
+    order: [["created_at", "ASC"]],
+  });
+  return messages.map((row) => row.toJSON());
+}
+
+async function buildTicketDetailPayload(ticketInstance, viewer) {
   const syncedTicket = await syncOpenTicketWithAccountExecutive(ticketInstance);
   const detailed = await toTicketWithAccountContext(syncedTicket);
+  const isCustomer = viewer?.role === "customer";
   const executiveName = await resolveExecutiveNameByExecutiveProfileId(syncedTicket.executiveId);
-  detailed.assignedTo = executiveName || detailed.assignedTo || null;
-  const internalNotes = await TicketInternalNote.findAll({
-    where: { ticketId: ticketInstance.ticketId },
-    order: [["created_at", "ASC"]],
-  });
-  const activityLog = await TicketActivityLog.findAll({
-    where: { ticketId: ticketInstance.ticketId },
-    order: [["created_at", "ASC"]],
-  });
-  return {
-    ...detailed,
-    internalNotes: internalNotes.map((note) => note.toJSON()),
-    activityLog: activityLog.map((entry) => entry.toJSON()),
-  };
+  detailed.assignedTo = executiveName || null;
+  if (isCustomer) {
+    hideAdminHandoff(detailed);
+  } else {
+    await attachAdminHandoff(detailed, syncedTicket, viewer);
+  }
+
+  const showCustomerThread =
+    isCustomer || (viewer ? await userIsAssignedExecutive(viewer, syncedTicket) : false);
+
+  if (isCustomer) {
+    detailed.notes = null;
+    detailed.sourceContextNote = null;
+  } else {
+    const internalNotes = await TicketInternalNote.findAll({
+      where: { ticketId: ticketInstance.ticketId },
+      order: [["created_at", "ASC"]],
+    });
+    const activityLog = await TicketActivityLog.findAll({
+      where: { ticketId: ticketInstance.ticketId },
+      order: [["created_at", "ASC"]],
+    });
+    detailed.internalNotes = internalNotes.map((note) => note.toJSON());
+    detailed.activityLog = activityLog.map((entry) => entry.toJSON());
+  }
+
+  if (showCustomerThread) {
+    detailed.customerMessages = await loadCustomerMessages(ticketInstance.ticketId);
+  }
+
+  return detailed;
 }
 
 async function resolveCustomerUserIdsByAccountId(accountId) {
@@ -263,7 +311,7 @@ async function sendTicketBreachNotificationsToManagers(tickets) {
 
   for (const ticket of tickets) {
     if (!ticket.slaDeadline) continue;
-    if (["resolved", "closed", "rejected"].includes(ticket.status)) continue;
+    if (["resolved", "closed", "completed", "rejected"].includes(ticket.status)) continue;
 
     const isBreached = new Date(ticket.slaDeadline) < now;
     if (!isBreached) continue;
@@ -291,6 +339,67 @@ async function sendTicketBreachNotificationsToManagers(tickets) {
 
 async function resolveExecutiveNameByExecutiveProfileId(executiveProfileId) {
   return resolveExecutiveDisplayName(executiveProfileId);
+}
+
+function sameDepartment(a, b) {
+  if (departmentsMatch(a, b)) return true;
+  const left = String(a || "").trim().toLowerCase();
+  const right = String(b || "").trim().toLowerCase();
+  return Boolean(left && right && left === right);
+}
+
+function hideAdminHandoff(payload) {
+  delete payload.assignedAdminPersonId;
+  delete payload.assignedAdminName;
+  delete payload.assignedAdminEmail;
+  delete payload.adminAssignmentStatus;
+  delete payload.adminAssignmentReason;
+  delete payload.viewerIsAssignedAdmin;
+  return payload;
+}
+
+async function attachAdminHandoff(payload, ticket, viewer) {
+  const admin = ticket?.assignedAdminPersonId
+    ? await Person.findByPk(ticket.assignedAdminPersonId)
+    : null;
+  payload.assignedAdminPersonId = admin ? admin.id : null;
+  payload.assignedAdminName = admin
+    ? `${admin.firstName || ""} ${admin.lastName || ""}`.trim() || null
+    : null;
+  payload.assignedAdminEmail = admin?.email || null;
+  payload.adminAssignmentStatus = ticket?.adminAssignmentStatus || null;
+  payload.adminAssignmentReason = ticket?.adminAssignmentReason || null;
+  payload.viewerIsAssignedAdmin = Boolean(
+    viewer?.role === "admin" &&
+    admin?.email &&
+    viewer?.email &&
+    String(admin.email).toLowerCase() === String(viewer.email).toLowerCase()
+  );
+  return payload;
+}
+
+async function presentStaffTicket(ticketInstance, viewer) {
+  const detailed = await toTicketWithAccountContext(ticketInstance);
+  const executiveName = await resolveExecutiveNameByExecutiveProfileId(ticketInstance.executiveId);
+  detailed.assignedTo = executiveName || null;
+  await attachAdminHandoff(detailed, ticketInstance, viewer);
+  return detailed;
+}
+
+async function resolveExecutiveDepartment(user) {
+  const person = user?.email
+    ? await Person.findOne({ where: { email: user.email } })
+    : null;
+  if (person?.department) return person.department;
+  if (person?.managerId) {
+    const fromManager = await resolveDepartmentByManagerPersonId(person.managerId);
+    if (fromManager) return fromManager;
+  }
+  const executive = await resolveExecutiveProfileForUser(user);
+  if (!executive?.managerId) return null;
+  const managerProfile = await Manager.findByPk(executive.managerId);
+  if (managerProfile?.department) return managerProfile.department;
+  return resolveDepartmentByManagerPersonId(executive.managerId);
 }
 
 async function hydrateTicketAssignee(ticketInstance) {
@@ -679,7 +788,13 @@ exports.getMyTickets = async (req, res) => {
         const synced = await syncOpenTicketWithAccountExecutive(ticket);
         const detailed = await toTicketWithAccountContext(synced);
         const executiveName = await resolveExecutiveNameByExecutiveProfileId(synced.executiveId);
-        return { ...detailed, assignedTo: executiveName || detailed.assignedTo || null };
+        hideAdminHandoff(detailed);
+        return {
+          ...detailed,
+          assignedTo: executiveName || null,
+          notes: null,
+          sourceContextNote: null,
+        };
       }),
     );
 
@@ -759,11 +874,13 @@ exports.getAssignedTickets = async (req, res) => {
     const syncedTickets = await Promise.all(
       tickets.map((ticket) => syncOpenTicketWithAccountExecutive(ticket))
     );
-    const visibleTickets = syncedTickets.filter(
-      (ticket) => normalizeExecutiveProfileId(ticket.executiveId) === executive.executiveId
-    );
+    const assignedAccountIdSet = new Set(assignedAccountIds.map((id) => Number(id)));
+    const visibleTickets = syncedTickets.filter((ticket) => {
+      if (normalizeExecutiveProfileId(ticket.executiveId) === executive.executiveId) return true;
+      return assignedAccountIdSet.has(Number(ticket.accountId));
+    });
 
-    const result = await Promise.all(visibleTickets.map((ticket) => toTicketWithAccountContext(ticket)));
+    const result = await Promise.all(visibleTickets.map((ticket) => presentStaffTicket(ticket, user)));
 
     return res.status(200).json({ status: "Success", tickets: result });
   } catch (error) {
@@ -813,9 +930,8 @@ exports.getAllTickets = async (req, res) => {
     }
 
     if (user.role === "manager" || user.role === "supervisor") {
-      const execIds = await resolveOversightExecutiveIds(user);
-      const allowed = new Set(execIds.map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0));
-      tickets = tickets.filter((ticket) => allowed.has(Number(ticket.executiveId)));
+      const scoped = await filterRecordsByOversight(user, tickets);
+      tickets = scoped.records;
     }
 
     await slaService.applyAutoEscalations(tickets);
@@ -823,7 +939,7 @@ exports.getAllTickets = async (req, res) => {
     if (["manager", "supervisor"].includes(user.role)) {
       await sendTicketBreachNotificationsToManagers(tickets);
       const openForOversight = tickets
-        .filter((ticket) => !["resolved", "closed", "rejected"].includes(ticket.status))
+        .filter((ticket) => !["resolved", "closed", "completed", "rejected"].includes(ticket.status))
         .slice(0, 25);
       await Promise.all(
         openForOversight.map((ticket) =>
@@ -851,7 +967,7 @@ exports.getAllTickets = async (req, res) => {
       );
     }
 
-    const result = await Promise.all(tickets.map((t) => toTicketWithAccountContext(t)));
+    const result = await Promise.all(tickets.map((t) => presentStaffTicket(t, user)));
 
     return res.status(200).json({ status: "Success", tickets: result });
   } catch (error) {
@@ -890,34 +1006,265 @@ exports.getTicketById = async (req, res) => {
     }
 
     if (user.role === "manager" || user.role === "supervisor") {
-      const execIds = await resolveOversightExecutiveIds(user);
-      const allowed = new Set(execIds.map((id) => Number(id)));
       const ownRow =
         user.role === "supervisor"
           ? await ExecutiveStaff.findOne({ where: { userId: user.id }, attributes: ["executiveId"] })
           : null;
       const ownsAsExecutive =
         ownRow?.executiveId != null && Number(ownRow.executiveId) === Number(ticket.executiveId);
-      if (!ownsAsExecutive && !allowed.has(Number(ticket.executiveId))) {
+      const alertRecipients = await resolveManagerTeamNotificationUserIds(ticket.executiveId);
+      const receivedTeamAlert = alertRecipients.some((id) => Number(id) === Number(user.id));
+      const scoped = ownsAsExecutive || receivedTeamAlert
+        ? { records: [ticket] }
+        : await filterRecordsByOversight(user, [ticket]);
+      if (!scoped.records.length) {
         return res.status(403).json({ status: "Failed", message: "This ticket is not within your team's scope" });
       }
     }
 
     if (user.role === "customer") {
-      const accounts = await getCustomerCorporateAccounts(user.email);
-      const accountIds = accounts.map((account) => account.accountId);
-      if (!accountIds.includes(ticket.accountId)) {
+      const ownsTicket = await customerOwnsTicket(user, ticket);
+      if (!ownsTicket) {
         return res.status(403).json({ status: "Failed", message: "You do not have access to this ticket" });
       }
     }
 
-    const payload = await buildTicketDetailPayload(ticket);
+    const payload = await buildTicketDetailPayload(ticket, user);
     return res.status(200).json({
       status: "Success",
       ticket: payload,
     });
   } catch (error) {
     console.error("Get ticket by id error:", error);
+    return res.status(500).json({ status: "Failed", message: "Internal server error" });
+  }
+};
+
+// Admins in the signed-in executive's department, for ticket assignment.
+exports.getDepartmentAdmins = async (req, res) => {
+  try {
+    const user = req.user;
+    if (!["executive_staff", "supervisor"].includes(user.role)) {
+      return res.status(403).json({ status: "Failed", message: "Only executives can assign department admins" });
+    }
+
+    const department = await resolveExecutiveDepartment(user);
+    if (!department) {
+      return res.status(200).json({ status: "Success", department: null, admins: [] });
+    }
+
+    const admins = await Person.findAll({
+      where: { type: "admin" },
+      order: [["first_name", "ASC"], ["last_name", "ASC"]],
+    });
+    const emails = admins.map((admin) => admin.email).filter(Boolean);
+    const portalUsers = emails.length
+      ? await User.findAll({
+          where: { role: "admin", email: { [Op.in]: emails } },
+          attributes: ["email", "availabilityStatus"],
+        })
+      : [];
+    const availabilityByEmail = new Map(
+      portalUsers.map((portalUser) => [String(portalUser.email || "").toLowerCase(), portalUser.availabilityStatus || "available"])
+    );
+    const visible = [];
+    for (const admin of admins) {
+      const adminDepartment = await resolveDepartmentForAdminPerson(admin);
+      if (!sameDepartment(adminDepartment, department)) continue;
+      visible.push({
+        id: admin.id,
+        firstName: admin.firstName,
+        lastName: admin.lastName,
+        email: admin.email,
+        department: adminDepartment,
+        availabilityStatus: availabilityByEmail.get(String(admin.email || "").toLowerCase()) || "available",
+      });
+    }
+    visible.sort((a, b) => {
+      if (a.availabilityStatus === b.availabilityStatus) return 0;
+      return a.availabilityStatus === "available" ? -1 : 1;
+    });
+
+    return res.status(200).json({ status: "Success", department, admins: visible });
+  } catch (error) {
+    console.error("Get department admins for tickets error:", error);
+    return res.status(500).json({ status: "Failed", message: "Internal server error" });
+  }
+};
+
+// The ticket's executive assigns it to one admin in their department.
+exports.assignTicketAdmin = async (req, res) => {
+  try {
+    const user = req.user;
+    if (!["executive_staff", "supervisor"].includes(user.role)) {
+      return res.status(403).json({ status: "Failed", message: "Only executives can assign a ticket to an admin" });
+    }
+
+    const ticket = await Ticket.findByPk(req.params.ticketId);
+    if (!ticket) {
+      return res.status(404).json({ status: "Failed", message: "Ticket not found" });
+    }
+    if (!(await userIsAssignedExecutive(user, ticket))) {
+      return res.status(403).json({ status: "Failed", message: "You can only assign tickets that belong to you" });
+    }
+
+    const adminPersonId = Number(req.body?.adminPersonId);
+    if (!Number.isInteger(adminPersonId) || adminPersonId <= 0) {
+      return res.status(400).json({ status: "Failed", message: "Select an admin" });
+    }
+
+    const admin = await Person.findByPk(adminPersonId);
+    if (!admin || admin.type !== "admin") {
+      return res.status(400).json({ status: "Failed", message: "Selected admin is invalid" });
+    }
+
+    const executiveDepartment = await resolveExecutiveDepartment(user);
+    const adminDepartment = await resolveDepartmentForAdminPerson(admin);
+    if (!executiveDepartment || !sameDepartment(adminDepartment, executiveDepartment)) {
+      return res.status(403).json({ status: "Failed", message: "That admin is not in your department" });
+    }
+
+    const adminName = `${admin.firstName || ""} ${admin.lastName || ""}`.trim();
+    const reassigned = Boolean(ticket.assignedAdminPersonId) && Number(ticket.assignedAdminPersonId) !== admin.id;
+    ticket.assignedAdminPersonId = admin.id;
+    ticket.adminAssignmentStatus = "pending";
+    ticket.adminAssignmentReason = null;
+    await ticket.save();
+
+    const actorLabel = await resolveActorLabel(user);
+    await TicketActivityLog.create({
+      ticketId: ticket.ticketId,
+      actorUserId: user.id,
+      actorName: actorLabel,
+      actorRole: user.role,
+      actionTaken: `${reassigned ? "Reassigned" : "Handed"} to ${adminName} for handling`,
+    });
+
+    const adminUser = await User.findOne({
+      where: { role: "admin", email: admin.email },
+      attributes: ["id"],
+    });
+    if (adminUser && adminUser.id !== user.id) {
+      await createForUserIds(
+        [adminUser.id],
+        {
+          type: "ticket",
+          title: `Ticket assigned - ${ticket.ticketNumber}`,
+          message: `${actorLabel} assigned ${ticket.ticketNumber} to you.`,
+          priority: ticket.priority === "critical" || ticket.priority === "high" ? ticket.priority : "normal",
+          metadata: {
+            ticketId: ticket.ticketId,
+            ticketNumber: ticket.ticketNumber,
+            kind: "ticket_admin_assigned",
+            adminPersonId: admin.id,
+          },
+        },
+        { skipEmail: true }
+      );
+    }
+
+    realtime.broadcastResources(["tickets", "dashboard"]);
+    const payload = await buildTicketDetailPayload(ticket, user);
+    return res.status(200).json({
+      status: "Success",
+      message: `Ticket assigned to ${adminName}`,
+      ticket: payload,
+    });
+  } catch (error) {
+    console.error("Assign ticket admin error:", error);
+    return res.status(500).json({ status: "Failed", message: "Internal server error" });
+  }
+};
+
+// The admin the executive handed this ticket to can accept or decline it.
+exports.respondToAdminAssignment = async (req, res) => {
+  try {
+    const user = req.user;
+    if (user.role !== "admin") {
+      return res.status(403).json({ status: "Failed", message: "Only the assigned admin can respond" });
+    }
+
+    const ticket = await Ticket.findByPk(req.params.ticketId);
+    if (!ticket) {
+      return res.status(404).json({ status: "Failed", message: "Ticket not found" });
+    }
+    if (!ticket.assignedAdminPersonId) {
+      return res.status(400).json({ status: "Failed", message: "This ticket has not been handed to an admin" });
+    }
+
+    const admin = await Person.findByPk(ticket.assignedAdminPersonId);
+    if (!admin || String(admin.email || "").toLowerCase() !== String(user.email || "").toLowerCase()) {
+      return res.status(403).json({ status: "Failed", message: "This ticket was handed to a different admin" });
+    }
+
+    const decision = String(req.body?.decision || "").trim().toLowerCase();
+    if (!["accepted", "declined"].includes(decision)) {
+      return res.status(400).json({ status: "Failed", message: "Choose accept or decline" });
+    }
+    const reason = String(req.body?.reason || "").trim();
+    if (decision === "declined" && !reason) {
+      return res.status(400).json({ status: "Failed", message: "Add a reason the executive can see" });
+    }
+    if (reason.length > 1000) {
+      return res.status(400).json({ status: "Failed", message: "Reason must be 1000 characters or fewer" });
+    }
+
+    const previousStatus = ticket.status;
+    ticket.adminAssignmentStatus = decision;
+    ticket.adminAssignmentReason = reason || null;
+    const finished = ["resolved", "closed", "completed", "rejected"].includes(ticket.status);
+    if (decision === "accepted" && !finished && ticket.status !== "in_progress") {
+      ticket.status = "in_progress";
+    }
+    await ticket.save();
+
+    const actorLabel = await resolveActorLabel(user);
+    const actionTaken = decision === "accepted"
+      ? (reason ? `Accepted handling. ${reason}` : "Accepted handling. Ticket is in progress.")
+      : `Declined handling. ${reason}`;
+    await TicketActivityLog.create({
+      ticketId: ticket.ticketId,
+      actorUserId: user.id,
+      actorName: actorLabel,
+      actorRole: user.role,
+      previousStatus: previousStatus !== ticket.status ? previousStatus : null,
+      newStatus: previousStatus !== ticket.status ? ticket.status : null,
+      actionTaken,
+    });
+
+    const executiveUserId = await resolveExecutiveUserIdByExecutiveProfileId(ticket.executiveId);
+    if (executiveUserId && executiveUserId !== user.id) {
+      await createForUserIds(
+        [executiveUserId],
+        {
+          type: "ticket",
+          title: decision === "accepted"
+            ? `Admin accepted ${ticket.ticketNumber}`
+            : `Admin declined ${ticket.ticketNumber}`,
+          message: decision === "accepted"
+            ? `${actorLabel} accepted ${ticket.ticketNumber}${reason ? `: ${reason}` : "."}`
+            : `${actorLabel} declined ${ticket.ticketNumber}: ${reason}`,
+          priority: decision === "declined" ? "high" : "normal",
+          metadata: {
+            ticketId: ticket.ticketId,
+            ticketNumber: ticket.ticketNumber,
+            kind: decision === "accepted" ? "ticket_admin_accepted" : "ticket_admin_declined",
+            reason: reason || null,
+          },
+        },
+        { skipEmail: true }
+      );
+    }
+
+    realtime.broadcastResources(["tickets", "dashboard"]);
+    const payload = await buildTicketDetailPayload(ticket, user);
+    return res.status(200).json({
+      status: "Success",
+      message: decision === "accepted" ? "Ticket accepted" : "Ticket declined",
+      ticket: payload,
+    });
+  } catch (error) {
+    console.error("Admin ticket response error:", error);
     return res.status(500).json({ status: "Failed", message: "Internal server error" });
   }
 };
@@ -946,7 +1293,7 @@ exports.updateTicket = async (req, res) => {
       }
     }
 
-    const allowedStatuses = ["new", "assigned", "in_progress", "escalated", "resolved", "closed", "rejected"];
+    const allowedStatuses = ["new", "assigned", "in_progress", "escalated", "resolved", "closed", "rejected", "completed"];
     if (status && !allowedStatuses.includes(status)) {
       return res.status(400).json({ status: "Failed", message: `Invalid status. Allowed: ${allowedStatuses.join(", ")}` });
     }
@@ -959,7 +1306,10 @@ exports.updateTicket = async (req, res) => {
     if (resolution !== undefined) ticket.resolution = resolution;
     if (notes !== undefined) ticket.notes = notes;
     if (status === "resolved") ticket.resolvedAt = new Date();
-    if (status === "closed") ticket.closedAt = new Date();
+    if (status === "closed" || status === "completed") {
+      ticket.closedAt = new Date();
+      if (!ticket.resolvedAt) ticket.resolvedAt = new Date();
+    }
 
     const statusChanged = status !== undefined && status !== prevStatus;
     const resolutionChanged = resolution !== undefined && String(resolution ?? "") !== String(prevResolution);
@@ -1021,7 +1371,7 @@ exports.updateTicket = async (req, res) => {
       { excludeUserIds: [user.id] }
     );
 
-    const payload = await buildTicketDetailPayload(ticket);
+    const payload = await buildTicketDetailPayload(ticket, user);
     realtime.broadcastResources(["tickets", "dashboard"]);
 
     return res.status(200).json({
@@ -1131,6 +1481,98 @@ exports.addInternalNote = async (req, res) => {
     });
   } catch (error) {
     console.error("Add internal note error:", error);
+    return res.status(500).json({ status: "Failed", message: "Internal server error" });
+  }
+};
+
+// Customer <-> assigned executive only. Managers, admins, and GMs cannot read or post.
+exports.addCustomerMessage = async (req, res) => {
+  try {
+    const user = req.user;
+    const { ticketId } = req.params;
+    const messageText = String(req.body?.message || "").trim();
+    if (!messageText) {
+      return res.status(400).json({ status: "Failed", message: "Message is required" });
+    }
+    if (messageText.length > 4000) {
+      return res.status(400).json({ status: "Failed", message: "Message is too long" });
+    }
+
+    const ticket = await Ticket.findByPk(ticketId);
+    if (!ticket) {
+      return res.status(404).json({ status: "Failed", message: "Ticket not found" });
+    }
+
+    const isCustomer = user.role === "customer";
+    const isExecutive = await userIsAssignedExecutive(user, ticket);
+    if (isCustomer) {
+      const ownsTicket = await customerOwnsTicket(user, ticket);
+      if (!ownsTicket) {
+        return res.status(403).json({ status: "Failed", message: "You do not have access to this ticket" });
+      }
+    } else if (!isExecutive) {
+      return res.status(403).json({
+        status: "Failed",
+        message: "Only the customer and the assigned executive can use this conversation",
+      });
+    }
+
+    const actorLabel = await resolveActorLabel(user);
+    const created = await TicketCustomerMessage.create({
+      ticketId: ticket.ticketId,
+      authorUserId: user.id,
+      authorName: actorLabel,
+      authorRole: user.role,
+      message: messageText,
+    });
+
+    const preview = messageText.length > 180 ? `${messageText.slice(0, 177)}...` : messageText;
+    const metadata = {
+      ticketId: ticket.ticketId,
+      ticketNumber: ticket.ticketNumber,
+      kind: "ticket_customer_message",
+      authorRole: user.role,
+    };
+    if (isCustomer) {
+      const executiveUserId = await resolveExecutiveUserIdByExecutiveProfileId(ticket.executiveId);
+      if (executiveUserId && executiveUserId !== user.id) {
+        await createForUserIds(
+          [executiveUserId],
+          {
+            type: "ticket",
+            title: `Customer message - ${ticket.ticketNumber}`,
+            message: `${actorLabel}: ${preview}`,
+            priority: "normal",
+            metadata,
+          },
+          { skipEmail: true }
+        );
+      }
+    } else {
+      const customerUserIds = (await resolveCustomerUserIdsByAccountId(ticket.accountId))
+        .filter((id) => id !== user.id);
+      await createForUserIds(
+        customerUserIds,
+        {
+          type: "ticket",
+          title: `Message from your executive - ${ticket.ticketNumber}`,
+          message: `${actorLabel}: ${preview}`,
+          priority: "normal",
+          metadata,
+        },
+        { skipEmail: true }
+      );
+    }
+
+    realtime.broadcastResources(["tickets"]);
+
+    return res.status(201).json({
+      status: "Success",
+      message: "Message sent",
+      customerMessage: created.toJSON(),
+    });
+  } catch (error) {
+    console.error("Add customer message error:", error);
     return res.status(500).json({ status: "Failed", message: "Internal server error" });
   }
 };

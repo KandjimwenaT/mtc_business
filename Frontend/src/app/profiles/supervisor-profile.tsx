@@ -12,9 +12,9 @@ import {
 import { getMyProfile } from "../api/authApi";
 import type { UserProfile } from "../api/authApi";
 import ProfileEditSection from "../components/profile-edit-section";
-import AuditLogPanel from "../components/audit-log-panel";
+import DepartmentAdminsCard from "../components/department-admins-card";
 
-type Tab = "profile" | "reschedules" | "escalations" | "performance" | "audit" | "settings";
+type Tab = "profile" | "reschedules" | "escalations" | "performance" | "settings";
 
 export default function SupervisorProfile() {
   const [activeTab, setActiveTab] = useState<Tab>("profile");
@@ -32,7 +32,6 @@ export default function SupervisorProfile() {
     { key: "reschedules", label: "Reschedule Approvals" },
     { key: "escalations", label: "L1 Escalation Inbox" },
     { key: "performance", label: "Executive Performance" },
-    { key: "audit", label: "Audit Log" },
     { key: "settings", label: "Profile Settings" },
   ];
 
@@ -56,6 +55,7 @@ export default function SupervisorProfile() {
 
       {/* PROFILE */}
       {activeTab === "profile" && (
+        <div className="space-y-6">
         <div className="grid gap-6 md:grid-cols-3">
           <Card className="md:col-span-1">
             <CardContent className="pt-6 flex flex-col items-center text-center">
@@ -109,6 +109,8 @@ export default function SupervisorProfile() {
               </div>
             </CardContent>
           </Card>
+        </div>
+        <DepartmentAdminsCard />
         </div>
       )}
 
@@ -286,8 +288,6 @@ export default function SupervisorProfile() {
           </Card>
         </div>
       )}
-
-      {activeTab === "audit" && <AuditLogPanel />}
 
       {/* PROFILE SETTINGS */}
       {activeTab === "settings" && profile && (

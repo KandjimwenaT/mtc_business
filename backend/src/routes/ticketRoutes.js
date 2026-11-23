@@ -21,11 +21,15 @@ router.get("/my", ticketController.getMyTickets);
 
 // Executive staff routes
 router.get("/assigned", ticketController.getAssignedTickets);
+router.get("/department-admins", ticketController.getDepartmentAdmins);
+router.put("/:ticketId/assign-admin", ticketController.assignTicketAdmin);
+router.put("/:ticketId/admin-response", ticketController.respondToAdminAssignment);
 
 // Manager / admin
 router.get("/all", ticketController.getAllTickets);
 router.get("/:ticketId", ticketController.getTicketById);
 router.post("/:ticketId/internal-notes", ticketController.addInternalNote);
+router.post("/:ticketId/customer-messages", ticketController.addCustomerMessage);
 
 // Update ticket (executive staff / manager / admin)
 router.put("/:ticketId", ticketController.updateTicket);

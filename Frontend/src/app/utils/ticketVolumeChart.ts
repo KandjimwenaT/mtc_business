@@ -8,7 +8,7 @@ export type TicketVolumeDay = {
   resolved: number;
 };
 
-const RESOLVED_STATUSES = new Set(["resolved", "closed"]);
+const RESOLVED_STATUSES = new Set(["resolved", "closed", "completed"]);
 
 function toLocalDateKey(value: string | Date): string {
   const d = new Date(value);

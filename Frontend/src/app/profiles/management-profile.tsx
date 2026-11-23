@@ -14,8 +14,8 @@ import { getActualRole, getMyProfile } from "../api/authApi";
 import { normalizeDepartmentSegment } from "../utils/departmentSegment";
 import type { UserProfile } from "../api/authApi";
 import ProfileEditSection from "../components/profile-edit-section";
-import AuditLogPanel from "../components/audit-log-panel";
-import SlaConfigurationPanel from "../components/sla-configuration-panel";
+import DepartmentAdminsCard from "../components/department-admins-card";
+import { AvailabilityBadge } from "../components/availability-badge";
 import { getAllTickets, type TicketRecord } from "../api/ticketApi";
 import { getManagerVisits, type VisitRecord } from "../api/visitApi";
 import {
@@ -25,6 +25,8 @@ import {
   createPerson,
   createPortalAccess,
   getPortalUsers,
+  getCustomersAwaitingPortalAccess,
+  type CustomerAwaitingPortalAccess,
   updateManagedPortalUser,
   deleteManagedPortalUser,
   promoteExecutiveToSupervisor,
@@ -40,7 +42,7 @@ import {
   type PendingImportedExecutive,
 } from "../api/adminApi";
 
-type Tab = "profile" | "users" | "pendingExecutives" | "performance" | "templates" | "sla" | "upgrade" | "audit" | "settings";
+type Tab = "profile" | "users" | "pendingExecutives" | "performance" | "templates" | "upgrade" | "settings";
 
 const PORTAL_ROLE_LABELS: Record<string, string> = {
   customer: "Account Manager",
@@ -76,7 +78,7 @@ function formatTrend(current: number, previous: number): string {
 
 function avgResponseHours(tickets: TicketRecord[]): number | null {
   const resolved = tickets.filter(
-    (t) => ["resolved", "closed"].includes(t.status) && t.resolvedAt
+    (t) => ["resolved", "closed", "completed"].includes(t.status) && t.resolvedAt
   );
   if (!resolved.length) return null;
   const totalMs = resolved.reduce(
@@ -141,6 +143,9 @@ export default function ManagementProfile() {
   const [showCreateExecutiveConfirm, setShowCreateExecutiveConfirm] = useState(false);
   const [creatingExecutive, setCreatingExecutive] = useState(false);
   const [portalUsers, setPortalUsers] = useState<PortalUser[]>([]);
+  const [awaitingCustomers, setAwaitingCustomers] = useState<CustomerAwaitingPortalAccess[]>([]);
+  const [loadingAwaitingCustomers, setLoadingAwaitingCustomers] = useState(false);
+  const [grantingCustomerId, setGrantingCustomerId] = useState<number | null>(null);
   const [loadingPortalUsers, setLoadingPortalUsers] = useState(false);
   const [searchUsers, setSearchUsers] = useState("");
   const [editingPortalUser, setEditingPortalUser] = useState<PortalUser | null>(null);
@@ -245,9 +250,38 @@ export default function ManagementProfile() {
     }
   };
 
+  const loadAwaitingCustomers = async () => {
+    setLoadingAwaitingCustomers(true);
+    try {
+      setAwaitingCustomers(await getCustomersAwaitingPortalAccess());
+    } catch (err: unknown) {
+      toast.error("Failed to load customers waiting for portal access", {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    } finally {
+      setLoadingAwaitingCustomers(false);
+    }
+  };
+
+  const grantCustomerPortalAccess = async (customer: CustomerAwaitingPortalAccess) => {
+    setGrantingCustomerId(customer.id);
+    try {
+      await createPortalAccess(customer.id, "customer");
+      toast.success(`Portal access granted to ${customer.firstName} ${customer.lastName}`);
+      await Promise.all([loadAwaitingCustomers(), loadPortalUsers()]);
+    } catch (err: unknown) {
+      toast.error("Failed to grant portal access", {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    } finally {
+      setGrantingCustomerId(null);
+    }
+  };
+
   useEffect(() => {
     if (activeTab !== "users" || !canManagePortalUsers) return;
     loadPortalUsers().catch(() => {});
+    loadAwaitingCustomers().catch(() => {});
   }, [activeTab, canManagePortalUsers]);
 
   const loadPendingExecutives = async () => {
@@ -625,9 +659,10 @@ export default function ManagementProfile() {
 
     const teamExecs = executiveProfiles.filter((e) => e.managerId === managerProfileId);
     const teamExecIds = new Set(teamExecs.map((e) => e.executiveId));
-    const scopedTickets = tickets.filter(
-      (t) => t.executiveId != null && teamExecIds.has(t.executiveId)
-    );
+    const scopedTickets = tickets.filter((t) => {
+      if (t.executiveId == null) return true;
+      return teamExecIds.has(t.executiveId);
+    });
     const scopedVisits = visits;
 
     const now = new Date();
@@ -636,7 +671,7 @@ export default function ManagementProfile() {
     const lastMonthKey = `${lastMonthDate.getFullYear()}-${String(lastMonthDate.getMonth() + 1).padStart(2, "0")}`;
 
     const isResolvedInMonth = (t: TicketRecord, key: string) => {
-      if (!["resolved", "closed"].includes(t.status)) return false;
+      if (!["resolved", "closed", "completed"].includes(t.status)) return false;
       const ts = t.resolvedAt || t.updatedAt || t.createdAt;
       return monthKey(ts) === key;
     };
@@ -674,9 +709,9 @@ export default function ManagementProfile() {
             (rated.reduce((s, v) => s + Number(v.customerRating), 0) / rated.length) * 10
           ) / 10
         : null;
-      const resolved = exTicketsMtd.filter((t) => ["resolved", "closed"].includes(t.status)).length;
+      const resolved = exTicketsMtd.filter((t) => ["resolved", "closed", "completed"].includes(t.status)).length;
       const responseHours = avgResponseHours(
-        exTicketsMtd.filter((t) => ["resolved", "closed"].includes(t.status))
+        exTicketsMtd.filter((t) => ["resolved", "closed", "completed"].includes(t.status))
       );
 
       return {
@@ -731,9 +766,7 @@ export default function ManagementProfile() {
       : []),
     { key: "performance", label: "Executive Performance" },
     { key: "templates", label: "Control Card Templates" },
-    { key: "sla", label: "SLA Configuration" },
     { key: "upgrade", label: "Role Upgrades" },
-    { key: "audit", label: "Audit Log" },
     { key: "settings", label: "Profile Settings" },
   ];
 
@@ -790,6 +823,8 @@ export default function ManagementProfile() {
               </CardContent>
             </Card>
           </div>
+
+          <DepartmentAdminsCard />
 
           {isManagerOrSupervisor && previewingAsSuperAdmin && (
             <p className="text-sm text-slate-500">
@@ -915,6 +950,66 @@ export default function ManagementProfile() {
           <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <CardTitle className="text-base flex items-center gap-2">
+                <UserPlus className="h-5 w-5 text-mtc-blue" /> Customers waiting for portal access
+              </CardTitle>
+              <p className="text-xs text-slate-500 mt-1">
+                Contact persons added by your executives. Grant portal access to email their sign-in details.
+              </p>
+            </div>
+            <Button size="sm" variant="outline" onClick={() => loadAwaitingCustomers()} disabled={loadingAwaitingCustomers}>
+              <RefreshCw className={`h-4 w-4 mr-1 ${loadingAwaitingCustomers ? "animate-spin" : ""}`} /> Refresh
+            </Button>
+          </CardHeader>
+          <CardContent className="p-0 overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Name</TableHead>
+                  <TableHead>Email</TableHead>
+                  <TableHead>Phone</TableHead>
+                  <TableHead>Corporate</TableHead>
+                  <TableHead className="text-right">Action</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {loadingAwaitingCustomers ? (
+                  <TableRow>
+                    <TableCell colSpan={5} className="text-slate-500">Loading customers…</TableCell>
+                  </TableRow>
+                ) : awaitingCustomers.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={5} className="text-slate-500">
+                      No customers are waiting. Contact persons your executives add will appear here.
+                    </TableCell>
+                  </TableRow>
+                ) : awaitingCustomers.map((customer) => (
+                  <TableRow key={customer.id}>
+                    <TableCell className="font-medium">{customer.firstName} {customer.lastName}</TableCell>
+                    <TableCell>{customer.email}</TableCell>
+                    <TableCell>{customer.phone || "—"}</TableCell>
+                    <TableCell>{customer.corporateName}</TableCell>
+                    <TableCell className="text-right">
+                      <Button
+                        size="sm"
+                        onClick={() => grantCustomerPortalAccess(customer)}
+                        disabled={grantingCustomerId === customer.id}
+                      >
+                        {grantingCustomerId === customer.id ? "Granting..." : "Give portal access"}
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
+      )}
+
+      {activeTab === "users" && canManagePortalUsers && (
+        <Card>
+          <CardHeader className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <CardTitle className="text-base flex items-center gap-2">
                 <Users className="h-5 w-5 text-mtc-blue" /> Portal Users
               </CardTitle>
               <p className="text-xs text-slate-500 mt-1">
@@ -943,6 +1038,7 @@ export default function ManagementProfile() {
                 <TableHead>Email</TableHead>
                 <TableHead>Role</TableHead>
                 <TableHead>Department</TableHead>
+                <TableHead>Status</TableHead>
                 <TableHead>Created</TableHead>
                 <TableHead className="text-right">Actions</TableHead>
               </TableRow>
@@ -950,13 +1046,13 @@ export default function ManagementProfile() {
             <TableBody>
               {loadingPortalUsers ? (
                 <TableRow>
-                  <td colSpan={6} className="text-center py-8 text-slate-500 px-4">
+                  <td colSpan={7} className="text-center py-8 text-slate-500 px-4">
                     <Loader2 className="h-5 w-5 animate-spin inline mr-2" />Loading...
                   </td>
                 </TableRow>
               ) : filteredPortalUsers.length === 0 ? (
                 <TableRow>
-                  <td colSpan={6} className="text-center py-8 text-slate-400 px-4">No portal users found</td>
+                  <td colSpan={7} className="text-center py-8 text-slate-400 px-4">No portal users found</td>
                 </TableRow>
               ) : filteredPortalUsers.map((user) => (
                 <TableRow key={user.id}>
@@ -964,6 +1060,9 @@ export default function ManagementProfile() {
                   <TableCell className="text-sm">{user.email}</TableCell>
                   <TableCell><Badge variant="default">{PORTAL_ROLE_LABELS[user.role] || user.role}</Badge></TableCell>
                   <TableCell className="text-sm text-slate-600">{user.department || "—"}</TableCell>
+                  <TableCell>
+                    {user.role === "admin" ? <AvailabilityBadge status={user.availabilityStatus} /> : <span className="text-sm text-slate-400">—</span>}
+                  </TableCell>
                   <TableCell className="text-sm text-slate-500">{user.created_at ? new Date(user.created_at).toLocaleDateString() : "—"}</TableCell>
                   <TableCell className="text-right">
                     <Button
@@ -1468,8 +1567,6 @@ export default function ManagementProfile() {
         </Card>
       )}
 
-      {activeTab === "sla" && <SlaConfigurationPanel />}
-
       {/* ROLE UPGRADES */}
       {activeTab === "upgrade" && (
         <div className="space-y-6">
@@ -1921,8 +2018,6 @@ export default function ManagementProfile() {
           </Card>
         </div>
       )}
-
-      {activeTab === "audit" && <AuditLogPanel />}
 
       {/* PROFILE SETTINGS */}
       {activeTab === "settings" && profile && (

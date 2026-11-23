@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
-import { useSearchParams } from "react-router";
+import { Navigate, useParams, useSearchParams } from "react-router";
+import CustomerTicketDetails from "./CustomerTicketDetails";
 import { Card, CardContent, CardHeader, CardTitle } from "../ui/card";
 import { Button } from "../ui/button";
 import { Input } from "../ui/input";
@@ -92,13 +93,20 @@ const STATUS_CONFIG: Record<string, { label: string; className: string }> = {
   escalated: { label: "Escalated", className: "bg-orange-100 text-orange-800" },
   resolved: { label: "Resolved", className: "bg-green-100 text-green-800" },
   closed: { label: "Closed", className: "bg-slate-100 text-slate-600" },
+  completed: { label: "Completed", className: "bg-green-100 text-green-800" },
   rejected: { label: "Rejected", className: "bg-red-100 text-red-800" },
 };
 
 const REQUEST_TYPE_VALUES = new Set(REQUEST_TYPES.map((t) => t.value));
 
+export function CustomerTicketPathRedirect() {
+  const { id } = useParams();
+  return <Navigate to={`/customerTickets?ticket=${id ?? ""}`} replace />;
+}
+
 export default function CustomerTickets() {
   const [searchParams, setSearchParams] = useSearchParams();
+  const selectedTicketId = searchParams.get("ticket");
   const [showCreate, setShowCreate] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [showFilterPanel, setShowFilterPanel] = useState(false);
@@ -254,6 +262,27 @@ export default function CustomerTickets() {
 
   const typeOptions = category === "request" ? REQUEST_TYPES : COMPLAINT_TYPES;
 
+  const openTicket = (ticketId: number) => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.set("ticket", String(ticketId));
+      next.delete("newRequest");
+      return next;
+    });
+  };
+
+  const closeTicket = () => {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      next.delete("ticket");
+      return next;
+    }, { replace: true });
+  };
+
+  if (selectedTicketId) {
+    return <CustomerTicketDetails ticketId={selectedTicketId} onBack={closeTicket} />;
+  }
+
   if (loading) {
     return (
       <div className="flex items-center justify-center h-64">
@@ -269,7 +298,7 @@ export default function CustomerTickets() {
         <div>
           <h2 className="text-3xl font-normal text-slate-800">My Tickets</h2>
           <p className="text-sm text-slate-500">
-            Submit and track service requests &amp; complaints
+            Submit and track service requests and complaints. Select a ticket to see its status and message your executive.
           </p>
         </div>
         <div className="flex flex-wrap gap-2">
@@ -347,6 +376,7 @@ export default function CustomerTickets() {
                     <SelectItem value="escalated">Escalated</SelectItem>
                     <SelectItem value="resolved">Resolved</SelectItem>
                     <SelectItem value="closed">Closed</SelectItem>
+                    <SelectItem value="completed">Completed</SelectItem>
                     <SelectItem value="rejected">Rejected</SelectItem>
                   </SelectContent>
                 </Select>
@@ -623,9 +653,8 @@ export default function CustomerTickets() {
         </Card>
       )}
 
-      <div className="grid gap-6 md:grid-cols-3">
-      {/* Tickets table */}
-      <Card className="md:col-span-2">
+      <div className="flex w-full flex-col gap-6">
+      <Card className="w-full">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:gap-4 p-4 border-b border-slate-200">
           <div className="relative w-full sm:flex-1 sm:max-w-sm">
             <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-slate-500" />
@@ -673,12 +702,12 @@ export default function CustomerTickets() {
           <TableHeader>
             <TableRow>
               <TableHead>Ticket ID</TableHead>
+              <TableHead>Status</TableHead>
               <TableHead>Category</TableHead>
               <TableHead>Type</TableHead>
               <TableHead>Title</TableHead>
               <TableHead>Priority</TableHead>
-              <TableHead>Status</TableHead>
-              <TableHead>Assigned To</TableHead>
+              <TableHead>Executive</TableHead>
               <TableHead>Date</TableHead>
             </TableRow>
           </TableHeader>
@@ -698,9 +727,20 @@ export default function CustomerTickets() {
                   className: "bg-slate-100 text-slate-600",
                 };
                 return (
-                  <TableRow key={ticket.ticketId}>
+                  <TableRow
+                    key={ticket.ticketId} 
+                    className="cursor-pointer hover:bg-slate-50"
+                    onClick={() => openTicket(ticket.ticketId)}
+                  >
                     <TableCell className="font-medium text-blue-600">
                       {ticket.ticketNumber}
+                    </TableCell>
+                    <TableCell>
+                      <span
+                        className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${statusCfg.className}`}
+                      >
+                        {statusCfg.label}
+                      </span>
                     </TableCell>
                     <TableCell>
                       <Badge
@@ -730,13 +770,6 @@ export default function CustomerTickets() {
                         {ticket.priority}
                       </Badge>
                     </TableCell>
-                    <TableCell>
-                      <span
-                        className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-medium ${statusCfg.className}`}
-                      >
-                        {statusCfg.label}
-                      </span>
-                    </TableCell>
                     <TableCell className="text-sm text-slate-600">
                       {ticket.assignedTo || "—"}
                     </TableCell>
@@ -751,7 +784,7 @@ export default function CustomerTickets() {
         </Table>
       </Card>
 
-      <EscalationWorkflowCard />
+      <EscalationWorkflowCard stacked />
       </div>
     </div>
   );

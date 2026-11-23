@@ -301,7 +301,7 @@ function computeEscalationLevel(ticket, now = Date.now()) {
 }
 
 function computeSlaState(ticket, now = Date.now()) {
-  if (!ticket?.slaDeadline || ["resolved", "closed", "rejected"].includes(ticket.status)) {
+  if (!ticket?.slaDeadline || ["resolved", "closed", "completed", "rejected"].includes(ticket.status)) {
     return { key: "closed", label: "—", remainingHours: null, elapsedHours: elapsedHoursSince(ticket?.createdAt, now) };
   }
   const deadline = new Date(ticket.slaDeadline).getTime();

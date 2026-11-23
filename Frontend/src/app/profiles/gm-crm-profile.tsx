@@ -80,7 +80,7 @@ export default function GMCRMProfile() {
   const resolvedThisMonth = useMemo(() => {
     const monthKey = new Date().toISOString().slice(0, 7);
     return tickets.filter(
-      (t) => ["resolved", "closed"].includes(t.status) && t.createdAt?.slice(0, 7) === monthKey,
+      (t) => ["resolved", "closed", "completed"].includes(t.status) && t.createdAt?.slice(0, 7) === monthKey,
     ).length;
   }, [tickets]);
 

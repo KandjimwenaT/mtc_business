@@ -2,7 +2,7 @@ import { isExecutiveRole, type AppRole } from "./roleCapabilities";
 
 export function getTicketDetailPath(role: AppRole, ticketId: number): string {
   if (role === "customer") {
-    return "/customerTickets";
+    return `/customerTickets?ticket=${ticketId}`;
   }
   if (isExecutiveRole(role)) {
     return `/executive-tickets/${ticketId}`;

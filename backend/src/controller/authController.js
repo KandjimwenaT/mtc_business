@@ -17,6 +17,8 @@ const Invoice = require("../models/Invoice");
 const Notification = require("../models/Notification");
 const { createForUserIds, createForUserIdsIfMissing, resolveManagerTeamNotificationUserIds } = require("../services/notificationService");
 const { recordAudit, actorDisplayName, clientIp } = require("../services/auditService");
+const realtime = require("../services/realtimeService");
+const { departmentsMatch } = require("../services/departmentSegment");
 const {
   ensureDefaultAccountForCorporate,
   getCorporateIdsForAccountManager,
@@ -26,6 +28,19 @@ const {
 
 const hasExecutiveScope = (role) =>
   role === "executive_staff" || role === "supervisor";
+
+const AVAILABILITY_STATUSES = new Set(["available", "out_of_office"]);
+
+function normalizeAvailability(value) {
+  return value === "out_of_office" ? "out_of_office" : "available";
+}
+
+function sameTeamDepartment(a, b) {
+  if (departmentsMatch(a, b)) return true;
+  const left = String(a || "").trim().toLowerCase();
+  const right = String(b || "").trim().toLowerCase();
+  return Boolean(left && right && left === right);
+}
 
 const isoMonth = (dateValue) => {
   if (!dateValue) return "";
@@ -734,6 +749,7 @@ exports.getProfile = async (req, res) => {
       region: null,
       personId: null,
       manager: null,
+      availabilityStatus: normalizeAvailability(user.availabilityStatus),
     };
 
     // Fetch the matching Person record (linked by email) for extra fields
@@ -879,6 +895,7 @@ exports.updateProfile = async (req, res) => {
         user.role === "customer"
           ? (updatedAccountManager?.accountManagerId || null)
           : (updatedPerson?.id || null),
+      availabilityStatus: normalizeAvailability(updatedUser.availabilityStatus),
     };
 
     recordAudit({
@@ -898,6 +915,156 @@ exports.updateProfile = async (req, res) => {
     return res
       .status(500)
       .json({ status: "Failed", message: "Internal server error" });
+  }
+};
+
+// ── Admin availability (available / out of office) ──────────────
+exports.updateAvailability = async (req, res) => {
+  const user = req.user;
+  if (user.role !== "admin") {
+    return res.status(403).json({
+      status: "Failed",
+      message: "Only admins can set an availability status",
+    });
+  }
+
+  const availabilityStatus = req.body?.availabilityStatus;
+  if (!AVAILABILITY_STATUSES.has(availabilityStatus)) {
+    return res.status(400).json({
+      status: "Failed",
+      message: "Status must be available or out of office",
+    });
+  }
+
+  try {
+    await user.update({ availabilityStatus });
+    const label = availabilityStatus === "out_of_office" ? "out of office" : "available";
+    recordAudit({
+      user,
+      actionType: "Profile",
+      message: `${actorDisplayName(user)} marked themselves ${label}`,
+      ipAddress: clientIp(req),
+    });
+    return res.status(200).json({
+      status: "Success",
+      message: availabilityStatus === "out_of_office"
+        ? "You are marked out of office"
+        : "You are marked available",
+      availabilityStatus,
+    });
+  } catch (error) {
+    console.error("Update availability error:", error);
+    return res.status(500).json({ status: "Failed", message: "Internal server error" });
+  }
+};
+
+async function addManagerScope(ids, departmentHolder, storedId) {
+  const id = Number(storedId);
+  if (!Number.isInteger(id) || id <= 0) return;
+  ids.add(id);
+  const resolved = await reportingManagerFromStoredId(id);
+  if (!resolved) return;
+  if (resolved.managerId) ids.add(Number(resolved.managerId));
+  if (resolved.personId) ids.add(Number(resolved.personId));
+  if (!departmentHolder.department && resolved.department) {
+    departmentHolder.department = resolved.department;
+  }
+}
+
+async function resolveAdminVisibilityScope(user) {
+  const ids = new Set();
+  const departmentHolder = { department: null };
+
+  if (user.role === "manager" || user.role === "supervisor") {
+    const managerProfile = await Manager.findOne({ where: { userId: user.id } });
+    if (managerProfile) {
+      await addManagerScope(ids, departmentHolder, managerProfile.managerId);
+      if (managerProfile.department) departmentHolder.department = managerProfile.department;
+    }
+    const self = user.email
+      ? await Person.findOne({ where: { email: user.email } })
+      : null;
+    if (self?.id) ids.add(self.id);
+    if (self?.department && !departmentHolder.department) {
+      departmentHolder.department = self.department;
+    }
+  }
+
+  if (user.role === "executive_staff" || user.role === "supervisor") {
+    const person = user.email
+      ? await Person.findOne({ where: { email: user.email } })
+      : null;
+    const exec = await resolveExecutiveStaffForUser(user);
+    await addManagerScope(ids, departmentHolder, person?.managerId);
+    await addManagerScope(ids, departmentHolder, exec?.managerId);
+    if (person?.department && !departmentHolder.department) {
+      departmentHolder.department = person.department;
+    }
+  }
+
+  return { managerIds: ids, department: departmentHolder.department };
+}
+
+function adminBelongsToScope(admin, scope) {
+  const managerId = Number(admin.managerId);
+  if (Number.isInteger(managerId) && managerId > 0 && scope.managerIds.has(managerId)) {
+    return true;
+  }
+  if (!admin.managerId && sameTeamDepartment(admin.department, scope.department)) {
+    return true;
+  }
+  return false;
+}
+
+// Executives and managers see the admins who report to the same line manager.
+exports.getDepartmentAdmins = async (req, res) => {
+  const user = req.user;
+  const allowed = ["executive_staff", "supervisor", "manager", "super_admin"];
+  if (!allowed.includes(user.role)) {
+    return res.status(403).json({ status: "Failed", message: "Unauthorized" });
+  }
+
+  try {
+    const admins = await Person.findAll({
+      where: { type: "admin" },
+      order: [["first_name", "ASC"], ["last_name", "ASC"]],
+    });
+
+    const scope = user.role === "super_admin" ? null : await resolveAdminVisibilityScope(user);
+    const visible = scope ? admins.filter((admin) => adminBelongsToScope(admin, scope)) : admins;
+
+    const emails = [...new Set(
+      visible.flatMap((admin) => {
+        const email = String(admin.email || "").trim();
+        if (!email) return [];
+        return [email, email.toLowerCase()];
+      })
+    )];
+    const users = emails.length
+      ? await User.findAll({
+          where: { role: "admin", email: { [Op.in]: emails } },
+          attributes: ["email", "availabilityStatus"],
+        })
+      : [];
+    const statusByEmail = new Map(
+      users.map((row) => [String(row.email || "").toLowerCase(), normalizeAvailability(row.availabilityStatus)])
+    );
+
+    return res.status(200).json({
+      status: "Success",
+      admins: visible.map((admin) => ({
+        id: admin.id,
+        firstName: admin.firstName,
+        lastName: admin.lastName,
+        email: admin.email,
+        phone: admin.phone || null,
+        department: admin.department || null,
+        availabilityStatus: statusByEmail.get(String(admin.email || "").toLowerCase()) || "available",
+      })),
+    });
+  } catch (error) {
+    console.error("Get department admins error:", error);
+    return res.status(500).json({ status: "Failed", message: "Internal server error" });
   }
 };
 
@@ -2189,6 +2356,50 @@ exports.createContactPersonForMyCorporate = async (req, res) => {
       await propagateContactPersonToCorporateAccounts(corporate.corporateId, accountManager);
     } catch (propagationError) {
       console.error("Propagate contact to corporate accounts failed:", propagationError);
+    }
+
+    realtime.broadcastResources(["corporates"]);
+    try {
+      let managerUserId = null;
+      if (corporate.managerId) {
+        const managerProfile = await Manager.findByPk(corporate.managerId);
+        managerUserId = managerProfile?.userId || null;
+        if (!managerUserId) {
+          const managerPerson = await Person.findByPk(corporate.managerId);
+          if (managerPerson?.email) {
+            const managerUser = await User.findOne({
+              where: { email: managerPerson.email, role: "manager" },
+              attributes: ["id"],
+            });
+            managerUserId = managerUser?.id || null;
+          }
+        }
+      }
+      if (!managerUserId && corporate.executiveId) {
+        const executive = await ExecutiveStaff.findByPk(corporate.executiveId);
+        if (executive?.managerId) {
+          const managerProfile = await Manager.findByPk(executive.managerId);
+          managerUserId = managerProfile?.userId || null;
+        }
+      }
+      if (managerUserId && managerUserId !== req.user.id) {
+        await createForUserIds(
+          [managerUserId],
+          {
+            type: "assignment",
+            title: `Customer waiting for portal access — ${corporate.corporateName}`,
+            message: `${firstName} ${lastName} was added as a contact for ${corporate.corporateName}. Grant portal access from User Management.`,
+            priority: "normal",
+            metadata: {
+              corporateId: corporate.corporateId,
+              kind: "customer_awaiting_portal_access",
+            },
+          },
+          { skipEmail: true }
+        );
+      }
+    } catch (notifyErr) {
+      console.error("Failed to notify manager of new contact person:", notifyErr);
     }
 
     return res.status(201).json({

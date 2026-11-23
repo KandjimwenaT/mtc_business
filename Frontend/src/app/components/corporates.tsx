@@ -28,6 +28,7 @@ import {
   updateAccountServiceStatus, deleteAccountService,
   submitCorporateForApproval, approveCorporate, reassignCorporateExecutive,
   getCorporateContactPersons, assignContactPersonToCorporate, removeContactPersonFromCorporate,
+  createPortalAccess,
   type AccountRecord, type ContractRecord, type ServiceRecord, type PersonRecord, type CorporateRecord, type ExpiringContractRecord,
   type AccountPayload, type ContractPayload, type ServicePayload, type CorporatePayload,
 } from "../api/adminApi";
@@ -290,6 +291,7 @@ export default function Corporates() {
   const [contactSearchQuery, setContactSearchQuery] = useState("");
   const [assigningContactId, setAssigningContactId] = useState<number | null>(null);
   const [removingContactId, setRemovingContactId] = useState<number | null>(null);
+  const [grantingPortalAccessId, setGrantingPortalAccessId] = useState<number | null>(null);
 
   // Create corporate wizard (admin)
   const [showCreateCorporateWizard, setShowCreateCorporateWizard] = useState(false);
@@ -465,10 +467,6 @@ export default function Corporates() {
       .catch(() => {});
   }, [canCreateCorporates, showCorporatePanel]);
 
-  useLiveRefresh(["corporates"], () => {
-    void fetchAccounts({ silent: true });
-  });
-
   const refreshCorporateContactPersons = useCallback(
     async (corporateId: number | null | undefined) => {
       if (!corporateId) {
@@ -490,6 +488,13 @@ export default function Corporates() {
     },
     []
   );
+
+  useLiveRefresh(["corporates"], () => {
+    void fetchAccounts({ silent: true });
+    if (selectedCorporate?.corporateId) {
+      void refreshCorporateContactPersons(selectedCorporate.corporateId);
+    }
+  });
 
   useEffect(() => {
     if (!showCorporatePanel) return;
@@ -564,6 +569,23 @@ export default function Corporates() {
       });
     } finally {
       setRemovingContactId(null);
+    }
+  };
+
+  const handleGrantContactPortalAccess = async (accountManagerId: number) => {
+    setGrantingPortalAccessId(accountManagerId);
+    try {
+      await createPortalAccess(accountManagerId, "customer");
+      toast.success("Portal access granted. Sign-in details were emailed.");
+      if (selectedCorporate?.corporateId) {
+        await refreshCorporateContactPersons(selectedCorporate.corporateId);
+      }
+    } catch (err) {
+      toast.error("Failed to grant portal access", {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    } finally {
+      setGrantingPortalAccessId(null);
     }
   };
 
@@ -1030,7 +1052,7 @@ export default function Corporates() {
   const corporateActiveTicketCounts = allTickets.reduce<Record<number, number>>((acc, ticket) => {
     const corporateId = ticket.corporateId;
     if (!corporateId) return acc;
-    const isClosedState = ["resolved", "closed", "rejected"].includes(ticket.status);
+    const isClosedState = ["resolved", "closed", "completed", "rejected"].includes(ticket.status);
     if (isClosedState) return acc;
     acc[corporateId] = (acc[corporateId] || 0) + 1;
     return acc;
@@ -2191,13 +2213,13 @@ export default function Corporates() {
                                   <th className="px-4 py-2.5">Phone</th>
                                   <th className="px-4 py-2.5">Position</th>
                                   <th className="px-4 py-2.5">Portal Access</th>
-                                  {isAdmin && <th className="px-4 py-2.5 text-right">Action</th>}
+                                  {(isAdmin || isManager) && <th className="px-4 py-2.5 text-right">Action</th>}
                                 </tr>
                               </thead>
                               <tbody className="divide-y divide-slate-100">
                                 {loadingCorporateContacts ? (
                                   <tr>
-                                    <td colSpan={isAdmin ? 6 : 5} className="px-4 py-3 text-slate-500">
+                                    <td colSpan={isAdmin || isManager ? 6 : 5} className="px-4 py-3 text-slate-500">
                                       <span className="inline-flex items-center gap-2">
                                         <Loader2 className="h-4 w-4 animate-spin" /> Loading contact persons…
                                       </span>
@@ -2205,7 +2227,7 @@ export default function Corporates() {
                                   </tr>
                                 ) : corporateContactPersons.length === 0 ? (
                                   <tr>
-                                    <td colSpan={isAdmin ? 6 : 5} className="px-4 py-3 text-slate-500">
+                                    <td colSpan={isAdmin || isManager ? 6 : 5} className="px-4 py-3 text-slate-500">
                                       No contact person added.
                                     </td>
                                   </tr>
@@ -2225,22 +2247,35 @@ export default function Corporates() {
                                           <Badge variant="warning">Not enabled</Badge>
                                         )}
                                       </td>
-                                      {isAdmin && (
+                                      {(isAdmin || isManager) && (
                                         <td className="px-4 py-3 text-right">
-                                          <Button
-                                            variant="ghost"
-                                            size="sm"
-                                            onClick={() => handleRemoveContactPerson(cp.id)}
-                                            disabled={removingContactId === cp.id}
-                                          >
-                                            {removingContactId === cp.id ? (
-                                              <Loader2 className="h-4 w-4 animate-spin" />
-                                            ) : (
-                                              <span className="inline-flex items-center gap-1 text-red-600">
-                                                <Trash2 className="h-4 w-4" /> Remove
-                                              </span>
+                                          <div className="flex justify-end gap-2">
+                                            {isManager && !cp.hasPortalAccess && (
+                                              <Button
+                                                size="sm"
+                                                onClick={() => handleGrantContactPortalAccess(cp.id)}
+                                                disabled={grantingPortalAccessId === cp.id}
+                                              >
+                                                {grantingPortalAccessId === cp.id ? "Granting..." : "Give portal access"}
+                                              </Button>
                                             )}
-                                          </Button>
+                                            {isAdmin && (
+                                              <Button
+                                                variant="ghost"
+                                                size="sm"
+                                                onClick={() => handleRemoveContactPerson(cp.id)}
+                                                disabled={removingContactId === cp.id}
+                                              >
+                                                {removingContactId === cp.id ? (
+                                                  <Loader2 className="h-4 w-4 animate-spin" />
+                                                ) : (
+                                                  <span className="inline-flex items-center gap-1 text-red-600">
+                                                    <Trash2 className="h-4 w-4" /> Remove
+                                                  </span>
+                                                )}
+                                              </Button>
+                                            )}
+                                          </div>
                                         </td>
                                       )}
                                     </tr>

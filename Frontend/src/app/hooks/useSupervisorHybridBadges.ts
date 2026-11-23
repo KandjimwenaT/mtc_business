@@ -9,7 +9,7 @@ import { useLiveRefresh } from "./useLiveRefresh";
 const OPEN_TICKET = new Set(["new", "assigned", "in_progress", "escalated"]);
 
 function slaBreached(t: TicketRecord): boolean {
-  if (!t.slaDeadline || ["resolved", "closed", "rejected"].includes(t.status)) return false;
+  if (!t.slaDeadline || ["resolved", "closed", "completed", "rejected"].includes(t.status)) return false;
   return new Date(t.slaDeadline).getTime() < Date.now();
 }
 

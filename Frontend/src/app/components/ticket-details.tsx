@@ -17,8 +17,10 @@ import {
   Loader2,
   MessageSquare, 
   History,
+  Send,
 } from "lucide-react";
 import {
+  addCustomerTicketMessage,
   addInternalTicketNote,
   getTicketById,
   updateTicket,
@@ -26,12 +28,15 @@ import {
   type TicketRecord,
 } from "../api/ticketApi";
 import { getCurrentUser } from "../api/authApi";
-import { canAddTicketInternalNote } from "../utils/roleCapabilities";
+import { canAddTicketInternalNote, isExecutiveRole } from "../utils/roleCapabilities";
+import AssignTicketAdmin from "./assign-ticket-admin";
+import AdminTicketResponse from "./admin-ticket-response";
 import { getTicketsListPath } from "../utils/ticketNavigation";
 import { format } from "date-fns";
 import { useLiveRefresh } from "../hooks/useLiveRefresh";
 
 function formatTicketStatusLabel(s: string) {
+  if (s === "completed") return "Completed";
   return s.replace(/_/g, " ");
 }
 
@@ -52,7 +57,7 @@ function ticketActivityHeadline(entry: TicketActivityLogRecord) {
 
 function ticketActivityDotType(entry: TicketActivityLogRecord): "escalation" | "closed" | "default" {
   if (entry.newStatus === "escalated") return "escalation";
-  if (entry.newStatus === "resolved" || entry.newStatus === "closed") return "closed";
+  if (entry.newStatus === "resolved" || entry.newStatus === "closed" || entry.newStatus === "completed") return "closed";
   return "default";
 }
 
@@ -71,9 +76,12 @@ export default function TicketDetails() {
   const [resolution, setResolution] = useState("");
   const [saving, setSaving] = useState(false);
   const [addingNote, setAddingNote] = useState(false);
+  const [customerMessage, setCustomerMessage] = useState("");
+  const [sendingCustomerMessage, setSendingCustomerMessage] = useState(false);
   const savedActionTaken = useRef("");
   const currentUser = getCurrentUser();
   const canAddInternalNote = canAddTicketInternalNote(currentUser?.role);
+  const canAssignAdmin = isExecutiveRole(currentUser?.role);
   const ticketsListPath = getTicketsListPath(currentUser?.role);
 
   useEffect(() => {
@@ -105,7 +113,7 @@ export default function TicketDetails() {
   }, [ticketId]);
 
   useLiveRefresh(["tickets"], () => {
-    if (!Number.isFinite(ticketId) || saving || addingNote) return;
+    if (!Number.isFinite(ticketId) || saving || addingNote || sendingCustomerMessage) return;
     void getTicketById(ticketId)
       .then((data) => {
         setTicket(data);
@@ -115,7 +123,7 @@ export default function TicketDetails() {
   });
 
   const slaInfo = useMemo(() => {
-    if (!ticket?.slaDeadline || ["resolved", "closed", "rejected"].includes(ticket.status)) {
+    if (!ticket?.slaDeadline || ["resolved", "closed", "completed", "rejected"].includes(ticket.status)) {
       return { label: "—", elapsed: "—", overdue: "", progress: 0 };
     }
     const now = Date.now();
@@ -274,6 +282,23 @@ export default function TicketDetails() {
     return <div className="text-red-600">{error || "Ticket not found"}</div>;
   }
 
+  const handleSendCustomerMessage = async () => {
+    if (!ticket || !customerMessage.trim()) return;
+    try {
+      setSendingCustomerMessage(true);
+      const created = await addCustomerTicketMessage(ticket.ticketId, customerMessage.trim());
+      setTicket((prev) =>
+        prev ? { ...prev, customerMessages: [...(prev.customerMessages ?? []), created] } : prev,
+      );
+      setCustomerMessage("");
+      toast.success("Message sent to the customer");
+    } catch (err: any) {
+      toast.error(err.message || "Failed to send message");
+    } finally {
+      setSendingCustomerMessage(false);
+    }
+  };
+
   const handleAddInternalNote = async () => {
     if (!ticket || !internalNote.trim()) return;
     try {
@@ -367,6 +392,62 @@ export default function TicketDetails() {
             </CardContent>
           </Card>
 
+          {Array.isArray(ticket.customerMessages) && (
+            <Card>
+              <CardHeader className="border-b border-slate-200 py-4">
+                <CardTitle className="text-base flex items-center gap-2">
+                  <MessageSquare className="h-4 w-4 text-mtc-blue" /> Customer conversation
+                </CardTitle>
+                <p className="text-xs text-slate-500">Only you and the customer can see this thread. Managers, admins, and GMs cannot.</p>
+              </CardHeader>
+              <CardContent className="space-y-4 pt-6">
+                <div className="max-h-[360px] space-y-3 overflow-y-auto pr-1">
+                  {ticket.customerMessages.length === 0 ? (
+                    <p className="text-sm text-slate-500">No messages yet.</p>
+                  ) : (
+                    ticket.customerMessages.map((entry) => {
+                      const fromCustomer = entry.authorRole === "customer";
+                      return (
+                        <div
+                          key={entry.messageId}
+                          className={`rounded-md border p-3 text-sm ${
+                            fromCustomer ? "border-blue-200 bg-blue-50" : "border-slate-200 bg-white"
+                          }`}
+                        >
+                          <div className="mb-1 flex flex-wrap items-center justify-between gap-2">
+                            <span className="font-medium text-slate-900">
+                              {entry.authorName} · {fromCustomer ? "Customer" : "Executive"}
+                            </span>
+                            <span className="text-xs text-slate-500">
+                              {format(new Date(entry.createdAt), "dd MMM, HH:mm")}
+                            </span>
+                          </div>
+                          <p className="whitespace-pre-wrap text-slate-700">{entry.message}</p>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+                <textarea
+                  className="flex min-h-[88px] w-full rounded-md border border-slate-300 bg-transparent px-3 py-2 text-sm placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-mtc-blue"
+                  placeholder="Reply to the customer..."
+                  value={customerMessage}
+                  onChange={(e) => setCustomerMessage(e.target.value)}
+                  disabled={sendingCustomerMessage}
+                />
+                <Button
+                  variant="outline"
+                  className="w-full"
+                  onClick={handleSendCustomerMessage}
+                  disabled={sendingCustomerMessage || !customerMessage.trim()}
+                >
+                  <Send className="mr-2 h-4 w-4" />
+                  {sendingCustomerMessage ? "Sending..." : "Send to customer"}
+                </Button>
+              </CardContent>
+            </Card>
+          )}
+
           <Card>
             <CardHeader className="flex flex-row items-center justify-between border-b border-slate-200 py-4">
               <CardTitle className="text-base flex items-center gap-2">
@@ -453,7 +534,7 @@ export default function TicketDetails() {
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="space-y-2">
-                <Label>Current Assignee</Label>
+                <Label>Executive</Label>
                 <div className="flex items-center gap-3 p-3 bg-white rounded-md border border-slate-200 shadow-sm">
                   <div className="h-8 w-8 rounded-full bg-slate-200 flex items-center justify-center text-slate-600 font-bold text-xs">
                     {(ticket.assignedTo || "Admin")
@@ -465,11 +546,31 @@ export default function TicketDetails() {
                       .toUpperCase()}
                   </div>
                   <div className="flex flex-col">
-                    <span className="text-sm font-semibold text-slate-900">{ticket.assignedTo || "Admin Unassigned"}</span>
-                    <span className="text-xs text-slate-500">Assignee</span>
+                    <span className="text-sm font-semibold text-slate-900">{ticket.assignedTo || "Executive unassigned"}</span>
+                    <span className="text-xs text-slate-500">Executive</span>
                   </div>
                 </div>
               </div>
+              {ticket.viewerIsAssignedAdmin && (
+                <AdminTicketResponse
+                  ticket={ticket}
+                  onUpdated={(updated) => {
+                    setTicket(updated);
+                    setTicketStatus(updated.status);
+                  }}
+                />
+              )}
+              {canAssignAdmin && (
+                <div className="space-y-2 pt-2 border-t border-slate-200">
+                  <AssignTicketAdmin
+                    ticket={ticket}
+                    onAssigned={(updated) => {
+                      setTicket(updated);
+                      setTicketStatus(updated.status);
+                    }}
+                  />
+                </div>
+              )}
               <div className="space-y-2 pt-2 border-t border-slate-200">
                 <Label>Update Status</Label>
                 <Select value={ticketStatus} onChange={(e) => setTicketStatus(e.target.value)}>
@@ -479,6 +580,7 @@ export default function TicketDetails() {
                   <option value="escalated">Escalated</option>
                   <option value="resolved">Resolved</option>
                   <option value="closed">Closed</option>
+                  <option value="completed">Completed</option>
                   <option value="rejected">Rejected</option>
                 </Select>
               </div>

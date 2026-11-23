@@ -49,6 +49,11 @@ export interface TicketRecord {
   sourceContextNote?: string | null;
   attachmentUrl?: string | null;
   assignedTo: string | null;
+  assignedAdminPersonId?: number | null;
+  assignedAdminName?: string | null;
+  adminAssignmentStatus?: "pending" | "accepted" | "declined" | null;
+  adminAssignmentReason?: string | null;
+  viewerIsAssignedAdmin?: boolean;
   resolution: string | null;
   resolvedAt: string | null;
   closedAt: string | null;
@@ -72,6 +77,7 @@ export interface TicketRecord {
   corporateName?: string | null;
   internalNotes?: TicketInternalNoteRecord[];
   activityLog?: TicketActivityLogRecord[];
+  customerMessages?: TicketCustomerMessageRecord[];
 }
 
 export interface TicketActivityLogRecord {
@@ -85,6 +91,16 @@ export interface TicketActivityLogRecord {
   actionTaken: string | null;
   resolutionPreview: string | null;
   notesPreview: string | null;
+  createdAt: string;
+}
+
+export interface TicketCustomerMessageRecord {
+  messageId: number;
+  ticketId: number;
+  authorUserId: number;
+  authorName: string;
+  authorRole: string;
+  message: string;
   createdAt: string;
 }
 
@@ -258,4 +274,102 @@ export const addInternalTicketNote = async (
   }
 
   return data.note as TicketInternalNoteRecord;
+};
+
+export const addCustomerTicketMessage = async (
+  ticketId: number,
+  message: string,
+): Promise<TicketCustomerMessageRecord> => {
+  const response = await fetch(`${API_BASE_URL}/tickets/${ticketId}/customer-messages`, {
+    method: "POST",
+    headers: authHeaders(),
+    body: JSON.stringify({ message }),
+  });
+
+  if (response.status === 401) {
+    handleUnauthorized();
+    throw new Error("Session expired");
+  }
+
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.message || "Failed to send message");
+  }
+
+  return data.customerMessage as TicketCustomerMessageRecord;
+};
+
+export interface TicketDepartmentAdmin {
+  id: number;
+  firstName: string;
+  lastName: string;
+  email: string;
+  department: string | null;
+  availabilityStatus?: "available" | "out_of_office";
+}
+
+export const getTicketDepartmentAdmins = async (): Promise<TicketDepartmentAdmin[]> => {
+  const response = await fetch(`${API_BASE_URL}/tickets/department-admins`, {
+    method: "GET",
+    headers: authHeaders(),
+  });
+
+  if (response.status === 401) {
+    handleUnauthorized();
+    throw new Error("Session expired");
+  }
+
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.message || "Failed to load department admins");
+  }
+
+  return (data.admins || []) as TicketDepartmentAdmin[];
+};
+
+export const assignTicketAdmin = async (
+  ticketId: number,
+  adminPersonId: number,
+): Promise<TicketRecord> => {
+  const response = await fetch(`${API_BASE_URL}/tickets/${ticketId}/assign-admin`, {
+    method: "PUT",
+    headers: authHeaders(),
+    body: JSON.stringify({ adminPersonId }),
+  });
+
+  if (response.status === 401) {
+    handleUnauthorized();
+    throw new Error("Session expired");
+  }
+
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.message || "Failed to assign ticket");
+  }
+
+  return data.ticket as TicketRecord;
+};
+
+export const respondToTicketAssignment = async (
+  ticketId: number,
+  decision: "accepted" | "declined",
+  reason: string,
+): Promise<TicketRecord> => {
+  const response = await fetch(`${API_BASE_URL}/tickets/${ticketId}/admin-response`, {
+    method: "PUT",
+    headers: authHeaders(),
+    body: JSON.stringify({ decision, reason }),
+  });
+
+  if (response.status === 401) {
+    handleUnauthorized();
+    throw new Error("Session expired");
+  }
+
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.message || "Failed to respond to the ticket");
+  }
+
+  return data.ticket as TicketRecord;
 };

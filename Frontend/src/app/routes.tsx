@@ -4,6 +4,8 @@ import Tickets from "./components/tickets";
 import TicketDetails from "./components/ticket-details";
 import Visits from "./components/visits";
 import SLAMonitoring from "./components/sla-monitoring";
+import AuditLogPanel from "./components/audit-log-panel";
+import Reports from "./components/reports";
 import Corporates from "./components/corporates";
 import Vehicles from "./components/vehicles";
 import Notifications from "./components/notifications";
@@ -19,7 +21,7 @@ import ExecutiveProfile from "./profiles/executive-profile";
 import ExecutiveLeads from "./components/executive/ExecutiveLeads";
 import ManagementProfile from "./profiles/management-profile";
 import SupervisorProfile from "./profiles/supervisor-profile";
-import CustomerTickets from "./components/customer/CustomerTickets";
+import CustomerTickets, { CustomerTicketPathRedirect } from "./components/customer/CustomerTickets";
 import ExecutiveTickets from "./components/executive/ExecutiveTickets";
 import ExecutiveVisits from "./components/executive/ExecutiveVisits";
 import ManagerVisits from "./components/manager/ManagerVisits";
@@ -65,13 +67,17 @@ export const router = createBrowserRouter([
                 allowed={["customer", "admin", "super_admin", "executive_staff", "manager", "supervisor", "gm"]}
               />
             ),
-            children: [{ path: "notifications", Component: Notifications }],
+            children: [
+              { path: "notifications", Component: Notifications },
+              { path: "reports", Component: Reports },
+            ],
           },
           {
             element: <RequireRole allowed={["customer", "admin"]} />,
             children: [
               { path: "customerAccount", Component: CustomerAccount },
               { path: "customerTickets", Component: CustomerTickets },
+              { path: "customerTickets/:id", Component: CustomerTicketPathRedirect },
               { path: "visitCalendar", Component: VisitCalendar },
               { path: "account-manager-profile", Component: AccountManagerProfile },
             ],
@@ -106,6 +112,7 @@ export const router = createBrowserRouter([
             element: <RequireRole allowed={["gm", "manager", "supervisor"]} />,
             children: [
               { path: "sla-monitoring", Component: SLAMonitoring },
+              { path: "audit-log", Component: AuditLogPanel },
             ],
           },
           {

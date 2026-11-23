@@ -1,16 +1,11 @@
-// export const API_BASE_URL =
-//   import.meta.env.VITE_API_BASE_URL || "http://41.219.71.27:3000/api";
+const configured =
+  typeof import.meta.env.VITE_API_BASE_URL === "string"
+    ? import.meta.env.VITE_API_BASE_URL.trim()
+    : "";
 
+// Local `npm run dev` leaves this unset and talks to the API on port 3004.
+// The Docker image sets VITE_API_BASE_URL=/api so the browser uses the same host as the site.
+export const API_BASE_URL = configured || "http://localhost:3004/api";
 
-   //export const API_BASE_URL = "http://localhost:3004/api";
-  //export const API_BASE_URL = "http://uat-api.erongored.com.na/mtc/api";
-
- //export const API_BASE_URL = "http://172.19.20.201:3004/api";
- export const API_BASE_URL = "https://api-businessuat.mtc.com.na/api";
-
-/** Origin for static assets (e.g. `/uploads/...`) — strip trailing `/api` from API base. */
+/** Origin for static assets (e.g. `/uploads/...`) and Socket.IO. Empty means the current page host. */
 export const API_ORIGIN = API_BASE_URL.replace(/\/api\/?$/, "");
-// export const API_ORIGIN = API_BASE_URL.replace(/\/api\/?$/, "");
-
-// export const API_BASE_URL = "http://uat-api.erongored.com.na/mtc/api";
-// Here 

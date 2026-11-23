@@ -12,9 +12,8 @@ const {
   createForUserIds,
   notifyManagerTeam,
   resolveExecutivePortalUserId,
-  resolveExecutiveIdsReportingToManager,
   resolveManagerTeamNotificationUserIds,
-  resolveOversightExecutiveIds,
+  filterRecordsByOversight,
 } = require("../services/notificationService");
 const realtime = require("../services/realtimeService");
 const emailService = require("../services/emailService");
@@ -681,14 +680,9 @@ exports.approveReschedule = async (req, res) => {
     }
 
     // Scope: managers and supervisors can only approve visits within their team
-    if (user.role === "manager") {
-      const execIds = await getManagerExecIds(user.id);
-      if (execIds !== null && !execIds.includes(visit.executiveId)) {
-        return res.status(403).json({ status: "Failed", message: "This visit is not within your team's scope" });
-      }
-    } else if (user.role === "supervisor") {
-      const execIds = await getSupervisorManagedExecutiveIds(user);
-      if (execIds.length > 0 && !execIds.includes(visit.executiveId)) {
+    if (user.role === "manager" || user.role === "supervisor") {
+      const scoped = await filterRecordsByOversight(user, [visit]);
+      if (!scoped.records.length) {
         return res.status(403).json({ status: "Failed", message: "This visit is not within your team's scope" });
       }
     }
@@ -759,27 +753,22 @@ exports.getPendingReschedules = async (req, res) => {
       const gmProfile = await resolveGmProfile(user);
       const gmVisitWhere = await buildGmVisitWhereClause(gmProfile);
       whereClause = { ...whereClause, ...gmVisitWhere };
-    } else if (user.role === "manager" || user.role === "supervisor") {
-      if (user.role === "supervisor") {
-        const execIds = await getSupervisorManagedExecutiveIds(user);
-        whereClause.executiveId =
-          execIds.length === 0 ? { [Op.in]: [-1] } : { [Op.in]: execIds };
-      } else {
-        const execIds = await getManagerExecIds(user.id);
-        if (execIds === null) {
-          return res.status(404).json({ status: "Failed", message: "Manager profile not found" });
-        }
-        whereClause.executiveId =
-          execIds.length === 0 ? { [Op.in]: [-1] } : { [Op.in]: execIds };
-      }
     }
 
     const visits = await Visit.findAll({
       where: whereClause,
       order: [["updated_at", "DESC"]],
     });
+    let visibleVisits = visits;
+    if (user.role === "manager" || user.role === "supervisor") {
+      const scoped = await filterRecordsByOversight(user, visits);
+      if (user.role === "manager" && !scoped.scope.found) {
+        return res.status(404).json({ status: "Failed", message: "Manager profile not found" });
+      }
+      visibleVisits = scoped.records;
+    }
 
-    return res.status(200).json({ status: "Success", visits });
+    return res.status(200).json({ status: "Success", visits: visibleVisits });
   } catch (error) {
     console.error("Get pending reschedules error:", error);
     return res.status(500).json({ status: "Failed", message: "Internal server error" });
@@ -1071,23 +1060,17 @@ async function userMayAccessVisitControlCard(user, visit) {
     return accountIds.includes(visit.accountId);
   }
 
+  if (user.role === "manager" || user.role === "supervisor") {
+    const scoped = await filterRecordsByOversight(user, [visit]);
+    return scoped.records.length > 0;
+  }
+
   if (hasExecutiveScope(user.role)) {
     const exec = await ExecutiveStaff.findOne({ where: { userId: user.id } });
     return !!(exec && visit.executiveId === exec.executiveId);
   }
 
   if (user.role === "admin") return true;
-
-  if (user.role === "supervisor") {
-    const execIds = await getSupervisorManagedExecutiveIds(user);
-    return execIds.includes(visit.executiveId);
-  }
-
-  if (user.role === "manager") {
-    const execIds = await getManagerExecIds(user.id);
-    if (execIds === null) return false;
-    return execIds.includes(visit.executiveId);
-  }
 
   if (user.role === "gm") {
     const gmProfile = await resolveGmProfile(user);
@@ -1376,24 +1359,7 @@ exports.submitRating = async (req, res) => {
   }
 };
 
-// Helper: get executive IDs under a manager
-async function getManagerExecIds(userId) {
-  const manager = await Manager.findOne({ where: { userId } });
-  if (!manager) return null;
-  return resolveExecutiveIdsReportingToManager(manager);
-}
-
-/**
- * Executive IDs a supervisor may see in manager-style views.
- * Promoted supervisors get their own Manager row (new manager_id), but teammates still have
- * ExecutiveStaff.managerId pointing at the line manager. Resolving by Manager.userId therefore
- * returns an empty team — use the supervisor's ExecutiveStaff.managerId instead (same as peers).
- */
-async function getSupervisorManagedExecutiveIds(user) {
-  return resolveOversightExecutiveIds(user);
-}
-
-// Manager gets visits for their executives
+// Manager gets visits for their executives and for accounts on their book.
 exports.getManagerVisits = async (req, res) => {
   try {
     const user = req.user;
@@ -1409,33 +1375,30 @@ exports.getManagerVisits = async (req, res) => {
       whereClause = await buildGmVisitWhereClause(gmProfile);
     } else if (user.role === "super_admin") {
       whereClause = {};
-    } else if (user.role === "supervisor") {
-      const execIds = await getSupervisorManagedExecutiveIds(user);
-      whereClause.executiveId =
-        execIds.length === 0 ? { [Op.in]: [-1] } : { [Op.in]: execIds };
-    } else if (user.role === "manager") {
-      const execIds = await getManagerExecIds(user.id);
-      if (execIds === null) {
-        return res.status(404).json({ status: "Failed", message: "Manager profile not found" });
-      }
-      whereClause.executiveId =
-        execIds.length === 0 ? { [Op.in]: [-1] } : { [Op.in]: execIds };
     }
 
     const visits = await Visit.findAll({
       where: whereClause,
       order: [["visit_date", "DESC"], ["start_time", "ASC"]],
     });
+    let visibleVisits = visits;
+    if (user.role === "manager" || user.role === "supervisor") {
+      const scoped = await filterRecordsByOversight(user, visits);
+      if (user.role === "manager" && !scoped.scope.found) {
+        return res.status(404).json({ status: "Failed", message: "Manager profile not found" });
+      }
+      visibleVisits = scoped.records;
+    }
 
     if (user.role !== "gm" && user.role !== "super_admin") {
-      await sendVisitReminderAndOverdueAlerts(visits);
+      await sendVisitReminderAndOverdueAlerts(visibleVisits);
     }
 
     if (user.role === "manager" || user.role === "supervisor") {
       const cutoff = new Date();
       cutoff.setDate(cutoff.getDate() - 60);
       const cutoffDate = cutoff.toISOString().slice(0, 10);
-      const doneVisits = visits.filter((visit) => {
+      const doneVisits = visibleVisits.filter((visit) => {
         if (!["completed", "follow_up_pending"].includes(visit.status)) return false;
         const visitDate = visit.visitDate ? String(visit.visitDate).slice(0, 10) : "";
         return !visitDate || visitDate >= cutoffDate;
@@ -1465,7 +1428,7 @@ exports.getManagerVisits = async (req, res) => {
       );
     }
 
-    return res.status(200).json({ status: "Success", visits });
+    return res.status(200).json({ status: "Success", visits: visibleVisits });
   } catch (error) {
     console.error("Get manager visits error:", error);
     return res.status(500).json({ status: "Failed", message: "Internal server error" });
@@ -1602,25 +1565,22 @@ exports.getManagerControlCards = async (req, res) => {
       whereClause = await buildGmVisitWhereClause(gmProfile);
     } else if (user.role === "super_admin") {
       whereClause = {};
-    } else if (user.role === "supervisor") {
-      const execIds = await getSupervisorManagedExecutiveIds(user);
-      whereClause.executiveId =
-        execIds.length === 0 ? { [Op.in]: [-1] } : { [Op.in]: execIds };
-    } else if (user.role === "manager") {
-      const execIds = await getManagerExecIds(user.id);
-      if (execIds === null) {
-        return res.status(404).json({ status: "Failed", message: "Manager profile not found" });
-      }
-      whereClause.executiveId =
-        execIds.length === 0 ? { [Op.in]: [-1] } : { [Op.in]: execIds };
     }
 
     const controlCards = await ControlCard.findAll({
       where: whereClause,
       order: [["visit_date", "DESC"]],
     });
+    let visibleCards = controlCards;
+    if (user.role === "manager" || user.role === "supervisor") {
+      const scoped = await filterRecordsByOversight(user, controlCards);
+      if (user.role === "manager" && !scoped.scope.found) {
+        return res.status(404).json({ status: "Failed", message: "Manager profile not found" });
+      }
+      visibleCards = scoped.records;
+    }
 
-    return res.status(200).json({ status: "Success", controlCards });
+    return res.status(200).json({ status: "Success", controlCards: visibleCards });
   } catch (error) {
     console.error("Get manager control cards error:", error);
     return res.status(500).json({ status: "Failed", message: "Internal server error" });

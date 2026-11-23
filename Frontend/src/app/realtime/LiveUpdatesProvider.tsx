@@ -23,7 +23,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
     }
 
     disconnectSocket();
-    const next = io(API_ORIGIN, {
+    const next = io(API_ORIGIN || undefined, {
       path: "/socket.io",
       auth: { token },
       withCredentials: true,

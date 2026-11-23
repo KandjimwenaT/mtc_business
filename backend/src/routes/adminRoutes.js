@@ -50,6 +50,7 @@ router.put("/portal-users/:userId", adminController.updateManagedPortalUser);
 router.delete("/portal-users/:userId/record", adminController.deleteManagedPortalUser);
 router.delete("/portal-users/:userId", adminController.revokePortalAccess);
 router.get("/portal-users", adminController.getPortalUsers);
+router.get("/customers/awaiting-portal-access", adminController.getCustomersAwaitingPortalAccess);
 
 // Customer account management
 router.post("/corporates", adminController.createCorporate);

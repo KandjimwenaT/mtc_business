@@ -7,7 +7,11 @@ import {
 import { Clock, Loader2, Save } from "lucide-react";
 import { getSlaConfigs, saveSlaConfigs, type SlaConfigRecord } from "../api/slaApi";
 
-export default function SlaConfigurationPanel() {
+export default function SlaConfigurationPanel({
+  onSaved,
+}: {
+  onSaved?: (configs: SlaConfigRecord[]) => void;
+} = {}) {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [canEdit, setCanEdit] = useState(false);
@@ -56,6 +60,7 @@ export default function SlaConfigurationPanel() {
     try {
       const data = await saveSlaConfigs(configs);
       setConfigs(data.configs);
+      onSaved?.(data.configs);
       toast.success("SLA configuration saved", {
         description: "New tickets will use these targets and escalation rules.",
       });

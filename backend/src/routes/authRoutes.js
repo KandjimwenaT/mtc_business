@@ -50,6 +50,8 @@ router.delete(
 );
 
 router.put('/profile', auth, authController.updateProfile);
+router.put('/availability', auth, authController.updateAvailability);
+router.get('/department-admins', auth, authController.getDepartmentAdmins);
 router.put('/change-password', auth, authController.changePassword);
 
 // Microsoft Teams / Outlook calendar (OAuth)

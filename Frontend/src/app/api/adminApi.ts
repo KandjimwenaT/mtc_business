@@ -37,6 +37,7 @@ export interface PortalUser {
   phone: string | null;
   role: string;
   department: string | null;
+  availabilityStatus?: "available" | "out_of_office" | null;
   created_at: string;
 }
 
@@ -328,6 +329,26 @@ export const createPortalAccess = async (
   const data = await res.json();
   if (!res.ok) { handleUnauthorized(res.status); throw new Error(data.message || "Failed to create portal access"); }
   return data;
+};
+
+export interface CustomerAwaitingPortalAccess {
+  id: number;
+  firstName: string;
+  lastName: string;
+  email: string;
+  phone: string | null;
+  corporateId: number;
+  corporateName: string;
+  createdAt: string;
+}
+
+export const getCustomersAwaitingPortalAccess = async (): Promise<CustomerAwaitingPortalAccess[]> => {
+  const res = await fetch(`${API_BASE_URL}/admin/customers/awaiting-portal-access`, {
+    headers: authHeaders(),
+  });
+  const data = await res.json();
+  if (!res.ok) { handleUnauthorized(res.status); throw new Error(data.message || "Failed to load customers waiting for portal access"); }
+  return (data.customers ?? []) as CustomerAwaitingPortalAccess[];
 };
 
 export const getPortalUsers = async (): Promise<PortalUser[]> => {

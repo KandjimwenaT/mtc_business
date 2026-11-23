@@ -4,7 +4,7 @@ import { getActualRole, getMyProfile, type UserProfile } from "../../api/authApi
 import { profileIsEbu } from "../../utils/departmentSegment";
 import { getAllTickets, type TicketRecord } from "../../api/ticketApi";
 import { getSlaHealthLabel } from "../../utils/sla";
-import { getManagerVisits, type VisitRecord } from "../../api/visitApi";
+import { getManagerControlCards, getManagerVisits, type ControlCardRecord, type VisitRecord } from "../../api/visitApi";
 import { getTeamLeads, type TeamLeadRecord } from "../../api/leadApi";
 import {
   getExecutives,
@@ -159,6 +159,7 @@ export default function ManagerDashboard() {
   const [profile, setProfile] = useState<UserProfile | null>(null);
   const [tickets, setTickets] = useState<TicketRecord[]>([]);
   const [visits, setVisits] = useState<VisitRecord[]>([]);
+  const [controlCards, setControlCards] = useState<ControlCardRecord[]>([]);
   const [executives, setExecutives] = useState<ExecutiveRecord[]>([]);
   const [corporates, setCorporates] = useState<CorporateRecord[]>([]);
   const [accounts, setAccounts] = useState<AccountRecord[]>([]);
@@ -183,6 +184,7 @@ export default function ManagerDashboard() {
       const [
         ticketsRes,
         visitsRes,
+        controlCardRes,
         execRes,
         corpRes,
         accRes,
@@ -193,6 +195,7 @@ export default function ManagerDashboard() {
       ] = await Promise.all([
         getAllTickets().catch(() => [] as TicketRecord[]),
         getManagerVisits().catch(() => [] as VisitRecord[]),
+        getManagerControlCards().catch(() => [] as ControlCardRecord[]),
         getExecutives().catch(() => [] as ExecutiveRecord[]),
         managerId != null
           ? getCorporates(managerId).catch(() => [] as CorporateRecord[])
@@ -217,6 +220,7 @@ export default function ManagerDashboard() {
 
       setTickets(ticketsRes);
       setVisits(visitsRes);
+      setControlCards(controlCardRes);
       setExecutives(execRes);
       setCorporates(corpRes);
       setAccounts(accRes);
@@ -252,13 +256,19 @@ export default function ManagerDashboard() {
   }, [executives, managerProfileId, profile?.personId]);
 
   const teamExecIds = useMemo(
-    () => new Set(teamExecutives.map((e) => e.executiveId)),
+    () => new Set(teamExecutives.map((e) => Number(e.executiveId)).filter((id) => Number.isInteger(id) && id > 0)),
     [teamExecutives],
   );
 
   const scopedTickets = useMemo(() => {
     if (managerProfileId == null || teamExecIds.size === 0) return tickets;
-    return tickets.filter((t) => t.executiveId != null && teamExecIds.has(t.executiveId));
+    const matched = tickets.filter((t) => {
+      const executiveId = Number(t.executiveId);
+      // Portfolio tickets can sit on the manager's corporate before an executive is stored on the ticket.
+      if (!Number.isInteger(executiveId) || executiveId <= 0) return true;
+      return teamExecIds.has(executiveId);
+    });
+    return matched.length > 0 ? matched : tickets;
   }, [tickets, managerProfileId, teamExecIds]);
 
   const scopedVisits = visits;
@@ -458,13 +468,29 @@ export default function ManagerDashboard() {
       });
     });
 
+    [...controlCards]
+      .sort((a, b) => new Date(b.submittedAt || b.createdAt).getTime() - new Date(a.submittedAt || a.createdAt).getTime())
+      .slice(0, 20)
+      .forEach((card) => {
+        const exec = teamExecutives.find((e) => Number(e.executiveId) === Number(card.executiveId));
+        rows.push({
+          key: `c-${card.controlCardId}`,
+          date: toISODate(card.submittedAt || card.visitDate || card.createdAt),
+          executive: exec ? `${exec.firstName} ${exec.lastName}` : "—",
+          activityType: "Visit report",
+          corporate: card.accountName || "—",
+          outcome: (card.visitObjective || card.customerFeedback || "Executive visit report submitted").slice(0, 90),
+          typeLabel: "Control Card",
+        });
+      });
+
     [...scopedTickets]
       .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
       .slice(0, 20)
       .forEach((t) => {
       const isEsc = t.status === "escalated";
       const exec = t.executiveId ? teamExecutives.find((e) => e.executiveId === t.executiveId) : undefined;
-      const executiveLabel = exec ? `${exec.firstName} ${exec.lastName}` : "—";
+      const executiveLabel = exec ? `${exec.firstName} ${exec.lastName}` : t.assignedTo || "—";
       rows.push({
         key: `t-${t.ticketId}`,
         date: toISODate(t.createdAt),
@@ -482,7 +508,7 @@ export default function ManagerDashboard() {
     return rows
       .sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0))
       .slice(0, 12);
-  }, [scopedVisits, scopedTickets, teamExecutives, teamLeads, isEbu]);
+  }, [scopedVisits, scopedTickets, controlCards, teamExecutives, teamLeads, isEbu]);
 
   const departmentSubtitle =
     profile?.department?.trim() ||

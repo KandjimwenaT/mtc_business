@@ -2,7 +2,7 @@ const AuditLog = require("../models/AuditLog");
 const { resolveRequesterDepartment } = require("./corporateSegmentScope");
 const { normalizeDepartmentSegment } = require("./departmentSegment");
 
-const VIEW_ROLES = new Set(["admin", "super_admin", "manager", "supervisor"]);
+const VIEW_ROLES = new Set(["admin", "super_admin", "manager", "supervisor", "gm"]);
 
 function actorDisplayName(user) {
   if (!user) return "Unknown";

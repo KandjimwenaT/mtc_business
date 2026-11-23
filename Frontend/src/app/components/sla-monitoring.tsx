@@ -28,6 +28,7 @@ import {
   type SlaStateKey,
 } from "../utils/sla";
 import { getSlaConfigs, type SlaConfigRecord } from "../api/slaApi";
+import SlaConfigurationPanel from "./sla-configuration-panel";
 import { useLiveRefresh } from "../hooks/useLiveRefresh";
 
 const STATE_FILTERS: { key: "all" | SlaStateKey; label: string }[] = [
@@ -54,6 +55,7 @@ export default function SLAMonitoring() {
   const [error, setError] = useState("");
   const [stateFilter, setStateFilter] = useState<"all" | SlaStateKey>("all");
   const [categoryFilter, setCategoryFilter] = useState<"all" | "complaint" | "request">("all");
+  const [selectedTicketId, setSelectedTicketId] = useState<number | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -85,7 +87,7 @@ export default function SLAMonitoring() {
   });
 
   const openTickets = useMemo(
-    () => tickets.filter((t) => !["resolved", "closed", "rejected"].includes(t.status)),
+    () => tickets.filter((t) => !["resolved", "closed", "completed", "rejected"].includes(t.status)),
     [tickets]
   );
 
@@ -109,14 +111,30 @@ export default function SLAMonitoring() {
     });
   }, [openTickets, categoryFilter, stateFilter]);
 
-  const workflowSample = useMemo(() => {
+  const oldestOpenTicket = useMemo(() => {
+    return [...openTickets].sort(
+      (a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+    )[0] ?? null;
+  }, [openTickets]);
+
+  const workflowTicket = useMemo(() => {
+    if (selectedTicketId != null) {
+      const chosen = openTickets.find((ticket) => ticket.ticketId === selectedTicketId);
+      if (chosen) return chosen;
+    }
+    return oldestOpenTicket;
+  }, [openTickets, selectedTicketId, oldestOpenTicket]);
+
+  const workflowConfig = useMemo(() => {
+    if (!workflowTicket) return null;
     return (
-      configs.find((c) => c.category === "complaint" && c.ticketType === "network") ||
-      configs.find((c) => c.category === "complaint") ||
-      configs[0] ||
-      null
+      configs.find(
+        (config) => config.category === workflowTicket.category && config.ticketType === workflowTicket.type,
+      ) || null
     );
-  }, [configs]);
+  }, [configs, workflowTicket]);
+
+  const usingOldestTicket = workflowTicket != null && workflowTicket.ticketId !== selectedTicketId;
 
   if (loading) {
     return (
@@ -140,8 +158,8 @@ export default function SLAMonitoring() {
       <div>
         <h2 className="text-3xl font-normal text-slate-800">SLA Monitoring & Escalations</h2>
         <p className="text-sm text-slate-500">
-          Live ticket health using the SLA rules configured in My Profile. Warning and at-risk
-          thresholds come from remaining hours; escalation levels come from hours since the ticket was logged.
+          Live ticket health using the SLA rules below. Select a ticket to see its place in the
+          escalation workflow. Until you choose one, the workflow follows the oldest open ticket.
         </p>
       </div>
 
@@ -241,15 +259,24 @@ export default function SLAMonitoring() {
                   {filtered.map((ticket) => {
                     const sla = getSlaState(ticket);
                     const level = getEscalationLevel(ticket);
+                    const isSelected = workflowTicket?.ticketId === ticket.ticketId;
                     return (
-                      <TableRow key={ticket.ticketId}>
+                      <TableRow
+                        key={ticket.ticketId}
+                        onClick={() => setSelectedTicketId(ticket.ticketId)}
+                        className={isSelected ? "cursor-pointer bg-blue-50 hover:bg-blue-50" : "cursor-pointer"}
+                      >
                         <TableCell className="font-medium text-mtc-blue">
-                          <Link
-                            to={getTicketDetailPath(currentUser?.role || "manager", ticket.ticketId)}
-                            className="hover:underline"
-                          >
-                            {ticket.ticketNumber}
-                          </Link>
+                          <div className="flex items-center gap-2">
+                            <span>{ticket.ticketNumber}</span>
+                            <Link
+                              to={getTicketDetailPath(currentUser?.role || "manager", ticket.ticketId)}
+                              onClick={(event) => event.stopPropagation()}
+                              className="text-xs font-normal text-slate-500 hover:underline"
+                            >
+                              Open
+                            </Link>
+                          </div>
                           <div className="text-xs text-slate-500 font-normal">{ticket.title}</div>
                         </TableCell>
                         <TableCell>
@@ -277,16 +304,26 @@ export default function SLAMonitoring() {
         </Card>
 
         <EscalationWorkflowCard
-          l1Hours={workflowSample?.escalateL1Hours}
-          l2Hours={workflowSample?.escalateL2Hours}
-          l3Hours={workflowSample?.escalateL3Hours}
-          sampleLabel={
-            workflowSample
-              ? `${workflowSample.category === "complaint" ? "Complaint" : "Request"} · ${workflowSample.typeLabel || workflowSample.ticketType}`
+          l1Hours={workflowTicket?.slaEscalateL1Hours ?? workflowConfig?.escalateL1Hours}
+          l2Hours={workflowTicket?.slaEscalateL2Hours ?? workflowConfig?.escalateL2Hours}
+          l3Hours={workflowTicket?.slaEscalateL3Hours ?? workflowConfig?.escalateL3Hours}
+          currentLevel={workflowTicket ? getEscalationLevel(workflowTicket) : undefined}
+          ticketLabel={
+            workflowTicket
+              ? `${workflowTicket.ticketNumber} · ${escalationLabel(getEscalationLevel(workflowTicket))}`
               : undefined
+          }
+          selectionNote={
+            workflowTicket
+              ? usingOldestTicket
+                ? "Showing the oldest open ticket. Click a row to follow another ticket."
+                : "Showing the ticket you selected."
+              : "No open tickets to place on the workflow."
           }
         />
       </div>
+
+      <SlaConfigurationPanel onSaved={setConfigs} />
     </div>
   );
 }

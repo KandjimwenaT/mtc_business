@@ -34,7 +34,7 @@ const SLA_BADGE_VARIANTS: Record<string, "success" | "warning" | "danger" | "def
 };
 
 function isClosedTicket(status: string) {
-  return ["resolved", "closed", "rejected"].includes(status);
+  return ["resolved", "closed", "completed", "rejected"].includes(status);
 }
 
 function formatTicketType(type: string) {

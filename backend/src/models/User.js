@@ -50,6 +50,12 @@ const User = sequelize.define(
       allowNull: false,
       defaultValue: "executive_staff",
     },
+    availabilityStatus: {
+      type: DataTypes.STRING,
+      allowNull: false,
+      defaultValue: "available",
+      field: "availability_status",
+    },
     msGraphRefreshTokenEnc: {
       type: DataTypes.TEXT,
       allowNull: true,

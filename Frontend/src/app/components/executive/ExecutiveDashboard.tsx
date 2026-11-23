@@ -181,7 +181,7 @@ export default function ExecutiveDashboard() {
 
     tickets.forEach((ticket) => {
       if (!ticket.corporateId || !map.has(ticket.corporateId)) return;
-      if (!["resolved", "closed", "rejected"].includes(ticket.status)) {
+      if (!["resolved", "closed", "completed", "rejected"].includes(ticket.status)) {
         map.get(ticket.corporateId)!.openTickets += 1;
       }
     });
@@ -229,7 +229,7 @@ export default function ExecutiveDashboard() {
     const now = new Date();
     return createdAt.getMonth() === now.getMonth() && createdAt.getFullYear() === now.getFullYear();
   }).length;
-  const openTicketsCount = tickets.filter((t) => !["resolved", "closed", "rejected"].includes(t.status)).length;
+  const openTicketsCount = tickets.filter((t) => !["resolved", "closed", "completed", "rejected"].includes(t.status)).length;
   const breachedSlaCount = tickets.filter((t) => getSlaHealthLabel(t) === "Breached").length;
   const pendingVisitsCount = visits.filter((v) => ["pending", "approved", "confirmed", "rescheduled"].includes(v.status)).length;
   const nextVisitDate = visits
@@ -320,7 +320,7 @@ export default function ExecutiveDashboard() {
     tickets.forEach((t) => {
       const createdDay = weekday(t.createdAt);
       if (createdDay) dayMap[createdDay].new += 1;
-      if (["resolved", "closed"].includes(t.status)) {
+      if (["resolved", "closed", "completed"].includes(t.status)) {
         const resolvedDay = weekday(t.updatedAt);
         if (resolvedDay) dayMap[resolvedDay].resolved += 1;
       }
@@ -338,7 +338,7 @@ export default function ExecutiveDashboard() {
     };
 
     tickets
-      .filter((t) => !["resolved", "closed", "rejected"].includes(t.status))
+      .filter((t) => !["resolved", "closed", "completed", "rejected"].includes(t.status))
       .forEach((t) => {
         counts[getSlaHealthLabel(t)] += 1;
       });

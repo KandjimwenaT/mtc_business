@@ -21,6 +21,8 @@ export interface LoginResponse {
   };
 }
 
+export type AvailabilityStatus = "available" | "out_of_office";
+
 export interface UserProfile {
   id: number | string;
   firstName: string;
@@ -33,6 +35,7 @@ export interface UserProfile {
   region: string | null;
   personId: number | null;
   roleProfileId?: number;
+  availabilityStatus?: AvailabilityStatus;
   manager?: {
     managerId: number;
     firstName: string;
@@ -272,6 +275,57 @@ export const updateMyProfile = async (
   }
 
   return withViewAsRole(data.profile as UserProfile);
+};
+
+export interface DepartmentAdmin {
+  id: number;
+  firstName: string;
+  lastName: string;
+  email: string;
+  phone: string | null;
+  department: string | null;
+  availabilityStatus: AvailabilityStatus;
+}
+
+export const updateMyAvailability = async (
+  availabilityStatus: AvailabilityStatus,
+): Promise<AvailabilityStatus> => {
+  const response = await fetch(`${API_BASE_URL}/auth/availability`, {
+    method: "PUT",
+    headers: authHeaders(),
+    body: JSON.stringify({ availabilityStatus }),
+  });
+
+  if (response.status === 401) {
+    handleUnauthorized();
+    throw new Error("Session expired");
+  }
+
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.message || "Failed to update availability");
+  }
+
+  return (data.availabilityStatus || availabilityStatus) as AvailabilityStatus;
+};
+
+export const getDepartmentAdmins = async (): Promise<DepartmentAdmin[]> => {
+  const response = await fetch(`${API_BASE_URL}/auth/department-admins`, {
+    method: "GET",
+    headers: authHeaders(),
+  });
+
+  if (response.status === 401) {
+    handleUnauthorized();
+    throw new Error("Session expired");
+  }
+
+  const data = await response.json();
+  if (!response.ok) {
+    throw new Error(data.message || "Failed to load admins");
+  }
+
+  return (data.admins || []) as DepartmentAdmin[];
 };
 
 export const changePassword = async (

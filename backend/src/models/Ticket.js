@@ -55,7 +55,8 @@ const Ticket = sequelize.define(
         "escalated",
         "resolved",
         "closed",
-        "rejected"
+        "rejected",
+        "completed"
       ),
       allowNull: false,
       defaultValue: "new",
@@ -110,6 +111,21 @@ const Ticket = sequelize.define(
       type: DataTypes.STRING,
       allowNull: true,
       field: "assigned_to",
+    },
+    assignedAdminPersonId: {
+      type: DataTypes.INTEGER,
+      allowNull: true,
+      field: "assigned_admin_person_id",
+    },
+    adminAssignmentStatus: {
+      type: DataTypes.STRING,
+      allowNull: true,
+      field: "admin_assignment_status",
+    },
+    adminAssignmentReason: {
+      type: DataTypes.TEXT,
+      allowNull: true,
+      field: "admin_assignment_reason",
     },
     resolution: {
       type: DataTypes.TEXT,
