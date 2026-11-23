@@ -88,7 +88,7 @@ async function ensureSuperAdminRole() {
 }
 
 const app = express();
-const PORT = 3004;
+const PORT = 3003;
 
 // nginx (or similar) forwards X-Forwarded-For; required for req.ip and express-rate-limit.
 app.set('trust proxy', 1);

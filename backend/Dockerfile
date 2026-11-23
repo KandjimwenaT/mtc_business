@@ -9,6 +9,6 @@ COPY . .
 RUN mkdir -p uploads/tickets uploads/broadcasts
 
 ENV NODE_ENV=production
-EXPOSE 3004
+EXPOSE 3003
 
 CMD ["node", "server.js"]
